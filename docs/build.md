@@ -200,6 +200,8 @@ is that of the program.
 
 ## Where the store lives
 
-`/vug/store` exists only inside the build root. On the host the store is the
-`store/` directory of the data directory, and each dependency is bound to its
-`/vug/store/<id>` path in the sandbox.
+On the build host the store is the `store/` directory of the data directory.
+A build sees its dependencies bound to their `/vug/store/<id>` paths, and
+`run-package` sees the whole store at `/vug/store`. On a machine that runs a
+system, `/vug/store` is a directory of the root file system
+(`docs/system.md`).

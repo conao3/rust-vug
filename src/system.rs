@@ -216,12 +216,15 @@ fi
 echo "vug: generation $n is $self"
 "#;
 
+const FRAGMENT_KEYS: [&str; 5] = ["packages", "file", "group", "user", "setuid"];
+
 #[derive(Clone, Copy, PartialEq)]
 enum FileKind {
     Link,
     Seed,
 }
 
+#[derive(PartialEq)]
 pub struct SystemFile {
     /// Path below `/etc`, without a leading slash.
     path: String,
@@ -230,11 +233,13 @@ pub struct SystemFile {
     content: String,
 }
 
+#[derive(PartialEq)]
 struct Group {
     name: String,
     gid: u32,
 }
 
+#[derive(PartialEq)]
 struct User {
     name: String,
     uid: u32,
@@ -245,17 +250,22 @@ struct User {
     password: String,
 }
 
-pub struct SystemRecord {
-    text: String,
-    kernel: String,
-    init: String,
-    sh: Option<String>,
+struct Fragment {
     packages: Vec<String>,
     files: Vec<SystemFile>,
     groups: Vec<Group>,
     users: Vec<User>,
     /// (package, program path inside the package)
     setuid: Vec<(String, String)>,
+}
+
+pub struct SystemRecord {
+    /// (path below `.vug`, text) of the system record and its service records.
+    texts: Vec<(String, String)>,
+    kernel: String,
+    init: String,
+    sh: Option<String>,
+    parts: Fragment,
 }
 
 pub struct BuiltSystem {
@@ -337,56 +347,49 @@ fn valid_image_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
+fn parse(path: &Path) -> Result<(String, toml::Table), String> {
     let text = io("read", path, fs::read_to_string(path))?;
     let table = text
         .parse::<toml::Table>()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    unknown_keys(
-        &table,
-        &[
-            "name", "kernel", "init", "sh", "packages", "file", "group", "user", "setuid",
-        ],
-        "",
-    )?;
-    let name = string(&table, "name", "")?;
-    if name != expected_name {
-        return Err(format!("name: expected {expected_name:?}"));
-    }
-    let kernel = string(&table, "kernel", "")?;
-    let init = string(&table, "init", "")?;
-    if init.split_whitespace().next().is_none() {
-        return Err("init: expected a command".to_owned());
-    }
-    let sh = match table.get("sh") {
-        None => None,
-        Some(_) => Some(string(&table, "sh", "")?),
+    Ok((text, table))
+}
+
+/// Reads the packages, files, groups, users, and setuid programs of a system
+/// or service record. `parameters` holds the values of `{param:NAME}` for a
+/// service record.
+fn fragment(
+    table: &toml::Table,
+    parameters: Option<&BTreeMap<String, String>>,
+) -> Result<Fragment, String> {
+    let fill = |text: String| match parameters {
+        None => Ok(text),
+        Some(values) => expand(&text, "param", values, "is not a parameter of this service"),
     };
-    let packages = strings(&table, "packages", "")?;
-    for package in packages.iter().chain([&kernel]) {
+    let packages = match table.get("packages") {
+        None if parameters.is_some() => Vec::new(),
+        _ => strings(table, "packages", "")?,
+    };
+    for package in &packages {
         if !model::valid_name(package) {
             return Err(format!("{package:?}: not a valid package name"));
         }
     }
 
     let mut groups = Vec::new();
-    for entry in tables(&table, "group")? {
+    for entry in tables(table, "group")? {
         unknown_keys(entry, &["name", "gid"], "group.")?;
         let name = string(entry, "name", "group.")?;
         if !valid_account(&name) {
             return Err(format!("group.name: {name:?}: not a valid group name"));
         }
-        let gid = number(entry, "gid", "group.")?;
-        if groups
-            .iter()
-            .any(|g: &Group| g.name == name || g.gid == gid)
-        {
-            return Err(format!("group.name: {name:?}: name or gid listed twice"));
-        }
-        groups.push(Group { name, gid });
+        groups.push(Group {
+            name,
+            gid: number(entry, "gid", "group.")?,
+        });
     }
     let mut users = Vec::new();
-    for entry in tables(&table, "user")? {
+    for entry in tables(table, "user")? {
         unknown_keys(
             entry,
             &[
@@ -397,22 +400,6 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
         let name = string(entry, "name", "user.")?;
         if !valid_account(&name) {
             return Err(format!("user.name: {name:?}: not a valid user name"));
-        }
-        let uid = number(entry, "uid", "user.")?;
-        if users.iter().any(|u: &User| u.name == name || u.uid == uid) {
-            return Err(format!("user.name: {name:?}: name or uid listed twice"));
-        }
-        let group = string(entry, "group", "user.")?;
-        let member_of = match entry.get("groups") {
-            None => Vec::new(),
-            Some(_) => strings(entry, "groups", "user.")?,
-        };
-        for group in member_of.iter().chain([&group]) {
-            if !groups.iter().any(|g| &g.name == group) {
-                return Err(format!(
-                    "user.{name}: {group:?} is not a group of this system"
-                ));
-            }
         }
         let home = string(entry, "home", "user.")?;
         let shell = string(entry, "shell", "user.")?;
@@ -432,39 +419,29 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
             ));
         }
         users.push(User {
+            uid: number(entry, "uid", "user.")?,
+            group: string(entry, "group", "user.")?,
+            groups: match entry.get("groups") {
+                None => Vec::new(),
+                Some(_) => strings(entry, "groups", "user.")?,
+            },
             name,
-            uid,
-            group,
-            groups: member_of,
             home,
             shell,
             password,
         });
     }
 
-    let mut files: Vec<SystemFile> = Vec::new();
-    for entry in tables(&table, "file")? {
+    let mut files = Vec::new();
+    for entry in tables(table, "file")? {
         unknown_keys(entry, &["path", "kind", "mode", "content"], "file.")?;
-        let path = string(entry, "path", "file.")?;
+        let path = fill(string(entry, "path", "file.")?)?;
         let Some(relative) = path
             .strip_prefix("/etc/")
             .filter(|_| valid_image_path(&path))
         else {
             return Err(format!("file.path: {path:?}: expected a path below /etc"));
         };
-        let reserved = relative == ".vug-links"
-            || (!users.is_empty() && matches!(relative, "passwd" | "group" | "shadow"));
-        if reserved {
-            return Err(format!("file.path: {path:?}: written by vug itself"));
-        }
-        for other in &files {
-            let nested = |a: &str, b: &str| a == b || a.starts_with(&format!("{b}/"));
-            if nested(relative, &other.path) || nested(&other.path, relative) {
-                return Err(format!(
-                    "file.path: {path:?}: listed twice, or inside another listed path"
-                ));
-            }
-        }
         let kind = match entry.get("kind").map(|v| v.as_str()) {
             None | Some(Some("link")) => FileKind::Link,
             Some(Some("seed")) => FileKind::Seed,
@@ -487,20 +464,15 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
             path: relative.to_owned(),
             kind,
             mode,
-            content: string(entry, "content", "file.")?,
+            content: fill(string(entry, "content", "file.")?)?,
         });
     }
 
     let mut setuid = Vec::new();
-    for entry in tables(&table, "setuid")? {
+    for entry in tables(table, "setuid")? {
         unknown_keys(entry, &["package", "program"], "setuid.")?;
         let package = string(entry, "package", "setuid.")?;
         let program = string(entry, "program", "setuid.")?;
-        if !packages.contains(&package) {
-            return Err(format!(
-                "setuid.package: {package:?} is not a package of this system"
-            ));
-        }
         if !valid_image_path(&format!("/{program}")) {
             return Err(format!(
                 "setuid.program: {program:?}: expected a path relative to the package"
@@ -508,16 +480,204 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
         }
         setuid.push((package, program));
     }
-    Ok(SystemRecord {
-        text,
-        kernel,
-        init,
-        sh,
+    Ok(Fragment {
         packages,
         files,
         groups,
         users,
         setuid,
+    })
+}
+
+/// Adds `from` to `into`. An entry both hold must be the same in both.
+fn merge(into: &mut Fragment, from: Fragment) -> Result<(), String> {
+    for package in from.packages {
+        if !into.packages.contains(&package) {
+            into.packages.push(package);
+        }
+    }
+    for file in from.files {
+        match into.files.iter().find(|f| f.path == file.path) {
+            None => into.files.push(file),
+            Some(other) if *other == file => {}
+            Some(_) => {
+                return Err(format!(
+                    "file.path: \"/etc/{}\": listed twice with different contents",
+                    file.path
+                ));
+            }
+        }
+    }
+    for group in from.groups {
+        match into.groups.iter().find(|g| g.name == group.name) {
+            None => into.groups.push(group),
+            Some(other) if *other == group => {}
+            Some(_) => {
+                return Err(format!(
+                    "group.name: {:?}: listed twice with different ids",
+                    group.name
+                ));
+            }
+        }
+    }
+    for user in from.users {
+        match into.users.iter().find(|u| u.name == user.name) {
+            None => into.users.push(user),
+            Some(other) if *other == user => {}
+            Some(_) => {
+                return Err(format!(
+                    "user.name: {:?}: listed twice with different fields",
+                    user.name
+                ));
+            }
+        }
+    }
+    for entry in from.setuid {
+        if !into.setuid.contains(&entry) {
+            into.setuid.push(entry);
+        }
+    }
+    Ok(())
+}
+
+fn validate(parts: &Fragment) -> Result<(), String> {
+    for (index, group) in parts.groups.iter().enumerate() {
+        if parts.groups[..index].iter().any(|g| g.gid == group.gid) {
+            return Err(format!("group.gid: {}: used by two groups", group.gid));
+        }
+    }
+    for (index, user) in parts.users.iter().enumerate() {
+        if parts.users[..index].iter().any(|u| u.uid == user.uid) {
+            return Err(format!("user.uid: {}: used by two users", user.uid));
+        }
+        for group in user.groups.iter().chain([&user.group]) {
+            if !parts.groups.iter().any(|g| &g.name == group) {
+                return Err(format!(
+                    "user.{}: {group:?} is not a group of this system",
+                    user.name
+                ));
+            }
+        }
+    }
+    for (index, file) in parts.files.iter().enumerate() {
+        let reserved = file.path == ".vug-links"
+            || (!parts.users.is_empty()
+                && matches!(file.path.as_str(), "passwd" | "group" | "shadow"));
+        if reserved {
+            return Err(format!(
+                "file.path: \"/etc/{}\": written by vug itself",
+                file.path
+            ));
+        }
+        let inside = |a: &str, b: &str| a.starts_with(&format!("{b}/"));
+        for other in &parts.files[..index] {
+            if inside(&file.path, &other.path) || inside(&other.path, &file.path) {
+                return Err(format!(
+                    "file.path: \"/etc/{}\": inside another listed path",
+                    file.path.as_str().max(other.path.as_str())
+                ));
+            }
+        }
+    }
+    for (package, _) in &parts.setuid {
+        if !parts.packages.contains(package) {
+            return Err(format!(
+                "setuid.package: {package:?} is not a package of this system"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads `services/<name>.toml` with the parameter values `given`.
+fn load_service(
+    root: &Path,
+    name: &str,
+    given: &toml::Table,
+) -> Result<(String, Fragment), String> {
+    if !model::valid_name(name) {
+        return Err(format!("{name:?}: not a valid service name"));
+    }
+    let (text, table) = parse(&root.join("services").join(format!("{name}.toml")))?;
+    let mut allowed = vec!["name", "parameter"];
+    allowed.extend(FRAGMENT_KEYS);
+    unknown_keys(&table, &allowed, "")?;
+    if string(&table, "name", "")? != name {
+        return Err(format!("name: expected {name:?}"));
+    }
+    let declared = match table.get("parameter") {
+        None => toml::Table::new(),
+        Some(value) => value
+            .as_table()
+            .ok_or("parameter: expected a table")?
+            .clone(),
+    };
+    let mut values = BTreeMap::new();
+    for (parameter, settings) in &declared {
+        let settings = settings
+            .as_table()
+            .ok_or_else(|| format!("parameter.{parameter}: expected a table"))?;
+        unknown_keys(settings, &["default"], &format!("parameter.{parameter}."))?;
+        let value = match (given.get(parameter), settings.get("default")) {
+            (Some(value), _) | (None, Some(value)) => value
+                .as_str()
+                .ok_or_else(|| format!("{parameter}: expected a string"))?,
+            (None, None) => return Err(format!("{parameter}: needs a value")),
+        };
+        values.insert(parameter.clone(), value.to_owned());
+    }
+    if let Some(unknown) = given.keys().find(|key| !declared.contains_key(*key)) {
+        return Err(format!("{unknown}: not a parameter of this service"));
+    }
+    Ok((text, fragment(&table, Some(&values))?))
+}
+
+/// Reads `systems/<name>.toml` under `root` and the service records it
+/// names, and merges them.
+pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
+    let (text, table) = parse(&root.join("systems").join(format!("{name}.toml")))?;
+    let mut allowed = vec!["name", "kernel", "init", "sh", "service"];
+    allowed.extend(FRAGMENT_KEYS);
+    unknown_keys(&table, &allowed, "")?;
+    if string(&table, "name", "")? != name {
+        return Err(format!("name: expected {name:?}"));
+    }
+    let kernel = string(&table, "kernel", "")?;
+    if !model::valid_name(&kernel) {
+        return Err(format!("{kernel:?}: not a valid package name"));
+    }
+    let init = string(&table, "init", "")?;
+    if init.split_whitespace().next().is_none() {
+        return Err("init: expected a command".to_owned());
+    }
+    let sh = match table.get("sh") {
+        None => None,
+        Some(_) => Some(string(&table, "sh", "")?),
+    };
+    let mut parts = fragment(&table, None)?;
+    let mut texts = vec![("system.toml".to_owned(), text)];
+    let services = match table.get("service") {
+        None => toml::Table::new(),
+        Some(value) => value.as_table().ok_or("service: expected a table")?.clone(),
+    };
+    let mut names: Vec<&String> = services.keys().collect();
+    names.sort();
+    for service in names {
+        let context = |error: String| format!("service.{service}: {error}");
+        let given = services[service]
+            .as_table()
+            .ok_or_else(|| context("expected a table".to_owned()))?;
+        let (text, part) = load_service(root, service, given).map_err(context)?;
+        merge(&mut parts, part).map_err(context)?;
+        texts.push((format!("services/{service}.toml"), text));
+    }
+    validate(&parts)?;
+    Ok(SystemRecord {
+        texts,
+        kernel,
+        init,
+        sh,
+        parts,
     })
 }
 
@@ -542,21 +702,28 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     }
 }
 
-/// Replaces `{pkg:NAME}` by the store path of the package NAME of the system.
-fn expand(text: &str, paths: &BTreeMap<String, String>) -> Result<String, String> {
+/// Replaces `{KEY:NAME}` by the value of NAME. `missing` completes the
+/// error for a NAME without a value.
+fn expand(
+    text: &str,
+    key: &str,
+    values: &BTreeMap<String, String>,
+    missing: &str,
+) -> Result<String, String> {
+    let open = format!("{{{key}:");
     let mut out = String::new();
     let mut rest = text;
-    while let Some(start) = rest.find("{pkg:") {
+    while let Some(start) = rest.find(&open) {
         let (before, tail) = rest.split_at(start);
         let Some(end) = tail.find('}') else {
             break;
         };
-        let name = &tail["{pkg:".len()..end];
-        let path = paths
+        let name = &tail[open.len()..end];
+        let value = values
             .get(name)
-            .ok_or_else(|| format!("{{pkg:{name}}}: {name:?} is not a package of this system"))?;
+            .ok_or_else(|| format!("{open}{name}}}: {name:?} {missing}"))?;
         out.push_str(before);
-        out.push_str(path);
+        out.push_str(value);
         rest = &tail[end + 1..];
     }
     out.push_str(rest);
@@ -617,16 +784,16 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     if !model::valid_name(name) {
         return Err(format!("{name:?}: not a valid system name"));
     }
-    let record = load(
-        &settings.root.join("systems").join(format!("{name}.toml")),
-        name,
-    )?;
+    let record = load(&settings.root, name)?;
+    let pkg = |text: &str, paths: &BTreeMap<String, String>| {
+        expand(text, "pkg", paths, "is not a package of this system")
+    };
     let mut builder = Builder::new(settings)?;
     let kernel = builder.build(&record.kernel, None)?;
     let mut closure: BTreeSet<String> = kernel.closure().clone();
     let mut paths = BTreeMap::new();
     let mut roots = Vec::new();
-    for package in &record.packages {
+    for package in &record.parts.packages {
         let built = builder.build(package, None)?;
         closure.extend(built.closure().iter().cloned());
         paths.insert(package.clone(), format!("{STORE}/{}", built.id));
@@ -644,7 +811,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         &io("read", &busybox, fs::read(&busybox))?,
         0o755,
     )?;
-    let init = expand(&record.init, &paths)?
+    let init = pkg(&record.init, &paths)?
         .split_whitespace()
         .map(shell_quote)
         .collect::<Vec<_>>()
@@ -686,7 +853,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     }
 
     if let Some(sh) = &record.sh {
-        let target = expand(sh, &paths)?;
+        let target = pkg(sh, &paths)?;
         if !valid_image_path(&target) {
             return Err(format!("sh: {sh:?}: expected an absolute path"));
         }
@@ -695,10 +862,10 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
 
     let mut links = String::new();
     let mut seeds = String::new();
-    let mut files: Vec<&SystemFile> = record.files.iter().collect();
+    let mut files: Vec<&SystemFile> = record.parts.files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     for file in files {
-        let content = expand(&file.content, &paths)?;
+        let content = pkg(&file.content, &paths)?;
         match file.kind {
             FileKind::Link => {
                 write_file(
@@ -721,6 +888,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
 
     let gid_of = |group: &str| {
         record
+            .parts
             .groups
             .iter()
             .find(|g| g.name == group)
@@ -730,7 +898,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     let mut passwd = String::new();
     let mut shadow = String::new();
     let mut homes = String::new();
-    for user in &record.users {
+    for user in &record.parts.users {
         let gid = gid_of(&user.group)?;
         passwd.push_str(&format!(
             "{0}:x:{1}:{gid}:{0}:{2}:{3}\n",
@@ -742,8 +910,9 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         }
     }
     let mut group = String::new();
-    for entry in &record.groups {
+    for entry in &record.parts.groups {
         let members: Vec<&str> = record
+            .parts
             .users
             .iter()
             .filter(|u| u.groups.contains(&entry.name))
@@ -757,7 +926,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         ));
     }
     let mut setuid = String::new();
-    for (package, program) in &record.setuid {
+    for (package, program) in &record.parts.setuid {
         let name = Path::new(program)
             .file_name()
             .and_then(|n| n.to_str())
@@ -780,7 +949,9 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     ] {
         write_file(&out.join("manifest").join(file), text.as_bytes(), 0o644)?;
     }
-    write_file(&out.join(".vug/system.toml"), record.text.as_bytes(), 0o644)?;
+    for (path, text) in &record.texts {
+        write_file(&out.join(".vug").join(path), text.as_bytes(), 0o644)?;
+    }
 
     let id = build::install_output(&store_dir, &out)?;
     remove_tree(&work)?;

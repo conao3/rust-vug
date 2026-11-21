@@ -243,9 +243,10 @@ $ vug record format-record --file packages/he/hello/versions/2.12.2.toml
   `DIR/packages`: path and name agree, version and file name agree, every
   `source.url` starts with one of the package's `upstream.sources`, every
   listed patch exists, every file under `packages/` is one of the files this
-  document describes, and every record is canonical. It prints `Packages`,
-  `Versions`, and `Errors` (each error has `Path` and `Message`) and exits 254
-  when there is any error.
+  document describes, and every record is canonical. It also reads every
+  `systems/*.toml` with its service records (`docs/system.md`). It prints
+  `Packages`, `Versions`, `Systems`, and `Errors` (each error has `Path` and
+  `Message`) and exits 254 when there is any error.
 
 Whether a file is a `package.toml` or a version record is decided by its file
 name: `package.toml` is a package record, any other `*.toml` is a version

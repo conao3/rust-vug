@@ -171,11 +171,17 @@ fn debug_flag() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("left"));
 }
 
-fn system_error(record: &str) -> String {
+fn system_error_with(record: &str, services: &[(&str, &str)]) -> String {
     let root = tempfile::tempdir().expect("temporary directory");
-    let systems = root.path().join("systems");
-    std::fs::create_dir(&systems).expect("create systems");
-    std::fs::write(systems.join("demo.toml"), record).expect("write record");
+    for (dir, name, text) in services
+        .iter()
+        .map(|(name, text)| ("services", *name, *text))
+        .chain([("systems", "demo", record)])
+    {
+        let dir = root.path().join(dir);
+        std::fs::create_dir_all(&dir).expect("create directory");
+        std::fs::write(dir.join(format!("{name}.toml")), text).expect("write record");
+    }
     let output = vug(&[
         "system",
         "build-system",
@@ -190,6 +196,10 @@ fn system_error(record: &str) -> String {
     ]);
     assert_ne!(output.status.code(), Some(0));
     String::from_utf8(output.stderr).expect("stderr is UTF-8")
+}
+
+fn system_error(record: &str) -> String {
+    system_error_with(record, &[])
 }
 
 const SYSTEM_HEAD: &str =
@@ -236,4 +246,33 @@ fn system_record_errors() {
 fn system_record_needs_init() {
     let error = system_error("name = \"demo\"\nkernel = \"linux\"\npackages = []\n");
     assert!(error.contains("init: expected a string"), "{error}");
+}
+
+#[test]
+fn service_record_errors() {
+    let getty = "name = \"getty\"\n[parameter.user]\n[parameter.tty]\ndefault = \"ttyS0\"\n[[file]]\npath = \"/etc/getty-{param:tty}\"\ncontent = \"{param:user}\"\n";
+    let clash = "name = \"clash\"\n[[file]]\npath = \"/etc/getty-ttyS0\"\ncontent = \"other\"\n";
+    let same = "name = \"same\"\n[[file]]\npath = \"/etc/getty-ttyS0\"\ncontent = \"conao\"\n[[file]]\npath = \"/etc/x\"\ncontent = \"{param:none}\"\n";
+    for (body, expected) in [
+        ("[service.getty]\n", "service.getty: user: needs a value"),
+        (
+            "[service.getty]\nuser = \"conao\"\nspeed = \"9600\"\n",
+            "service.getty: speed: not a parameter of this service",
+        ),
+        (
+            "[service.getty]\nuser = \"conao\"\n[service.clash]\n",
+            "listed twice with different contents",
+        ),
+        (
+            "[service.getty]\nuser = \"conao\"\n[service.same]\n",
+            "\"none\" is not a parameter of this service",
+        ),
+        ("[service.absent]\n", "service.absent: read"),
+    ] {
+        let error = system_error_with(
+            &format!("{SYSTEM_HEAD}{body}"),
+            &[("getty", getty), ("clash", clash), ("same", same)],
+        );
+        assert!(error.contains(expected), "{body:?}: {error}");
+    }
 }

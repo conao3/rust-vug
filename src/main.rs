@@ -399,11 +399,29 @@ fn run_check_tree(cli: &Cli, args: &RootArgs) -> Result<i32, (i32, String)> {
     if cli.debug {
         eprintln!("root={:?}", args.root);
     }
-    let report = record::check_tree(&args.root);
+    let mut report = record::check_tree(&args.root);
+    let mut systems = 0;
+    if let Ok(entries) = std::fs::read_dir(args.root.join("systems")) {
+        let mut names: Vec<String> = entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter_map(|file| file.strip_suffix(".toml").map(str::to_owned))
+            .collect();
+        names.sort();
+        for name in names {
+            systems += 1;
+            if let Err(message) = system::load(&args.root, &name) {
+                report.errors.push(record::RecordError {
+                    path: format!("systems/{name}.toml"),
+                    message,
+                });
+            }
+        }
+    }
     match cli.output {
         Output::Json => print_json(&json!({
             "Packages": report.packages,
             "Versions": report.versions,
+            "Systems": systems,
             "Errors": report.errors.iter().map(|e| json!({
                 "Path": e.path,
                 "Message": e.message,
@@ -411,7 +429,7 @@ fn run_check_tree(cli: &Cli, args: &RootArgs) -> Result<i32, (i32, String)> {
         })),
         Output::Text => {
             let mut text = format!(
-                "Packages: {}\nVersions: {}\n",
+                "Packages: {}\nVersions: {}\nSystems: {systems}\n",
                 report.packages, report.versions
             );
             for e in &report.errors {
@@ -424,7 +442,7 @@ fn run_check_tree(cli: &Cli, args: &RootArgs) -> Result<i32, (i32, String)> {
         }
         Output::Table => {
             let mut text = format!(
-                "Packages\n{}\nVersions\n{}\nPath\tMessage\n",
+                "Packages\n{}\nVersions\n{}\nSystems\n{systems}\nPath\tMessage\n",
                 report.packages, report.versions
             );
             for e in &report.errors {

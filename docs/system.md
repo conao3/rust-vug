@@ -1,7 +1,7 @@
 # Systems
 
-A system record names a kernel, packages, files below `/etc`, users, and the
-program to start. `vug system build-system` turns it into one store path, a
+A system record names a kernel, packages, files below `/etc`, users, the
+program to start, and the service records to add. `vug system build-system` turns it into one store path, a
 *system*. A disk holds a store, any number of systems, and a numbered link
 per system that was switched to (a *generation*).
 
@@ -51,6 +51,9 @@ shell = "/bin/bash"
 [[setuid]]
 package = "sudo"
 program = "bin/sudo"
+
+[service.serial-autologin]
+user = "root"
 ```
 
 | Key | Type | Required | Meaning |
@@ -71,9 +74,54 @@ program = "bin/sudo"
 | `user.home`, `user.shell` | string | per user | Home directory (`"/"` for none) and login shell. |
 | `user.password` | string | no (default `"!"`, no login by password) | The password field of the first `shadow` entry of the user. |
 | `setuid.package`, `setuid.program` | string | per entry | A program of a package of the system that runs as root. |
+| `service.<name>` | table of strings | no | Adds the service record `<name>`, with these values for its parameters. |
+
+`user.password` goes into a store path that every user of the machine can
+read, and a package tree is usually public: it is the place for `""` (no
+password) or `"!"`, not for the hash of a real password. A password set on
+the machine with `passwd` lives only in `/etc/shadow`.
 
 `{pkg:NAME}` in `init`, `sh`, and `file.content` is replaced by the store path of
 the package `NAME` of the system. Unknown keys are errors.
+
+## Service records
+
+`services/<name>.toml` holds a part that several systems share:
+
+```toml
+name = "serial-autologin"
+packages = [
+  "util-linux",
+]
+
+[parameter.user]
+
+[parameter.tty]
+default = "ttyS0"
+
+[[file]]
+path = "/etc/systemd/system/serial-getty@{param:tty}.service.d/autologin.conf"
+content = """
+[Service]
+ExecStart=
+ExecStart=-/bin/agetty --autologin {param:user} - vt220
+"""
+```
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | Must equal the file name without `.toml`. |
+| `parameter.<name>` | table | no | A parameter. `default` (a string) is its value when the system gives none; without `default` the system must give one. |
+| `packages`, `file`, `group`, `user`, `setuid` | as in a system record | no | What the service adds. |
+
+`{param:NAME}` in `file.path` and `file.content` is replaced by the value of
+the parameter. `{pkg:NAME}` names a package of the merged system.
+
+A system is the union of its own record and its service records, taken in
+the order of the service names. Packages keep the order of first mention.
+A file path, a group, or a user that two records list must be the same in
+both; anything else is an error. A record cannot replace what another one
+says.
 
 ## The system
 
@@ -90,7 +138,7 @@ the package `NAME` of the system. Unknown keys are errors.
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
 | `manifest/` | The paths and kinds of the files, the modes of the seed files, `passwd`, `group`, `shadow`, the home directories, the setuid programs, and `closure`: the store paths of the system, its kernel, its packages, and everything they need at run time. |
-| `.vug/system.toml` | A copy of the record. |
+| `.vug/system.toml`, `.vug/services/<name>.toml` | Copies of the system record and of its service records. |
 
 Owners and permission bits other than the execute bit are not part of a store
 path (`docs/build.md`), so every mode that matters is written in `manifest/`.
