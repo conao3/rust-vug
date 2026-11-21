@@ -75,7 +75,7 @@ sha256 = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
 ```
 
 The seed is assembled once per content of `seed.toml` and bound read-only at
-`/seed`, with `/seed/bin` also bound at `/bin`:
+`/seed`:
 
 - `bin/busybox` and one link per busybox applet (`sh`, `tar`, `sed`, ...).
 - `zig/`, the unpacked zig distribution.
@@ -93,6 +93,16 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - an unused command-line argument is never an error.
 - `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.
+
+## `/bin` and `/usr/bin`
+
+Scripts name their interpreter by a fixed path (`#!/bin/sh`, `#!/bin/bash`,
+`#!/usr/bin/env python3`). The build root therefore has one directory of
+links, shown at both `/bin` and `/usr/bin`: a link for every program of the
+seed, and a link for every program in the `bin` directory of each dependency
+in the build root. A dependency's program replaces a seed program of the same
+name, so a packaged `sed` or `tar` is the one that runs once it is a
+dependency.
 
 ## How a build finds its dependencies
 

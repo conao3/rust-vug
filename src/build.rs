@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "2";
+const BUILD_RULES: &str = "3";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -313,6 +313,28 @@ fn current_version(versions_dir: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("{}: no version records", versions_dir.display()))
 }
 
+/// Puts a link `into/<name>` to `<inside>/<name>` for every entry of
+/// `host_dir`, replacing a link of the same name. A missing `host_dir` adds
+/// nothing.
+fn link_programs(host_dir: &Path, inside: &str, into: &Path) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(host_dir) else {
+        return Ok(());
+    };
+    let mut names: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.file_name()))
+        .collect();
+    names.sort();
+    for name in names {
+        let link = into.join(&name);
+        if link.symlink_metadata().is_ok() {
+            io("remove", &link, fs::remove_file(&link))?;
+        }
+        let target = Path::new(inside).join(&name);
+        io("symlink", &link, std::os::unix::fs::symlink(&target, &link))?;
+    }
+    Ok(())
+}
+
 /// The file name of the musl dynamic loader in `lib`, when there is one.
 fn loader_name(lib: &Path) -> Option<String> {
     let mut names: Vec<String> = fs::read_dir(lib)
@@ -463,6 +485,16 @@ impl<'a> Builder<'a> {
         let out = work.join("out");
         let build_dir = work.join("build");
         io("create", &out, fs::create_dir_all(&out))?;
+        let root_bin = work.join("bin");
+        io("create", &root_bin, fs::create_dir_all(&root_bin))?;
+        link_programs(&self.seed_dir.join("bin"), "/seed/bin", &root_bin)?;
+        for id in &dep_ids {
+            link_programs(
+                &store_dir.join(id).join("bin"),
+                &format!("{STORE}/{id}/bin"),
+                &root_bin,
+            )?;
+        }
         io(
             "create",
             &build_dir,
@@ -598,7 +630,8 @@ impl<'a> Builder<'a> {
         };
         let mut binds = vec![
             bind(&self.seed_dir, "/seed", false),
-            bind(&self.seed_dir.join("bin"), "/bin", false),
+            bind(&root_bin, "/bin", false),
+            bind(&root_bin, "/usr/bin", false),
             bind(&build_dir, "/build", true),
             bind(&archive, &archive_dest, false),
             bind(&out, &prefix, true),
