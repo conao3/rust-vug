@@ -59,15 +59,18 @@ for a; do
       unset IFS
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
       ;;
+    -o) output_given=1; set -- "$@" "$a" ;;
     -) stdin=1; set -- "$@" "$a" ;;
     -x | -x?*) lang=1; set -- "$@" "$a" ;;
     -*) set -- "$@" "$a" ;;
+    *.o | *.lo | *.a | *.c | *.cc | *.cpp | *.cxx | *.C | *.s | *.S) objects_given=1; set -- "$@" "$a" ;;
     *.so)
       if [ -f "$a" ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
         objects=/tmp/vug-cc-$$
         mkdir -p "$objects"
         n=$((${n:-0} + 1))
         ln -s "$(realpath "$a")" "$objects/$n.o"
+        objects_given=1
         set -- "$@" "$objects/$n.o"
       else
         set -- "$@" "$a"
@@ -77,6 +80,11 @@ for a; do
   esac
 done
 set -- "$@" -Wno-error=unused-command-line-argument -Wno-error=date-time
+if [ "$link" = 1 ] && [ "${objects_given:-0}" = 0 ] && [ "${stdin:-0}" = 0 ] && [ "${output_given:-0}" = 1 ]; then
+  mkdir -p /tmp/vug-cc-$$
+  : > /tmp/vug-cc-$$/empty.c
+  set -- "$@" /tmp/vug-cc-$$/empty.c
+fi
 if [ "${stdin:-0}" = 1 ] && [ "${lang:-0}" = 0 ]; then
   set -- -x {lang} "$@"
 fi

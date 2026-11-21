@@ -96,6 +96,8 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     library and then fails to link.
   - input from standard input (`-`) without `-x` is given `-x c` (`-x c++`
     for `c++`); without it zig does not search the C library headers.
+  - a link whose inputs are only libraries gets an empty source file as
+    well; zig cannot link without an object of its own.
   - an unused command-line argument and a use of `__DATE__` or `__TIME__`
     are never errors (zig makes the second one an error at `-O3`; with
     `SOURCE_DATE_EPOCH` set the macros are reproducible).
