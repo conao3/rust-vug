@@ -49,6 +49,8 @@ for a; do
       for w in ${a#-Wl,}; do
         case "$w" in
           -stats | -lc | -shared) ;;
+          -h) words="$words,-soname" ;;
+          -h?*) words="$words,-soname,${w#-h}" ;;
           -R) words="$words,-rpath" ;;
           -R?*) words="$words,-rpath,${w#-R}" ;;
           *) words="$words,$w" ;;
