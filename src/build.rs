@@ -48,7 +48,7 @@ for a; do
       IFS=,
       for w in ${a#-Wl,}; do
         case "$w" in
-          -stats | -lc) ;;
+          -stats | -lc | -shared) ;;
           -R) words="$words,-rpath" ;;
           -R?*) words="$words,-rpath,${w#-R}" ;;
           *) words="$words,$w" ;;
