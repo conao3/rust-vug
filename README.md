@@ -2,8 +2,9 @@
 
 `vug` is a declarative package manager and system builder: packages are TOML
 records, builds run in a sandbox, and outputs go to a content-addressed store.
-This repository currently contains the project scaffolding and one command,
-which compares two version strings.
+This repository currently contains the project scaffolding, a command that
+compares two version strings, and the package-record commands of
+`docs/record.md`.
 
 ```console
 $ vug version compare-versions --left 1.2.10 --right 1.2.9
@@ -11,6 +12,29 @@ $ vug version compare-versions --left 1.2.10 --right 1.2.9
   "Ordering": "Greater"
 }
 ```
+
+Package records live under `packages/<shard>/<name>/`: a `package.toml`, one
+file per version in `versions/`, and patches in `patches/`. Three commands
+check them (`--file` and `--root` are file system paths):
+
+```console
+$ vug record format-record --file packages/he/hello/versions/2.12.2.toml
+{
+  "Changed": false,
+  "Record": "version = \"2.12.2\"\n..."
+}
+$ vug record check-record --file packages/he/hello/package.toml
+$ vug record check-tree --root .
+{
+  "Errors": [],
+  "Packages": 3,
+  "Versions": 4
+}
+```
+
+`format-record` prints the canonical byte form of a record (`--write` rewrites
+the file). `check-record` exits 0 only for a valid, canonical file.
+`check-tree` validates every record under `DIR/packages` and reports `Errors`.
 
 ## Check
 
