@@ -57,6 +57,8 @@ for a; do
       unset IFS
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
       ;;
+    -) stdin=1; set -- "$@" "$a" ;;
+    -x | -x?*) lang=1; set -- "$@" "$a" ;;
     -*) set -- "$@" "$a" ;;
     *.so)
       if [ -f "$a" ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
@@ -72,7 +74,10 @@ for a; do
     *) set -- "$@" "$a" ;;
   esac
 done
-set -- "$@" -Wno-error=unused-command-line-argument
+set -- "$@" -Wno-error=unused-command-line-argument -Wno-error=date-time
+if [ "${stdin:-0}" = 1 ] && [ "${lang:-0}" = 0 ]; then
+  set -- -x {lang} "$@"
+fi
 if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
   (
     out=
@@ -261,7 +266,12 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
     }
 
     for tool in ["cc", "c++"] {
-        write_executable(&bin.join(tool), &COMPILER_WRAPPER.replace("{tool}", tool))?;
+        write_executable(
+            &bin.join(tool),
+            &COMPILER_WRAPPER
+                .replace("{tool}", tool)
+                .replace("{lang}", if tool == "cc" { "c" } else { "c++" }),
+        )?;
     }
     for (name, tool) in [("ar", "ar"), ("ranlib", "ranlib"), ("ld", "ld.lld")] {
         write_executable(&bin.join(name), &TOOL_WRAPPER.replace("{tool}", tool))?;

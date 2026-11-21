@@ -93,7 +93,11 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - a relocatable object whose file name ends in `.so` is passed under a
     name ending in `.o`, because zig takes any `.so` input for a shared
     library and then fails to link.
-  - an unused command-line argument is never an error.
+  - input from standard input (`-`) without `-x` is given `-x c` (`-x c++`
+    for `c++`); without it zig does not search the C library headers.
+  - an unused command-line argument and a use of `__DATE__` or `__TIME__`
+    are never errors (zig makes the second one an error at `-O3`; with
+    `SOURCE_DATE_EPOCH` set the macros are reproducible).
 - `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.
 
