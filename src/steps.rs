@@ -8,6 +8,8 @@ pub struct Autotools {
     pub configure_flags: Vec<String>,
     pub make_flags: Vec<String>,
     pub install_flags: Vec<String>,
+    /// Targets of the install step; empty means `install`.
+    pub install_targets: Vec<String>,
     /// Whether `make check` runs.
     pub check: bool,
     /// Parallel jobs passed as `-j<jobs>`.
@@ -72,7 +74,12 @@ pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
         steps.push(check);
     }
 
-    let mut install = vec!["make".to_string(), "install".to_string()];
+    let mut install = vec!["make".to_string()];
+    if options.install_targets.is_empty() {
+        install.push("install".to_string());
+    } else {
+        install.extend(options.install_targets.iter().cloned());
+    }
     install.extend(options.make_flags.iter().cloned());
     install.extend(options.install_flags.iter().cloned());
     steps.push(install);

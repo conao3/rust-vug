@@ -808,12 +808,14 @@ impl<'a> Builder<'a> {
                 configure_flags,
                 make_flags,
                 install_flags,
+                install_targets,
             } => steps::autotools_steps(
                 &prefix,
                 &steps::Autotools {
                     configure_flags: expand(configure_flags)?,
                     make_flags: expand(make_flags)?,
                     install_flags: expand(install_flags)?,
+                    install_targets: install_targets.clone(),
                     check: record.check_enabled,
                     jobs: settings.jobs,
                 },

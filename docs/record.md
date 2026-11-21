@@ -114,13 +114,15 @@ configure-flags = [
 ### Build kind `autotools`
 
 Runs `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
-`make check` (when `check.enabled`), `make install <install-flags>`.
+`make check` (when `check.enabled`),
+`make <install-targets> <make-flags> <install-flags>`.
 
 | Key | Type | Default |
 |---|---|---|
 | `build.configure-flags` | array of strings, order kept | empty |
 | `build.make-flags` | array of strings, order kept | empty |
 | `build.install-flags` | array of strings, order kept | empty |
+| `build.install-targets` | array of strings, order kept | empty, which means `install` |
 
 ### Build kind `bootstrap-make`
 

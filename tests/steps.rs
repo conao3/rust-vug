@@ -42,6 +42,7 @@ fn autotools_with_check() {
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
+        install_targets: vec![],
         check: true,
         jobs: 4,
     };
@@ -63,6 +64,7 @@ fn autotools_without_check() {
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
+        install_targets: vec![],
         check: false,
         jobs: 4,
     };
@@ -85,6 +87,7 @@ fn autotools_minimal() {
         configure_flags: vec![],
         make_flags: vec![],
         install_flags: vec![],
+        install_targets: vec![],
         check: false,
         jobs: 1,
     };
@@ -366,4 +369,25 @@ fn meson_kind() {
         ]
     );
     assert_eq!(vug::steps::meson_steps("/out", &[], false, 1).len(), 7);
+}
+
+#[test]
+fn autotools_install_targets_replace_install() {
+    let options = Autotools {
+        configure_flags: vec![],
+        make_flags: vec![],
+        install_flags: vec!["sysconfdir=/out/etc".to_string()],
+        install_targets: vec!["install-nokeys".to_string()],
+        check: false,
+        jobs: 1,
+    };
+    let steps = autotools_steps("/out", &options);
+    assert_eq!(
+        steps.last().expect("install step"),
+        &vec![
+            "make".to_string(),
+            "install-nokeys".to_string(),
+            "sysconfdir=/out/etc".to_string()
+        ]
+    );
 }

@@ -61,6 +61,7 @@ pub(crate) enum BuildOptions {
         configure_flags: Vec<String>,
         make_flags: Vec<String>,
         install_flags: Vec<String>,
+        install_targets: Vec<String>,
     },
     BootstrapMake {
         configure_flags: Vec<String>,
@@ -351,6 +352,7 @@ fn parse_version(
         configure_flags: Vec::new(),
         make_flags: Vec::new(),
         install_flags: Vec::new(),
+        install_targets: Vec::new(),
     };
     if let Some(build_table) = req_table(map, "build", "", &mut errors) {
         let kind = req_string(build_table, "kind", "build.", &mut errors).unwrap_or_default();
@@ -358,7 +360,13 @@ fn parse_version(
             "autotools" => {
                 unknown_keys(
                     build_table,
-                    &["kind", "configure-flags", "make-flags", "install-flags"],
+                    &[
+                        "kind",
+                        "configure-flags",
+                        "make-flags",
+                        "install-flags",
+                        "install-targets",
+                    ],
                     "build.",
                     &mut errors,
                 );
@@ -375,6 +383,13 @@ fn parse_version(
                     install_flags: opt_string_array(
                         build_table,
                         "install-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                    install_targets: opt_string_array(
+                        build_table,
+                        "install-targets",
                         "build.",
                         &mut errors,
                     )
@@ -687,6 +702,7 @@ fn canonical_version(record: &VersionRecord) -> String {
             configure_flags,
             make_flags,
             install_flags,
+            install_targets,
         } => {
             write_string_field(&mut out, "kind", "autotools");
             if !configure_flags.is_empty() {
@@ -697,6 +713,9 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !install_flags.is_empty() {
                 write_array(&mut out, "install-flags", install_flags);
+            }
+            if !install_targets.is_empty() {
+                write_array(&mut out, "install-targets", install_targets);
             }
         }
         BuildOptions::BootstrapMake { configure_flags } => {
@@ -1176,6 +1195,7 @@ sources = [
                 configure_flags: vec!["--disable-nls".to_owned()],
                 make_flags: Vec::new(),
                 install_flags: Vec::new(),
+                install_targets: Vec::new(),
             },
             deps_build: vec!["make".to_owned()],
             deps_run: Vec::new(),
