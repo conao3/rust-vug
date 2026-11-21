@@ -90,6 +90,9 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     `-Wl,` are dropped.
   - `-S` together with a dependency file (`-MD`, `-MMD`) runs zig twice,
     because zig writes no assembly output for that combination.
+  - a relocatable object whose file name ends in `.so` is passed under a
+    name ending in `.o`, because zig takes any `.so` input for a shared
+    library and then fails to link.
   - an unused command-line argument is never an error.
 - `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.

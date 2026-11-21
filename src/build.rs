@@ -57,6 +57,18 @@ for a; do
       unset IFS
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
       ;;
+    -*) set -- "$@" "$a" ;;
+    *.so)
+      if [ -f "$a" ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
+        objects=/tmp/vug-cc-$$
+        mkdir -p "$objects"
+        n=$((${n:-0} + 1))
+        ln -s "$(realpath "$a")" "$objects/$n.o"
+        set -- "$@" "$objects/$n.o"
+      else
+        set -- "$@" "$a"
+      fi
+      ;;
     *) set -- "$@" "$a" ;;
   esac
 done
