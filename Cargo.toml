@@ -11,6 +11,7 @@ clap = { version = "4", features = ["derive"] }
 leanfran = { version = "=0.6.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
+toml = "1.2.1"
 
 [build-dependencies]
 leanfran-build = "=0.6.0"

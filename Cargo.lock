@@ -469,6 +469,7 @@ dependencies = [
  "leanfran-build",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

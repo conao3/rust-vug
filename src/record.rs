@@ -1,0 +1,1140 @@
+//! Package-record parsing, validation, and canonical byte output.
+//!
+//! Name, version, and path rules are defined in Lean (`naming::model`) and
+//! generated to Rust. This module owns TOML structure validation, the
+//! canonical writer, and the package-tree checks of `docs/record.md`.
+
+use std::fmt::Write as _;
+use std::path::Path;
+
+use crate::naming::model;
+
+/// A validation or tree error: the file it belongs to and what is expected.
+#[derive(Clone)]
+pub struct RecordError {
+    pub path: String,
+    pub message: String,
+}
+
+/// The result of checking a single record file.
+pub struct FileCheck {
+    /// The canonical byte form of the record.
+    pub canonical: String,
+    /// Whether the file bytes differ from the canonical form.
+    pub changed: bool,
+}
+
+/// The result of `check-tree`.
+pub struct TreeReport {
+    pub packages: usize,
+    pub versions: usize,
+    pub errors: Vec<RecordError>,
+}
+
+enum Parsed {
+    Package(PackageRecord),
+    Version(VersionRecord),
+}
+
+struct PackageRecord {
+    name: String,
+    license: String,
+    homepage: Option<String>,
+    sources: Vec<String>,
+}
+
+struct VersionRecord {
+    version: String,
+    patches: Vec<String>,
+    url: String,
+    sha256: String,
+    strip_components: i64,
+    build: BuildOptions,
+    deps_build: Vec<String>,
+    deps_run: Vec<String>,
+    check_enabled: bool,
+    check_skip: Vec<String>,
+}
+
+enum BuildOptions {
+    Autotools {
+        configure_flags: Vec<String>,
+        make_flags: Vec<String>,
+        install_flags: Vec<String>,
+    },
+    Prebuilt {
+        install: Vec<(String, String)>,
+    },
+}
+
+type Errors = Vec<String>;
+
+fn unknown_keys(map: &toml::Table, allowed: &[&str], prefix: &str, errors: &mut Errors) {
+    for (key, value) in map {
+        if !allowed.contains(&key.as_str()) {
+            let what = if value.is_table() { "table" } else { "key" };
+            errors.push(format!("{prefix}{key}: unknown {what}"));
+        }
+    }
+}
+
+fn req_table<'a>(
+    map: &'a toml::Table,
+    key: &str,
+    prefix: &str,
+    errors: &mut Errors,
+) -> Option<&'a toml::Table> {
+    match map.get(key) {
+        None => {
+            errors.push(format!("{prefix}{key}: required table missing"));
+            None
+        }
+        Some(toml::Value::Table(t)) => Some(t),
+        Some(_) => {
+            errors.push(format!("{prefix}{key}: expected a table"));
+            None
+        }
+    }
+}
+
+fn req_string(map: &toml::Table, key: &str, prefix: &str, errors: &mut Errors) -> Option<String> {
+    match map.get(key) {
+        None => {
+            errors.push(format!("{prefix}{key}: required key missing"));
+            None
+        }
+        Some(toml::Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            errors.push(format!("{prefix}{key}: expected a string"));
+            None
+        }
+    }
+}
+
+fn opt_string(map: &toml::Table, key: &str, prefix: &str, errors: &mut Errors) -> Option<String> {
+    match map.get(key) {
+        None => None,
+        Some(toml::Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            errors.push(format!("{prefix}{key}: expected a string"));
+            None
+        }
+    }
+}
+
+fn req_bool(map: &toml::Table, key: &str, prefix: &str, errors: &mut Errors) -> Option<bool> {
+    match map.get(key) {
+        None => {
+            errors.push(format!("{prefix}{key}: required key missing"));
+            None
+        }
+        Some(toml::Value::Boolean(b)) => Some(*b),
+        Some(_) => {
+            errors.push(format!("{prefix}{key}: expected a boolean"));
+            None
+        }
+    }
+}
+
+fn opt_int(map: &toml::Table, key: &str, prefix: &str, errors: &mut Errors) -> Option<i64> {
+    match map.get(key) {
+        None => None,
+        Some(toml::Value::Integer(i)) => Some(*i),
+        Some(_) => {
+            errors.push(format!("{prefix}{key}: expected an integer"));
+            None
+        }
+    }
+}
+
+fn req_string_array(
+    map: &toml::Table,
+    key: &str,
+    prefix: &str,
+    errors: &mut Errors,
+) -> Option<Vec<String>> {
+    match map.get(key) {
+        None => {
+            errors.push(format!("{prefix}{key}: required key missing"));
+            None
+        }
+        Some(v) => string_array(v, key, prefix, errors),
+    }
+}
+
+fn opt_string_array(
+    map: &toml::Table,
+    key: &str,
+    prefix: &str,
+    errors: &mut Errors,
+) -> Option<Vec<String>> {
+    match map.get(key) {
+        None => Some(Vec::new()),
+        Some(v) => string_array(v, key, prefix, errors),
+    }
+}
+
+fn string_array(
+    value: &toml::Value,
+    key: &str,
+    prefix: &str,
+    errors: &mut Errors,
+) -> Option<Vec<String>> {
+    match value {
+        toml::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(s) => out.push(s.to_owned()),
+                    None => {
+                        errors.push(format!("{prefix}{key}: expected an array of strings"));
+                        return None;
+                    }
+                }
+            }
+            Some(out)
+        }
+        _ => {
+            errors.push(format!("{prefix}{key}: expected an array of strings"));
+            None
+        }
+    }
+}
+
+/// Report duplicate entries of a "no duplicates" array.
+fn check_unique(key: &str, prefix: &str, items: &[String], errors: &mut Errors) {
+    let mut sorted = items.to_vec();
+    sorted.sort();
+    for pair in sorted.windows(2) {
+        if pair[0] == pair[1] {
+            errors.push(format!("{prefix}{key}: duplicate entry {:?}", pair[0]));
+        }
+    }
+}
+
+fn check_https_slash(key: &str, prefix: &str, url: &str, errors: &mut Errors) {
+    if !url.starts_with("https://") {
+        errors.push(format!("{prefix}{key}: expected an \"https://\" URL"));
+    } else if !url.ends_with('/') {
+        errors.push(format!("{prefix}{key}: expected a URL ending in \"/\""));
+    }
+}
+
+fn parse_package(map: &toml::Table, dir_name: Option<&str>) -> (PackageRecord, Errors) {
+    let mut errors = Vec::new();
+    unknown_keys(map, &["name", "license", "upstream"], "", &mut errors);
+    let name = req_string(map, "name", "", &mut errors).unwrap_or_default();
+    if !model::valid_name(&name) {
+        errors.push(
+            "name: expected a name matching [a-z0-9][a-z0-9+._-]* (at most 64 characters)"
+                .to_owned(),
+        );
+    } else if let Some(dir) = dir_name
+        && name != dir
+    {
+        errors.push(format!("name: expected \"{dir}\" (the directory name)"));
+    }
+    let license = req_string(map, "license", "", &mut errors).unwrap_or_default();
+    let upstream = req_table(map, "upstream", "", &mut errors);
+    let (mut homepage, mut sources) = (None, Vec::new());
+    if let Some(up) = upstream {
+        unknown_keys(up, &["homepage", "sources"], "upstream.", &mut errors);
+        homepage = opt_string(up, "homepage", "upstream.", &mut errors);
+        sources = req_string_array(up, "sources", "upstream.", &mut errors).unwrap_or_default();
+        if sources.is_empty() {
+            errors.push("upstream.sources: expected a non-empty array".to_owned());
+        }
+        for source in &sources {
+            check_https_slash("sources", "upstream.", source, &mut errors);
+        }
+        check_unique("sources", "upstream.", &sources, &mut errors);
+    }
+    (
+        PackageRecord {
+            name,
+            license,
+            homepage,
+            sources,
+        },
+        errors,
+    )
+}
+
+fn parse_version(
+    map: &toml::Table,
+    stem: &str,
+    upstream_sources: Option<Vec<String>>,
+) -> (VersionRecord, Errors) {
+    let mut errors = Vec::new();
+    unknown_keys(
+        map,
+        &[
+            "version",
+            "patches",
+            "source",
+            "build",
+            "dependencies",
+            "check",
+        ],
+        "",
+        &mut errors,
+    );
+    let version = req_string(map, "version", "", &mut errors).unwrap_or_default();
+    if !model::valid_version(&version) {
+        errors.push(
+            "version: expected a version matching [A-Za-z0-9][A-Za-z0-9+._~-]* (at most 64 characters)"
+                .to_owned(),
+        );
+    } else if version != stem {
+        errors.push(format!("version: expected \"{stem}\" (the file name)"));
+    }
+    let patches = opt_string_array(map, "patches", "", &mut errors).unwrap_or_default();
+    for patch in &patches {
+        check_patch_name(&version, patch, &mut errors);
+    }
+
+    let (mut url, mut sha256, mut strip_components) = (String::new(), String::new(), 1);
+    if let Some(source) = req_table(map, "source", "", &mut errors) {
+        unknown_keys(
+            source,
+            &["url", "sha256", "strip-components"],
+            "source.",
+            &mut errors,
+        );
+        url = req_string(source, "url", "source.", &mut errors).unwrap_or_default();
+        if !url.starts_with("https://") {
+            errors.push("source.url: expected an \"https://\" URL".to_owned());
+        } else {
+            match &upstream_sources {
+                None => errors.push(
+                    "source.url: cannot check upstream.sources (no readable package.toml)"
+                        .to_owned(),
+                ),
+                Some(sources) => {
+                    if !sources.iter().any(|p| url.starts_with(p.as_str())) {
+                        errors.push(
+                            "source.url: expected a URL starting with one of upstream.sources"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+        }
+        sha256 = req_string(source, "sha256", "source.", &mut errors).unwrap_or_default();
+        if !(sha256.len() == 64
+            && sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            errors.push("source.sha256: expected 64 lowercase hex characters".to_owned());
+        }
+        strip_components = opt_int(source, "strip-components", "source.", &mut errors).unwrap_or(1);
+    }
+
+    let mut build = BuildOptions::Autotools {
+        configure_flags: Vec::new(),
+        make_flags: Vec::new(),
+        install_flags: Vec::new(),
+    };
+    if let Some(build_table) = req_table(map, "build", "", &mut errors) {
+        let kind = req_string(build_table, "kind", "build.", &mut errors).unwrap_or_default();
+        match kind.as_str() {
+            "autotools" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "configure-flags", "make-flags", "install-flags"],
+                    "build.",
+                    &mut errors,
+                );
+                build = BuildOptions::Autotools {
+                    configure_flags: opt_string_array(
+                        build_table,
+                        "configure-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                    make_flags: opt_string_array(build_table, "make-flags", "build.", &mut errors)
+                        .unwrap_or_default(),
+                    install_flags: opt_string_array(
+                        build_table,
+                        "install-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                };
+            }
+            "prebuilt" => {
+                unknown_keys(build_table, &["kind", "install"], "build.", &mut errors);
+                build = BuildOptions::Prebuilt {
+                    install: parse_install(build_table, &mut errors),
+                };
+            }
+            _ => {
+                errors.push("build.kind: expected \"autotools\" or \"prebuilt\"".to_owned());
+            }
+        }
+    }
+
+    let (mut deps_build, mut deps_run) = (Vec::new(), Vec::new());
+    if let Some(deps) = req_table(map, "dependencies", "", &mut errors) {
+        unknown_keys(deps, &["build", "run"], "dependencies.", &mut errors);
+        deps_build =
+            req_string_array(deps, "build", "dependencies.", &mut errors).unwrap_or_default();
+        deps_run = req_string_array(deps, "run", "dependencies.", &mut errors).unwrap_or_default();
+        check_unique("build", "dependencies.", &deps_build, &mut errors);
+        check_unique("run", "dependencies.", &deps_run, &mut errors);
+    }
+
+    let (mut check_enabled, mut check_skip) = (true, Vec::new());
+    if let Some(check) = req_table(map, "check", "", &mut errors) {
+        unknown_keys(check, &["enabled", "skip"], "check.", &mut errors);
+        check_enabled = req_bool(check, "enabled", "check.", &mut errors).unwrap_or(true);
+        check_skip = req_string_array(check, "skip", "check.", &mut errors).unwrap_or_default();
+        check_unique("skip", "check.", &check_skip, &mut errors);
+    }
+
+    (
+        VersionRecord {
+            version,
+            patches,
+            url,
+            sha256,
+            strip_components,
+            build,
+            deps_build,
+            deps_run,
+            check_enabled,
+            check_skip,
+        },
+        errors,
+    )
+}
+
+fn parse_install(map: &toml::Table, errors: &mut Errors) -> Vec<(String, String)> {
+    match map.get("install") {
+        None => {
+            errors.push("build.install: required key missing for kind \"prebuilt\"".to_owned());
+            Vec::new()
+        }
+        Some(toml::Value::Array(items)) => {
+            if items.is_empty() {
+                errors.push("build.install: expected a non-empty array".to_owned());
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let Some(table) = item.as_table() else {
+                    errors.push(format!(
+                        "build.install[{i}]: expected an inline table {{ from = ..., to = ... }}"
+                    ));
+                    continue;
+                };
+                unknown_keys(
+                    table,
+                    &["from", "to"],
+                    &format!("build.install[{i}]."),
+                    errors,
+                );
+                let from = req_string(table, "from", &format!("build.install[{i}]."), errors)
+                    .unwrap_or_default();
+                let to = req_string(table, "to", &format!("build.install[{i}]."), errors)
+                    .unwrap_or_default();
+                check_install_path(&format!("build.install[{i}].from"), &from, errors);
+                check_install_path(&format!("build.install[{i}].to"), &to, errors);
+                out.push((from, to));
+            }
+            out
+        }
+        Some(_) => {
+            errors.push("build.install: expected an array of inline tables".to_owned());
+            Vec::new()
+        }
+    }
+}
+
+fn check_install_path(key: &str, path: &str, errors: &mut Errors) {
+    if path.is_empty() {
+        errors.push(format!("{key}: expected a non-empty relative path"));
+        return;
+    }
+    if path.starts_with('/') {
+        errors.push(format!("{key}: expected a relative path"));
+        return;
+    }
+    if path
+        .split('/')
+        .any(|component| component.is_empty() || component == "..")
+    {
+        errors.push(format!("{key}: expected a path without \"..\" components"));
+    }
+}
+
+fn check_patch_name(version: &str, patch: &str, errors: &mut Errors) {
+    let prefix = format!("{version}-");
+    let ok = patch
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(".patch"))
+        .is_some_and(|slug| !slug.is_empty() && !slug.contains('/'));
+    if !ok {
+        errors.push(format!(
+            "patches: expected a name \"{version}-<slug>.patch\", got \"{patch}\""
+        ));
+    }
+}
+
+// --- canonical writer -----------------------------------------------------
+
+fn write_escaped(out: &mut String, value: &str) {
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+fn write_string_field(out: &mut String, key: &str, value: &str) {
+    out.push_str(key);
+    out.push_str(" = ");
+    write_escaped(out, value);
+    out.push('\n');
+}
+
+fn write_int_field(out: &mut String, key: &str, value: i64) {
+    let _ = writeln!(out, "{key} = {value}");
+}
+
+fn write_bool_field(out: &mut String, key: &str, value: bool) {
+    let _ = writeln!(out, "{key} = {value}");
+}
+
+fn write_array(out: &mut String, key: &str, items: &[String]) {
+    if items.is_empty() {
+        let _ = writeln!(out, "{key} = []");
+        return;
+    }
+    let _ = writeln!(out, "{key} = [");
+    for item in items {
+        out.push_str("  ");
+        write_escaped(out, item);
+        out.push_str(",\n");
+    }
+    out.push_str("]\n");
+}
+
+fn write_install(out: &mut String, items: &[(String, String)]) {
+    if items.is_empty() {
+        out.push_str("install = []\n");
+        return;
+    }
+    out.push_str("install = [\n");
+    for (from, to) in items {
+        out.push_str("  { from = ");
+        write_escaped(out, from);
+        out.push_str(", to = ");
+        write_escaped(out, to);
+        out.push_str(" },\n");
+    }
+    out.push_str("]\n");
+}
+
+fn canonical_package(record: &PackageRecord) -> String {
+    let mut out = String::new();
+    write_string_field(&mut out, "name", &record.name);
+    write_string_field(&mut out, "license", &record.license);
+    out.push('\n');
+    out.push_str("[upstream]\n");
+    if let Some(homepage) = &record.homepage {
+        write_string_field(&mut out, "homepage", homepage);
+    }
+    let mut sources = record.sources.clone();
+    sources.sort();
+    write_array(&mut out, "sources", &sources);
+    out
+}
+
+fn canonical_version(record: &VersionRecord) -> String {
+    let mut out = String::new();
+    write_string_field(&mut out, "version", &record.version);
+    if !record.patches.is_empty() {
+        write_array(&mut out, "patches", &record.patches);
+    }
+    out.push('\n');
+    out.push_str("[source]\n");
+    write_string_field(&mut out, "url", &record.url);
+    write_string_field(&mut out, "sha256", &record.sha256);
+    if record.strip_components != 1 {
+        write_int_field(&mut out, "strip-components", record.strip_components);
+    }
+    out.push('\n');
+    out.push_str("[build]\n");
+    match &record.build {
+        BuildOptions::Autotools {
+            configure_flags,
+            make_flags,
+            install_flags,
+        } => {
+            write_string_field(&mut out, "kind", "autotools");
+            if !configure_flags.is_empty() {
+                write_array(&mut out, "configure-flags", configure_flags);
+            }
+            if !make_flags.is_empty() {
+                write_array(&mut out, "make-flags", make_flags);
+            }
+            if !install_flags.is_empty() {
+                write_array(&mut out, "install-flags", install_flags);
+            }
+        }
+        BuildOptions::Prebuilt { install } => {
+            write_string_field(&mut out, "kind", "prebuilt");
+            write_install(&mut out, install);
+        }
+    }
+    out.push('\n');
+    out.push_str("[dependencies]\n");
+    let mut deps_build = record.deps_build.clone();
+    deps_build.sort();
+    write_array(&mut out, "build", &deps_build);
+    let mut deps_run = record.deps_run.clone();
+    deps_run.sort();
+    write_array(&mut out, "run", &deps_run);
+    out.push('\n');
+    out.push_str("[check]\n");
+    write_bool_field(&mut out, "enabled", record.check_enabled);
+    let mut check_skip = record.check_skip.clone();
+    check_skip.sort();
+    write_array(&mut out, "skip", &check_skip);
+    out
+}
+
+// --- entry points ---------------------------------------------------------
+
+/// Read and validate a record file; on success return its canonical form.
+pub fn check_file(path: &Path, dir_name: Option<&str>) -> Result<FileCheck, Vec<RecordError>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| vec![error_at(path, format!("cannot read: {e}"))])?;
+    let display = path.display().to_string();
+    let parsed = parse_text(&text, path, dir_name).map_err(|msgs| {
+        msgs.into_iter()
+            .map(|message| RecordError {
+                path: display.clone(),
+                message,
+            })
+            .collect::<Vec<_>>()
+    })?;
+    let canonical = match &parsed {
+        Parsed::Package(r) => canonical_package(r),
+        Parsed::Version(r) => canonical_version(r),
+    };
+    Ok(FileCheck {
+        changed: canonical != text,
+        canonical,
+    })
+}
+
+fn error_at(path: &Path, message: String) -> RecordError {
+    RecordError {
+        path: path.display().to_string(),
+        message,
+    }
+}
+
+/// Parse and validate record text.
+///
+/// `kind` selects package-record or version-record rules; `stem` is the
+/// expected `version` value (the file name without `.toml`); `dir_name` is the
+/// expected `name` value for package records; `upstream_sources` carries the
+/// package's `upstream.sources` for version records.
+fn parse_text(text: &str, path: &Path, dir_name: Option<&str>) -> Result<Parsed, Errors> {
+    let table = text
+        .parse::<toml::Table>()
+        .map_err(|e| vec![format!("invalid TOML: {e}")])?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name == "package.toml" {
+        let (record, errors) = parse_package(&table, dir_name);
+        if errors.is_empty() {
+            Ok(Parsed::Package(record))
+        } else {
+            Err(errors)
+        }
+    } else if name.ends_with(".toml") {
+        let stem = Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_owned();
+        let sources = upstream_sources_of(path);
+        let (record, errors) = parse_version(&table, &stem, sources);
+        if errors.is_empty() {
+            Ok(Parsed::Version(record))
+        } else {
+            Err(errors)
+        }
+    } else {
+        Err(vec![format!(
+            "file name \"{name}\": expected \"package.toml\" or \"<version>.toml\""
+        )])
+    }
+}
+
+/// The `upstream.sources` of the `package.toml` next to a `versions/` file.
+fn upstream_sources_of(path: &Path) -> Option<Vec<String>> {
+    let package_path = path.parent()?.parent()?.join("package.toml");
+    let text = std::fs::read_to_string(package_path).ok()?;
+    let table = text.parse::<toml::Table>().ok()?;
+    let (record, errors) = parse_package(&table, None);
+    errors.is_empty().then_some(record.sources)
+}
+
+/// Check every record under `<root>/packages`.
+pub fn check_tree(root: &Path) -> TreeReport {
+    let mut report = TreeReport {
+        packages: 0,
+        versions: 0,
+        errors: Vec::new(),
+    };
+    let packages_dir = root.join("packages");
+    if !packages_dir.is_dir() {
+        report.errors.push(error_at(
+            &packages_dir,
+            "expected a \"packages\" directory".to_owned(),
+        ));
+        return report;
+    }
+    for shard_entry in sorted_entries(&packages_dir) {
+        let shard = shard_entry.file_name().to_string_lossy().into_owned();
+        if !shard_entry.path().is_dir() {
+            report.errors.push(error_at(
+                &shard_entry.path(),
+                "expected a shard directory".to_owned(),
+            ));
+            continue;
+        }
+        check_shard_dir(&shard_entry.path(), &shard, &mut report);
+    }
+    report
+        .errors
+        .sort_by(|a, b| a.path.cmp(&b.path).then(a.message.cmp(&b.message)));
+    report
+}
+
+fn sorted_entries(dir: &Path) -> Vec<std::fs::DirEntry> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().collect())
+        .unwrap_or_default();
+    entries.sort_by_key(|e| e.file_name());
+    entries
+}
+
+fn check_shard_dir(dir: &Path, shard: &str, report: &mut TreeReport) {
+    if shard.chars().count() != 2 {
+        report.errors.push(error_at(
+            dir,
+            format!("expected a two-character shard directory, found \"{shard}\""),
+        ));
+    }
+    for name_entry in sorted_entries(dir) {
+        let name = name_entry.file_name().to_string_lossy().into_owned();
+        if !name_entry.path().is_dir() {
+            report.errors.push(error_at(
+                &name_entry.path(),
+                "expected a package directory".to_owned(),
+            ));
+            continue;
+        }
+        check_package_dir(&name_entry.path(), &name, shard, report);
+    }
+}
+
+fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeReport) {
+    if !model::valid_name(name) {
+        report.errors.push(error_at(
+            dir,
+            format!("expected a valid package name, found \"{name}\""),
+        ));
+    } else if model::shard(name) != shard {
+        report.errors.push(error_at(
+            dir,
+            format!(
+                "expected shard \"{}\" for package \"{name}\"",
+                model::shard(name)
+            ),
+        ));
+    }
+    let package_path = dir.join("package.toml");
+    let mut upstream_sources: Option<Vec<String>> = None;
+    let mut has_package = false;
+    let mut has_versions = false;
+    let mut has_patches = false;
+    for entry in sorted_entries(dir) {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        match entry_name.as_str() {
+            "package.toml" => {
+                has_package = true;
+                report.packages += 1;
+                let dir_name = dir.file_name().and_then(|n| n.to_str());
+                match check_file(&package_path, dir_name) {
+                    Ok(check) => {
+                        if check.changed {
+                            report
+                                .errors
+                                .push(error_at(&package_path, "not in canonical form".to_owned()));
+                        }
+                        if let Ok(text) = std::fs::read_to_string(&package_path)
+                            && let Ok(table) = text.parse::<toml::Table>()
+                        {
+                            let (record, errors) = parse_package(&table, None);
+                            if errors.is_empty() {
+                                upstream_sources = Some(record.sources);
+                            }
+                        }
+                    }
+                    Err(errors) => report.errors.extend(errors),
+                }
+            }
+            "versions" => has_versions = true,
+            "patches" => has_patches = true,
+            _ => {
+                report.errors.push(error_at(
+                    &entry.path(),
+                    format!("unexpected entry \"{entry_name}\""),
+                ));
+            }
+        }
+    }
+    if !has_package {
+        report
+            .errors
+            .push(error_at(&package_path, "required file missing".to_owned()));
+    }
+    let mut version_stems = Vec::new();
+    if has_versions {
+        let versions_dir = dir.join("versions");
+        for entry in sorted_entries(&versions_dir) {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let entry_path = entry.path();
+            if !entry_path.is_file() || !entry_name.ends_with(".toml") {
+                report.errors.push(error_at(
+                    &entry_path,
+                    format!("expected a \"<version>.toml\" file, found \"{entry_name}\""),
+                ));
+                continue;
+            }
+            let stem = entry_name.trim_end_matches(".toml");
+            version_stems.push(stem.to_owned());
+        }
+    }
+    let mut patch_names = Vec::new();
+    if has_patches {
+        let patches_dir = dir.join("patches");
+        for entry in sorted_entries(&patches_dir) {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let entry_path = entry.path();
+            if !entry_path.is_file() || !entry_name.ends_with(".patch") {
+                report.errors.push(error_at(
+                    &entry_path,
+                    format!("expected a \"<version>-<slug>.patch\" file, found \"{entry_name}\""),
+                ));
+                continue;
+            }
+            check_patch_file(&entry_name, &version_stems, &entry_path, report);
+            patch_names.push(entry_name);
+        }
+    }
+    if has_versions {
+        let versions_dir = dir.join("versions");
+        for entry in sorted_entries(&versions_dir) {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            if !entry.path().is_file() || !entry_name.ends_with(".toml") {
+                continue;
+            }
+            check_version_file(
+                &entry.path(),
+                upstream_sources.as_deref(),
+                &patch_names,
+                report,
+            );
+        }
+    }
+}
+
+fn check_patch_file(
+    file_name: &str,
+    version_stems: &[String],
+    path: &Path,
+    report: &mut TreeReport,
+) {
+    let ok = version_stems.iter().any(|version| {
+        file_name
+            .strip_prefix(&format!("{version}-"))
+            .and_then(|rest| rest.strip_suffix(".patch"))
+            .is_some_and(|slug| !slug.is_empty())
+    });
+    if !ok {
+        report.errors.push(error_at(
+            path,
+            format!("expected a \"<version>-<slug>.patch\" name, found \"{file_name}\""),
+        ));
+    }
+}
+
+fn check_version_file(
+    path: &Path,
+    upstream_sources: Option<&[String]>,
+    patch_names: &[String],
+    report: &mut TreeReport,
+) {
+    report.versions += 1;
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_owned();
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            report
+                .errors
+                .push(error_at(path, format!("cannot read: {e}")));
+            return;
+        }
+    };
+    let table = match text.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            report
+                .errors
+                .push(error_at(path, format!("invalid TOML: {e}")));
+            return;
+        }
+    };
+    let (record, errors) = parse_version(&table, &stem, upstream_sources.map(<[String]>::to_vec));
+    let had_errors = !errors.is_empty();
+    report
+        .errors
+        .extend(errors.into_iter().map(|message| RecordError {
+            path: path.display().to_string(),
+            message,
+        }));
+    if had_errors {
+        return;
+    }
+    for patch in &record.patches {
+        if !patch_names.contains(patch) {
+            report.errors.push(error_at(
+                path,
+                format!("patches: file \"{patch}\" not found in patches/"),
+            ));
+        }
+    }
+    let canonical = canonical_version(&record);
+    if canonical != text {
+        report
+            .errors
+            .push(error_at(path, "not in canonical form".to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MESSY_PACKAGE: &str = "# the hello package
+license = \"GPL-3.0-or-later\"
+name = \"hello\"
+
+
+[upstream]
+sources = [
+  \"https://ftp.gnu.org/gnu/hello/\",   # the main mirror
+  \"https://alpha.gnu.org/gnu/hello/\",
+]
+homepage = \"https://www.gnu.org/software/hello/\"
+";
+
+    const CANONICAL_PACKAGE: &str = "name = \"hello\"
+license = \"GPL-3.0-or-later\"
+
+[upstream]
+homepage = \"https://www.gnu.org/software/hello/\"
+sources = [
+  \"https://alpha.gnu.org/gnu/hello/\",
+  \"https://ftp.gnu.org/gnu/hello/\",
+]
+";
+
+    #[test]
+    fn package_canonical_bytes() {
+        let table = MESSY_PACKAGE.parse::<toml::Table>().unwrap();
+        let (record, errors) = parse_package(&table, Some("hello"));
+        assert_eq!(errors, Vec::<String>::new());
+        assert_eq!(canonical_package(&record), CANONICAL_PACKAGE);
+    }
+
+    #[test]
+    fn package_canonical_idempotent() {
+        let table = CANONICAL_PACKAGE.parse::<toml::Table>().unwrap();
+        let (record, errors) = parse_package(&table, Some("hello"));
+        assert_eq!(errors, Vec::<String>::new());
+        assert_eq!(canonical_package(&record), CANONICAL_PACKAGE);
+    }
+
+    fn version_record() -> VersionRecord {
+        VersionRecord {
+            version: "2.12.2".to_owned(),
+            patches: Vec::new(),
+            url: "https://ftp.gnu.org/gnu/hello/hello-2.12.2.tar.gz".to_owned(),
+            sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
+            strip_components: 1,
+            build: BuildOptions::Autotools {
+                configure_flags: vec!["--disable-nls".to_owned()],
+                make_flags: Vec::new(),
+                install_flags: Vec::new(),
+            },
+            deps_build: vec!["make".to_owned()],
+            deps_run: Vec::new(),
+            check_enabled: true,
+            check_skip: Vec::new(),
+        }
+    }
+
+    const CANONICAL_VERSION: &str = "version = \"2.12.2\"
+
+[source]
+url = \"https://ftp.gnu.org/gnu/hello/hello-2.12.2.tar.gz\"
+sha256 = \"5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab\"
+
+[build]
+kind = \"autotools\"
+configure-flags = [
+  \"--disable-nls\",
+]
+
+[dependencies]
+build = [
+  \"make\",
+]
+run = []
+
+[check]
+enabled = true
+skip = []
+";
+
+    #[test]
+    fn version_canonical_bytes() {
+        assert_eq!(canonical_version(&version_record()), CANONICAL_VERSION);
+    }
+
+    #[test]
+    fn version_canonical_idempotent() {
+        let table = CANONICAL_VERSION.parse::<toml::Table>().unwrap();
+        let (record, errors) = parse_version(
+            &table,
+            "2.12.2",
+            Some(vec!["https://ftp.gnu.org/gnu/hello/".to_owned()]),
+        );
+        assert_eq!(errors, Vec::<String>::new());
+        assert_eq!(canonical_version(&record), CANONICAL_VERSION);
+    }
+
+    #[test]
+    fn prebuilt_canonical_bytes() {
+        let record = VersionRecord {
+            version: "0.9".to_owned(),
+            patches: vec!["0.9-fix.patch".to_owned()],
+            url: "https://dl.example.org/xfetch/xfetch-0.9.tar.gz".to_owned(),
+            sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
+            strip_components: 0,
+            build: BuildOptions::Prebuilt {
+                install: vec![("bin/xfetch".to_owned(), "bin/xfetch".to_owned())],
+            },
+            deps_build: Vec::new(),
+            deps_run: vec!["ca-certificates".to_owned()],
+            check_enabled: false,
+            check_skip: Vec::new(),
+        };
+        assert_eq!(
+            canonical_version(&record),
+            "version = \"0.9\"
+patches = [
+  \"0.9-fix.patch\",
+]
+
+[source]
+url = \"https://dl.example.org/xfetch/xfetch-0.9.tar.gz\"
+sha256 = \"5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab\"
+strip-components = 0
+
+[build]
+kind = \"prebuilt\"
+install = [
+  { from = \"bin/xfetch\", to = \"bin/xfetch\" },
+]
+
+[dependencies]
+build = []
+run = [
+  \"ca-certificates\",
+]
+
+[check]
+enabled = false
+skip = []
+"
+        );
+    }
+
+    #[test]
+    fn messy_version_canonical() {
+        let text = "# release 2.12.2
+patches = []
+version = \"2.12.2\"
+
+[check]
+skip = []
+enabled = true
+
+[source]
+strip-components = 1
+sha256 = \"5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab\"
+url = \"https://ftp.gnu.org/gnu/hello/hello-2.12.2.tar.gz\"
+
+
+[build]
+kind = \"autotools\"
+make-flags = []
+configure-flags = [
+  \"--disable-nls\",
+]
+
+[dependencies]
+run = []
+build = [
+  \"make\",
+]
+";
+        let table = text.parse::<toml::Table>().unwrap();
+        let (record, errors) = parse_version(
+            &table,
+            "2.12.2",
+            Some(vec!["https://ftp.gnu.org/gnu/hello/".to_owned()]),
+        );
+        assert_eq!(errors, Vec::<String>::new());
+        assert_eq!(canonical_version(&record), CANONICAL_VERSION);
+    }
+
+    #[test]
+    fn string_escapes() {
+        let mut out = String::new();
+        write_escaped(&mut out, "a\"b\\c\nd");
+        assert_eq!(out, "\"a\\\"b\\\\c\\u000ad\"");
+    }
+}
