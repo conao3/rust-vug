@@ -296,7 +296,14 @@ fn linux() {
 #[test]
 fn make_kind() {
     assert_eq!(
-        vug::steps::make_steps(&owned(&["PREFIX=/out"]), &owned(&["DESTDIR="]), true, 2),
+        vug::steps::make_steps(
+            &owned(&["PREFIX=/out"]),
+            &owned(&["DESTDIR="]),
+            &[],
+            &[],
+            true,
+            2
+        ),
         vec![
             step(&["make", "-j2", "PREFIX=/out"]),
             step(&["make", "-j2", "check", "PREFIX=/out"]),
@@ -304,8 +311,22 @@ fn make_kind() {
         ]
     );
     assert_eq!(
-        vug::steps::make_steps(&[], &[], false, 1),
+        vug::steps::make_steps(&[], &[], &[], &[], false, 1),
         vec![step(&["make", "-j1"]), step(&["make", "install"])]
+    );
+    assert_eq!(
+        vug::steps::make_steps(
+            &owned(&["O=/out"]),
+            &[],
+            &owned(&["headers"]),
+            &owned(&["headers_install"]),
+            false,
+            1
+        ),
+        vec![
+            step(&["make", "-j1", "O=/out", "headers"]),
+            step(&["make", "headers_install", "O=/out"]),
+        ]
     );
 }
 

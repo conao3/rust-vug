@@ -129,6 +129,7 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 | `lib/` | `-L<path>/lib`, and `-Wl,-rpath,<path>/lib` when the dependency is needed at run time (it is in `dependencies.run`, or a run-time dependency of one that is). |
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |
+| `lib/python*/site-packages/` | Added to `PYTHONPATH`. |
 
 Two flags are always added when linking: `-Wl,-rpath,<output>/lib`, so a
 program finds the libraries of its own package, and

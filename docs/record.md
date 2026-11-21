@@ -150,6 +150,8 @@ make-flags = [
 |---|---|---|
 | `build.make-flags` | array of strings, order kept | empty |
 | `build.install-flags` | array of strings, order kept | empty |
+| `build.build-targets` | array of strings, order kept: targets of the first `make` | empty (the default target) |
+| `build.install-targets` | array of strings, order kept: targets of the last `make` | `install` |
 
 ### Build kind `meson`
 

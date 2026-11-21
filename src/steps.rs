@@ -99,25 +99,34 @@ pub fn bootstrap_make_steps(prefix: &str, configure_flags: &[String]) -> Vec<Ste
 /// Steps of the `make` build kind, for packages that ship a Makefile and no
 /// configure script.
 ///
-/// 1. `["make", "-j<jobs>", <make_flags>...]`
+/// 1. `["make", "-j<jobs>", <make_flags>..., <build_targets>...]`
 /// 2. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
-/// 3. `["make", "install", <make_flags>..., <install_flags>...]`
+/// 3. `["make", <install_targets>..., <make_flags>..., <install_flags>...]`,
+///    where empty `install_targets` means `install`
 pub fn make_steps(
     make_flags: &[String],
     install_flags: &[String],
+    build_targets: &[String],
+    install_targets: &[String],
     check: bool,
     jobs: u32,
 ) -> Vec<Step> {
     let jobs = format!("-j{jobs}");
     let mut build = vec!["make".to_string(), jobs.clone()];
     build.extend(make_flags.iter().cloned());
+    build.extend(build_targets.iter().cloned());
     let mut steps = vec![build];
     if check {
         let mut step = vec!["make".to_string(), jobs, "check".to_string()];
         step.extend(make_flags.iter().cloned());
         steps.push(step);
     }
-    let mut install = vec!["make".to_string(), "install".to_string()];
+    let mut install = vec!["make".to_string()];
+    if install_targets.is_empty() {
+        install.push("install".to_string());
+    } else {
+        install.extend(install_targets.iter().cloned());
+    }
     install.extend(make_flags.iter().cloned());
     install.extend(install_flags.iter().cloned());
     steps.push(install);

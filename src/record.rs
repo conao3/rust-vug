@@ -68,6 +68,8 @@ pub(crate) enum BuildOptions {
     Make {
         make_flags: Vec<String>,
         install_flags: Vec<String>,
+        build_targets: Vec<String>,
+        install_targets: Vec<String>,
     },
     Meson {
         setup_flags: Vec<String>,
@@ -399,20 +401,24 @@ fn parse_version(
             "make" => {
                 unknown_keys(
                     build_table,
-                    &["kind", "make-flags", "install-flags"],
+                    &[
+                        "kind",
+                        "make-flags",
+                        "install-flags",
+                        "build-targets",
+                        "install-targets",
+                    ],
                     "build.",
                     &mut errors,
                 );
+                let list = |key: &str, errors: &mut Errors| {
+                    opt_string_array(build_table, key, "build.", errors).unwrap_or_default()
+                };
                 build = BuildOptions::Make {
-                    make_flags: opt_string_array(build_table, "make-flags", "build.", &mut errors)
-                        .unwrap_or_default(),
-                    install_flags: opt_string_array(
-                        build_table,
-                        "install-flags",
-                        "build.",
-                        &mut errors,
-                    )
-                    .unwrap_or_default(),
+                    make_flags: list("make-flags", &mut errors),
+                    install_flags: list("install-flags", &mut errors),
+                    build_targets: list("build-targets", &mut errors),
+                    install_targets: list("install-targets", &mut errors),
                 };
             }
             "meson" => {
@@ -702,6 +708,8 @@ fn canonical_version(record: &VersionRecord) -> String {
         BuildOptions::Make {
             make_flags,
             install_flags,
+            build_targets,
+            install_targets,
         } => {
             write_string_field(&mut out, "kind", "make");
             if !make_flags.is_empty() {
@@ -709,6 +717,12 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !install_flags.is_empty() {
                 write_array(&mut out, "install-flags", install_flags);
+            }
+            if !build_targets.is_empty() {
+                write_array(&mut out, "build-targets", build_targets);
+            }
+            if !install_targets.is_empty() {
+                write_array(&mut out, "install-targets", install_targets);
             }
         }
         BuildOptions::Meson { setup_flags } => {

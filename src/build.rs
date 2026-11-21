@@ -557,6 +557,7 @@ impl<'a> Builder<'a> {
         let mut build_rpaths = Vec::new();
         let mut pkg_config_path = Vec::new();
         let mut pkg_config = String::new();
+        let mut python_path = Vec::new();
         for id in &dep_ids {
             let host = store_dir.join(id);
             let inside = format!("{STORE}/{id}");
@@ -585,6 +586,18 @@ impl<'a> Builder<'a> {
             if host.join("bin/pkgconf").is_file() {
                 pkg_config = format!("{inside}/bin/pkgconf");
             }
+            if let Ok(entries) = fs::read_dir(host.join("lib")) {
+                let mut names: Vec<String> = entries
+                    .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                    .filter(|name| name.starts_with("python"))
+                    .collect();
+                names.sort();
+                for name in names {
+                    if host.join("lib").join(&name).join("site-packages").is_dir() {
+                        python_path.push(format!("{inside}/lib/{name}/site-packages"));
+                    }
+                }
+            }
         }
         let host_tools = matches!(record.build, BuildOptions::Linux { .. });
         let extra = [
@@ -606,6 +619,7 @@ impl<'a> Builder<'a> {
             ),
             ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
             ("PKG_CONFIG", pkg_config),
+            ("PYTHONPATH", python_path.join(":")),
         ];
         let expand = |flags: &[String]| -> Result<Vec<String>, String> {
             flags
@@ -635,9 +649,13 @@ impl<'a> Builder<'a> {
             BuildOptions::Make {
                 make_flags,
                 install_flags,
+                build_targets,
+                install_targets,
             } => steps::make_steps(
                 &expand(make_flags)?,
                 &expand(install_flags)?,
+                build_targets,
+                install_targets,
                 record.check_enabled,
                 settings.jobs,
             ),
