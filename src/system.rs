@@ -22,6 +22,8 @@ pub struct SystemRecord {
     kernel: String,
     packages: Vec<String>,
     files: Vec<SystemFile>,
+    /// (package, program path inside the package)
+    setuid: Vec<(String, String)>,
 }
 
 pub struct BuiltSystem {
@@ -64,7 +66,11 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
     let table = text
         .parse::<toml::Table>()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    unknown_keys(&table, &["name", "kernel", "packages", "file"], "")?;
+    unknown_keys(
+        &table,
+        &["name", "kernel", "packages", "file", "setuid"],
+        "",
+    )?;
     let name = string(&table, "name", "")?;
     if name != expected_name {
         return Err(format!("name: expected {expected_name:?}"));
@@ -118,10 +124,36 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
             });
         }
     }
+    let mut setuid = Vec::new();
+    if let Some(value) = table.get("setuid") {
+        let entries = value
+            .as_array()
+            .ok_or("setuid: expected an array of tables")?;
+        for entry in entries {
+            let entry = entry
+                .as_table()
+                .ok_or("setuid: expected an array of tables")?;
+            unknown_keys(entry, &["package", "program"], "setuid.")?;
+            let package = string(entry, "package", "setuid.")?;
+            let program = string(entry, "program", "setuid.")?;
+            if !packages.contains(&package) {
+                return Err(format!(
+                    "setuid.package: {package:?} is not a package of this system"
+                ));
+            }
+            if !valid_image_path(&format!("/{program}")) {
+                return Err(format!(
+                    "setuid.program: {program:?}: expected a path relative to the package"
+                ));
+            }
+            setuid.push((package, program));
+        }
+    }
     Ok(SystemRecord {
         kernel,
         packages,
         files,
+        setuid,
     })
 }
 
@@ -243,6 +275,25 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                 io("symlink", &link, std::os::unix::fs::symlink(&target, &link))?;
             }
         }
+    }
+    for (package, program) in &record.setuid {
+        let id = paths[package]
+            .trim_start_matches(STORE)
+            .trim_start_matches('/');
+        let source = store_dir.join(id).join(program);
+        let name = Path::new(program)
+            .file_name()
+            .ok_or_else(|| format!("setuid.program: {program:?}"))?;
+        let target = staging.join("bin").join(name);
+        if target.symlink_metadata().is_ok() {
+            io("remove", &target, fs::remove_file(&target))?;
+        }
+        io("copy", &target, fs::copy(&source, &target))?;
+        io(
+            "chmod",
+            &target,
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o4755)),
+        )?;
     }
     for id in &roots {
         for dir in ["lib", "share"] {

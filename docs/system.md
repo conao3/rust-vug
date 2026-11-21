@@ -28,6 +28,10 @@ exec bash
 [[file]]
 path = "/etc/hostname"
 content = "vug-minimal\n"
+
+[[setuid]]
+package = "sudo"
+program = "bin/sudo"
 ```
 
 | Key | Type | Required | Meaning |
@@ -38,6 +42,9 @@ content = "vug-minimal\n"
 | `file.path` | string | yes | Absolute path in the root. A path is listed once. |
 | `file.mode` | string of octal digits | no (default `644`) | Permission bits. |
 | `file.content` | string | yes | Contents. `{pkg:NAME}` is replaced by the store path of the package `NAME` of this system. |
+
+| `setuid.package` | string | no | A package of this system. |
+| `setuid.program` | string | with `setuid.package` | Path of a program inside that package. `/bin/<its file name>` is then a copy owned by root with mode 4755, not a link. |
 
 Unknown keys are errors.
 
