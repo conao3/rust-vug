@@ -25,17 +25,24 @@ const BUILD_RULES: &str = "2";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
-/// The wrapper drops `--target=...` (zig takes `-target`), adds `VUG_CFLAGS`,
-/// and adds `VUG_LDFLAGS` unless the call only compiles or preprocesses. In
-/// `-Wl,` arguments it drops the words the seed linker driver rejects
-/// (`-stats`, `-lc`) and spells `-R<dir>` as `-rpath,<dir>`.
+/// The wrapper adds `VUG_CFLAGS`, and `VUG_LDFLAGS` unless the call only
+/// compiles or preprocesses, and turns the GNU and clang spellings that
+/// packages use into what zig accepts (`docs/build.md`, "The seed").
 const COMPILER_WRAPPER: &str = r#"#!/bin/sh
 link=1
+asm=0
+dep=0
 for a; do
   shift
   case "$a" in
-    --target=*) ;;
-    -c | -E | -S | -M | -MM) link=0; set -- "$@" "$a" ;;
+    --target=* | -mtune=generic) ;;
+    -m16) set -- "$@" -m16 -Xclang -target-feature -Xclang +16bit-mode ;;
+    -mno-sse) set -- "$@" -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 ;;
+    -march=x86-64) set -- "$@" -march=x86_64 ;;
+    -march=x86-64-v[234]) set -- "$@" "-march=x86_64_v${a#-march=x86-64-v}" ;;
+    -S) link=0; asm=1; set -- "$@" "$a" ;;
+    -c | -E | -M | -MM) link=0; set -- "$@" "$a" ;;
+    -MD | -MMD | -Wp,-MD,* | -Wp,-MMD,*) dep=1; set -- "$@" "$a" ;;
     -Wl,*)
       words=
       IFS=,
@@ -53,6 +60,28 @@ for a; do
     *) set -- "$@" "$a" ;;
   esac
 done
+set -- "$@" -Wno-error=unused-command-line-argument
+if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
+  (
+    out=
+    prev=
+    for a; do
+      shift
+      if [ "$prev" = -o ]; then out=$a; set -- "$@" /dev/null
+      elif [ "$a" = -S ]; then set -- "$@" -E
+      else set -- "$@" "$a"; fi
+      prev=$a
+    done
+    exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} "$@" -MT "$out" > /dev/null
+  ) || exit
+  for a; do
+    shift
+    case "$a" in
+      -MD | -MMD | -Wp,-MD,* | -Wp,-MMD,*) ;;
+      *) set -- "$@" "$a" ;;
+    esac
+  done
+fi
 if [ "$link" = 1 ]; then
   exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} ${VUG_LDFLAGS-} "$@"
 fi

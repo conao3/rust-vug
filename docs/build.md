@@ -80,9 +80,18 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
 - `bin/busybox` and one link per busybox applet (`sh`, `tar`, `sed`, ...).
 - `zig/`, the unpacked zig distribution.
 - `bin/cc` and `bin/c++` run `zig cc` and `zig c++` for
-  `x86_64-linux-musl`. They accept the GNU spellings that packages pass to
-  the linker and zig rejects: `-Wl,-R<dir>` becomes `-Wl,-rpath,<dir>`, and
-  `-stats` and `-lc` inside `-Wl,` are dropped; `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
+  `x86_64-linux-musl`. They turn the spellings that packages use into what
+  zig accepts:
+  - `--target=...` and `-mtune=generic` are dropped.
+  - `-march=x86-64` becomes `-march=x86_64` (and `-v2` to `-v4` likewise).
+  - `-m16` also enables the 16-bit mode feature, which zig switches off.
+  - `-mno-sse` also disables SSE2 and later, which zig leaves on.
+  - `-Wl,-R<dir>` becomes `-Wl,-rpath,<dir>`; `-stats` and `-lc` inside
+    `-Wl,` are dropped.
+  - `-S` together with a dependency file (`-MD`, `-MMD`) runs zig twice,
+    because zig writes no assembly output for that combination.
+  - an unused command-line argument is never an error.
+- `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.
 
 ## How a build finds its dependencies
