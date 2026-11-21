@@ -7,11 +7,15 @@ description = "A declarative package manager and system builder with a content-a
 repository = "https://github.com/conao3/rust-vug"
 
 [dependencies]
+blake3 = "1.8"
 clap = { version = "4", features = ["derive"] }
 leanfran = { version = "=0.6.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
 toml = "1.2.1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 leanfran-build = "=0.6.0"
