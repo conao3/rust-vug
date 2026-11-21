@@ -308,3 +308,25 @@ fn make_kind() {
         vec![step(&["make", "-j1"]), step(&["make", "install"])]
     );
 }
+
+#[test]
+fn meson_kind() {
+    assert_eq!(
+        vug::steps::meson_steps("/out", &owned(&["-Dtests=disabled"]), true, 3),
+        vec![
+            step(&[
+                "meson",
+                "setup",
+                "build",
+                "--prefix=/out",
+                "--libdir=lib",
+                "--buildtype=release",
+                "-Dtests=disabled"
+            ]),
+            step(&["meson", "compile", "-C", "build", "-j", "3"]),
+            step(&["meson", "test", "-C", "build", "--no-rebuild"]),
+            step(&["meson", "install", "-C", "build", "--no-rebuild"]),
+        ]
+    );
+    assert_eq!(vug::steps::meson_steps("/out", &[], false, 1).len(), 3);
+}

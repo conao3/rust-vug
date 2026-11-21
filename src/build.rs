@@ -641,6 +641,12 @@ impl<'a> Builder<'a> {
                 record.check_enabled,
                 settings.jobs,
             ),
+            BuildOptions::Meson { setup_flags } => steps::meson_steps(
+                &prefix,
+                &expand(setup_flags)?,
+                record.check_enabled,
+                settings.jobs,
+            ),
             BuildOptions::Linux { defconfig, config } => {
                 let mut host_ldflags = ldflags.clone();
                 host_ldflags.extend(build_rpaths.iter().cloned());

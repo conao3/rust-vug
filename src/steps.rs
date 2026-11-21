@@ -124,6 +124,31 @@ pub fn make_steps(
     steps
 }
 
+/// Steps of the `meson` build kind.
+///
+/// 1. `["meson", "setup", "build", "--prefix=<prefix>", "--libdir=lib",
+///    "--buildtype=release", <setup_flags>...]`
+/// 2. `["meson", "compile", "-C", "build", "-j", "<jobs>"]`
+/// 3. only when `check`: `["meson", "test", "-C", "build", "--no-rebuild"]`
+/// 4. `["meson", "install", "-C", "build", "--no-rebuild"]`
+pub fn meson_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32) -> Vec<Step> {
+    let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
+    let mut setup = words(&["meson", "setup", "build"]);
+    setup.push(format!("--prefix={prefix}"));
+    setup.push("--libdir=lib".to_string());
+    setup.push("--buildtype=release".to_string());
+    setup.extend(setup_flags.iter().cloned());
+    let mut steps = vec![setup];
+    let mut compile = words(&["meson", "compile", "-C", "build", "-j"]);
+    compile.push(jobs.to_string());
+    steps.push(compile);
+    if check {
+        steps.push(words(&["meson", "test", "-C", "build", "--no-rebuild"]));
+    }
+    steps.push(words(&["meson", "install", "-C", "build", "--no-rebuild"]));
+    steps
+}
+
 /// Steps of the `linux` build kind.
 ///
 /// Every `make` call carries the tool names of the seed, the flags for the

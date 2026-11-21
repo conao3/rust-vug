@@ -97,8 +97,8 @@ Unknown keys and unknown tables are errors.
 
 ### Paths in build options
 
-Inside the strings of `configure-flags`, `make-flags`, and `install-flags`
-(of every build kind that has them):
+Inside the strings of `configure-flags`, `make-flags`, `install-flags`, and
+`setup-flags` (of every build kind that has them):
 
 - `{out}` is replaced by the store path the package is installed to.
 - `{dep:NAME}` is replaced by the store path of the dependency `NAME`, which
@@ -150,6 +150,17 @@ make-flags = [
 |---|---|---|
 | `build.make-flags` | array of strings, order kept | empty |
 | `build.install-flags` | array of strings, order kept | empty |
+
+### Build kind `meson`
+
+Runs `meson setup build --prefix=<output> --libdir=lib --buildtype=release
+<setup-flags>`, `meson compile`, `meson test` (when `check.enabled`), and
+`meson install`. The record needs `meson`, `python`, and a ninja
+implementation (`samurai`) among its build dependencies.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.setup-flags` | array of strings, order kept | empty |
 
 ### Build kind `linux`
 

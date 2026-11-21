@@ -69,6 +69,9 @@ pub(crate) enum BuildOptions {
         make_flags: Vec<String>,
         install_flags: Vec<String>,
     },
+    Meson {
+        setup_flags: Vec<String>,
+    },
     Linux {
         defconfig: String,
         config: Vec<String>,
@@ -412,6 +415,18 @@ fn parse_version(
                     .unwrap_or_default(),
                 };
             }
+            "meson" => {
+                unknown_keys(build_table, &["kind", "setup-flags"], "build.", &mut errors);
+                build = BuildOptions::Meson {
+                    setup_flags: opt_string_array(
+                        build_table,
+                        "setup-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                };
+            }
             "linux" => {
                 unknown_keys(
                     build_table,
@@ -456,7 +471,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", \"make\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
                         .to_owned(),
                 );
             }
@@ -694,6 +709,12 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !install_flags.is_empty() {
                 write_array(&mut out, "install-flags", install_flags);
+            }
+        }
+        BuildOptions::Meson { setup_flags } => {
+            write_string_field(&mut out, "kind", "meson");
+            if !setup_flags.is_empty() {
+                write_array(&mut out, "setup-flags", setup_flags);
             }
         }
         BuildOptions::Linux { defconfig, config } => {
