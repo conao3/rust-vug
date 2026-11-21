@@ -779,6 +779,12 @@ fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeRepor
             "package.toml" => {
                 has_package = true;
                 report.packages += 1;
+                if !package_path.is_file() {
+                    report
+                        .errors
+                        .push(error_at(&package_path, "expected a file".to_owned()));
+                    continue;
+                }
                 let dir_name = dir.file_name().and_then(|n| n.to_str());
                 match check_file(&package_path, dir_name) {
                     Ok(check) => {
@@ -798,6 +804,12 @@ fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeRepor
                     }
                     Err(errors) => report.errors.extend(errors),
                 }
+            }
+            "versions" | "patches" if !entry.path().is_dir() => {
+                report.errors.push(error_at(
+                    &entry.path(),
+                    format!("expected a directory, found \"{entry_name}\""),
+                ));
             }
             "versions" => has_versions = true,
             "patches" => has_patches = true,
@@ -827,7 +839,10 @@ fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeRepor
                 ));
                 continue;
             }
-            let stem = entry_name.trim_end_matches(".toml");
+            let stem = Path::new(&entry_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
             version_stems.push(stem.to_owned());
         }
     }
