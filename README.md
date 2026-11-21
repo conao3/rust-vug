@@ -36,6 +36,21 @@ $ vug record check-tree --root .
 the file). `check-record` exits 0 only for a valid, canonical file.
 `check-tree` validates every record under `DIR/packages` and reports `Errors`.
 
+```console
+$ vug package build-package --root . --name hello --jobs 4
+{
+  "Built": true,
+  "HostPath": "/home/user/.local/share/vug/store/fcyko5ygdr5mwm2q5nrfkfgwhn2aphu2",
+  "Name": "hello",
+  "Path": "/vug/store/fcyko5ygdr5mwm2q5nrfkfgwhn2aphu2",
+  "Version": "2.12.2"
+}
+```
+
+`build-package` builds a package and its dependencies in a sandbox that holds
+only the seed tools named in `seed.toml`, and moves the output to its store
+path (`docs/build.md`). It needs `bwrap` (bubblewrap) on `PATH`.
+
 ## Check
 
 ```console

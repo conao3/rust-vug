@@ -51,7 +51,7 @@ Checking a store path reverses step 3 and compares the hash with the id.
    placeholder path.
 3. Run the build inside `bwrap --unshare-all --clearenv`: no network, no
    host file system, and only the environment variables `PATH`, `HOME`,
-   and `SOURCE_DATE_EPOCH`.
+   `SOURCE_DATE_EPOCH`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
 4. Unpack with `tar -xf <archive> --strip-components=<n>` and apply the
    patches with `patch -p1`.
 5. Run the steps of the build kind (`docs/record.md`).
@@ -59,9 +59,69 @@ Checking a store path reverses step 3 and compares the hash with the id.
 7. Hash the output, replace the placeholder, and move the output to its
    store path.
 
+## The seed
+
+`seed.toml` at the root of the package tree names the two upstream binaries
+every build starts from:
+
+```toml
+[busybox]
+url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
+
+[zig]
+url = "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
+sha256 = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
+```
+
+The seed is assembled once per content of `seed.toml` and bound read-only at
+`/seed`, with `/seed/bin` also bound at `/bin`:
+
+- `bin/busybox` and one link per busybox applet (`sh`, `tar`, `sed`, ...).
+- `zig/`, the unpacked zig distribution.
+- `bin/cc` and `bin/c++` run `zig cc` and `zig c++` for
+  `x86_64-linux-musl`; `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
+  zig tools; `bin/gcc` links to `cc`.
+
+## Dependencies and the index
+
+Each name in `dependencies.build` and `dependencies.run` is built first, at
+its current version. The build root holds every dependency together with
+what that dependency needs at run time, each at its store path, and `PATH`
+lists their `bin` directories before `/bin`.
+
+A finished build is recorded in `index/<name>/<version>` as `<key> <id>`.
+The key is the BLAKE3 hash of the canonical version record, the seed, and
+the ids of the dependencies in the build root. A build whose key is already
+in the index returns the recorded id without running.
+
+## Command
+
+```console
+$ vug package build-package --root . --name hello
+{
+  "Built": true,
+  "HostPath": "/home/user/.local/share/vug/store/fcyko5ygdr5mwm2q5nrfkfgwhn2aphu2",
+  "Name": "hello",
+  "Path": "/vug/store/fcyko5ygdr5mwm2q5nrfkfgwhn2aphu2",
+  "Version": "2.12.2"
+}
+```
+
+| Parameter | Meaning |
+|---|---|
+| `--root DIR` | Package tree holding `seed.toml` and `packages/`. |
+| `--name NAME` | Package to build. |
+| `--package-version VERSION` | Version to build. Default: the greatest version record. |
+| `--data-dir DIR` | Holds `store/`, `index/`, and `seed/`. Default: `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
+| `--cache-dir DIR` | Holds `sources/`. Default: `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
+| `--jobs N` | Parallel jobs for `make`. Default: 1. |
+
+The build log goes to standard error. `bwrap` (bubblewrap) must be on
+`PATH`.
+
 ## Where the store lives
 
 `/vug/store` exists only inside the build root. On the host the store is the
-directory `$XDG_DATA_HOME/vug/store` (default `~/.local/share/vug/store`),
-which is bound to `/vug/store` in the sandbox. The cache of fetched sources
-is `$XDG_CACHE_HOME/vug/sources`.
+`store/` directory of the data directory, and each dependency is bound to its
+`/vug/store/<id>` path in the sandbox.

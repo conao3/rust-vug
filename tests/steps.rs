@@ -235,3 +235,15 @@ fn bwrap_minimal() {
         ])
     );
 }
+
+#[test]
+fn bootstrap_make() {
+    assert_eq!(
+        vug::steps::bootstrap_make_steps("/out", &owned(&["--disable-nls"])),
+        vec![
+            step(&["./configure", "--prefix=/out", "--disable-nls"]),
+            step(&["./build.sh"]),
+            step(&["./make", "install"]),
+        ]
+    );
+}

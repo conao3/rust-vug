@@ -106,6 +106,15 @@ Runs `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
 | `build.make-flags` | array of strings, order kept | empty |
 | `build.install-flags` | array of strings, order kept | empty |
 
+### Build kind `bootstrap-make`
+
+Builds GNU make where no `make` exists yet: `./configure --prefix=<output>
+<configure-flags>`, `./build.sh`, `./make install`.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.configure-flags` | array of strings, order kept | empty |
+
 ### Build kind `prebuilt`
 
 Unpacks the source archive and copies files into the output.

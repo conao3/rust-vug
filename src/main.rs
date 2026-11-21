@@ -1,3 +1,4 @@
+mod build;
 mod naming;
 mod record;
 mod version;
@@ -45,6 +46,39 @@ enum Commands {
         #[command(subcommand)]
         command: RecordCommands,
     },
+    /// Packages.
+    Package {
+        #[command(subcommand)]
+        command: PackageCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackageCommands {
+    /// Build a package and its dependencies into the store.
+    BuildPackage(BuildArgs),
+}
+
+#[derive(Args)]
+struct BuildArgs {
+    /// Repository root containing seed.toml and the packages directory.
+    #[arg(long)]
+    root: PathBuf,
+    /// Package name.
+    #[arg(long)]
+    name: String,
+    /// Version to build (default: the greatest version record).
+    #[arg(long)]
+    package_version: Option<String>,
+    /// Directory for the store (default: $XDG_DATA_HOME/vug).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Directory for fetched sources (default: $XDG_CACHE_HOME/vug).
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
+    /// Parallel build jobs.
+    #[arg(long, default_value_t = 1)]
+    jobs: u32,
 }
 
 #[derive(Subcommand)]
@@ -102,7 +136,18 @@ struct RootArgs {
 
 /// Options that consume their own value: a trailing `help` after one of these
 /// is the value, not a help request.
-const VALUE_OPTIONS: &[&str] = &["--output", "--left", "--right", "--file", "--root"];
+const VALUE_OPTIONS: &[&str] = &[
+    "--output",
+    "--left",
+    "--right",
+    "--file",
+    "--root",
+    "--name",
+    "--package-version",
+    "--data-dir",
+    "--cache-dir",
+    "--jobs",
+];
 
 /// A bare `help` at the end of the arguments asks for the help of the command
 /// reached so far. clap only installs a `help` subcommand where a subcommand
@@ -198,6 +243,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
         },
+        Commands::Package { command } => {
+            let PackageCommands::BuildPackage(args) = command;
+            run_build(&cli, args)
+        }
     }
 }
 
@@ -327,6 +376,60 @@ fn run_check_tree(cli: &Cli, args: &RootArgs) -> Result<i32, (i32, String)> {
     } else {
         version::failure_status()
     })
+}
+
+fn xdg_dir(variable: &str, home_relative: &str) -> Result<PathBuf, String> {
+    match std::env::var_os(variable) {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir).join("vug")),
+        _ => std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(home_relative).join("vug"))
+            .ok_or_else(|| format!("neither {variable} nor HOME is set")),
+    }
+}
+
+fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
+    let fail = |e: String| (version::failure_status(), e);
+    let data_dir = match &args.data_dir {
+        Some(dir) => dir.clone(),
+        None => xdg_dir("XDG_DATA_HOME", ".local/share").map_err(fail)?,
+    };
+    let cache_dir = match &args.cache_dir {
+        Some(dir) => dir.clone(),
+        None => xdg_dir("XDG_CACHE_HOME", ".cache").map_err(fail)?,
+    };
+    if cli.debug {
+        eprintln!(
+            "root={:?} name={:?} data_dir={data_dir:?} cache_dir={cache_dir:?}",
+            args.root, args.name
+        );
+    }
+    let absolute = |dir: &Path| std::path::absolute(dir).map_err(|e| fail(e.to_string()));
+    let settings = build::Settings {
+        root: absolute(&args.root)?,
+        data_dir: absolute(&data_dir)?,
+        cache_dir: absolute(&cache_dir)?,
+        jobs: args.jobs,
+    };
+    let built = build::Builder::new(&settings)
+        .and_then(|mut builder| builder.build(&args.name, args.package_version.as_deref()))
+        .map_err(fail)?;
+    let path = format!("/vug/store/{}", built.id);
+    let host_path = settings.data_dir.join("store").join(&built.id);
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Name": built.name,
+            "Version": built.version,
+            "Path": path,
+            "HostPath": host_path,
+            "Built": built.fresh,
+        })),
+        Output::Text => write_out(&format!("{path}\n")),
+        Output::Table => write_out(&format!(
+            "Name\tVersion\tPath\n{}\t{}\t{path}\n",
+            built.name, built.version
+        )),
+    }?;
+    Ok(0)
 }
 
 fn main() {

@@ -638,3 +638,28 @@ fn record_usage_errors() {
         assert_eq!(output.status.code(), Some(252), "{args:?}");
     }
 }
+
+#[test]
+fn version_bootstrap_make_kind() {
+    let tmp = TmpDir::new("bootstrap-make");
+    let dir = package_dir(&tmp, "hello");
+    let v = dir.join("versions/1.0.toml");
+    std::fs::write(
+        &v,
+        version_toml("1.0").replace(
+            "kind = \"autotools\"",
+            "kind = \"bootstrap-make\"\nconfigure-flags = [\n  \"--disable-nls\",\n]",
+        ),
+    )
+    .unwrap();
+    assert_eq!(check_record(&v).status.code(), Some(0));
+    std::fs::write(
+        &v,
+        version_toml("1.0").replace(
+            "kind = \"autotools\"",
+            "kind = \"bootstrap-make\"\nmake-flags = []",
+        ),
+    )
+    .unwrap();
+    assert_invalid(&check_record(&v), "build.");
+}

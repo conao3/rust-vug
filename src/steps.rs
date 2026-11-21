@@ -80,6 +80,22 @@ pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     steps
 }
 
+/// Steps of the `bootstrap-make` build kind, which builds GNU make where no
+/// `make` exists yet.
+///
+/// 1. `["./configure", "--prefix=<prefix>", <configure_flags>...]`
+/// 2. `["./build.sh"]`
+/// 3. `["./make", "install"]`
+pub fn bootstrap_make_steps(prefix: &str, configure_flags: &[String]) -> Vec<Step> {
+    let mut configure = vec!["./configure".to_string(), format!("--prefix={prefix}")];
+    configure.extend(configure_flags.iter().cloned());
+    vec![
+        configure,
+        vec!["./build.sh".to_string()],
+        vec!["./make".to_string(), "install".to_string()],
+    ]
+}
+
 /// Steps of the `prebuilt` build kind. For each `(from, to)` in order:
 ///
 /// 1. `["mkdir", "-p", "<parent directory of prefix/to>"]`

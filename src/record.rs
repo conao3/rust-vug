@@ -31,36 +31,39 @@ pub struct TreeReport {
     pub errors: Vec<RecordError>,
 }
 
-enum Parsed {
+pub(crate) enum Parsed {
     Package(PackageRecord),
     Version(VersionRecord),
 }
 
-struct PackageRecord {
-    name: String,
-    license: String,
-    homepage: Option<String>,
-    sources: Vec<String>,
+pub(crate) struct PackageRecord {
+    pub(crate) name: String,
+    pub(crate) license: String,
+    pub(crate) homepage: Option<String>,
+    pub(crate) sources: Vec<String>,
 }
 
-struct VersionRecord {
-    version: String,
-    patches: Vec<String>,
-    url: String,
-    sha256: String,
-    strip_components: i64,
-    build: BuildOptions,
-    deps_build: Vec<String>,
-    deps_run: Vec<String>,
-    check_enabled: bool,
-    check_skip: Vec<String>,
+pub(crate) struct VersionRecord {
+    pub(crate) version: String,
+    pub(crate) patches: Vec<String>,
+    pub(crate) url: String,
+    pub(crate) sha256: String,
+    pub(crate) strip_components: i64,
+    pub(crate) build: BuildOptions,
+    pub(crate) deps_build: Vec<String>,
+    pub(crate) deps_run: Vec<String>,
+    pub(crate) check_enabled: bool,
+    pub(crate) check_skip: Vec<String>,
 }
 
-enum BuildOptions {
+pub(crate) enum BuildOptions {
     Autotools {
         configure_flags: Vec<String>,
         make_flags: Vec<String>,
         install_flags: Vec<String>,
+    },
+    BootstrapMake {
+        configure_flags: Vec<String>,
     },
     Prebuilt {
         install: Vec<(String, String)>,
@@ -365,6 +368,23 @@ fn parse_version(
                     .unwrap_or_default(),
                 };
             }
+            "bootstrap-make" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "configure-flags"],
+                    "build.",
+                    &mut errors,
+                );
+                build = BuildOptions::BootstrapMake {
+                    configure_flags: opt_string_array(
+                        build_table,
+                        "configure-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                };
+            }
             "prebuilt" => {
                 unknown_keys(build_table, &["kind", "install"], "build.", &mut errors);
                 build = BuildOptions::Prebuilt {
@@ -372,7 +392,10 @@ fn parse_version(
                 };
             }
             _ => {
-                errors.push("build.kind: expected \"autotools\" or \"prebuilt\"".to_owned());
+                errors.push(
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", or \"prebuilt\""
+                        .to_owned(),
+                );
             }
         }
     }
@@ -592,6 +615,12 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "install-flags", install_flags);
             }
         }
+        BuildOptions::BootstrapMake { configure_flags } => {
+            write_string_field(&mut out, "kind", "bootstrap-make");
+            if !configure_flags.is_empty() {
+                write_array(&mut out, "configure-flags", configure_flags);
+            }
+        }
         BuildOptions::Prebuilt { install } => {
             write_string_field(&mut out, "kind", "prebuilt");
             write_install(&mut out, install);
@@ -637,6 +666,24 @@ pub fn check_file(path: &Path, dir_name: Option<&str>) -> Result<FileCheck, Vec<
         changed: canonical != text,
         canonical,
     })
+}
+
+/// Read and validate a version record; return it with its canonical form.
+pub(crate) fn load_version(path: &Path) -> Result<(VersionRecord, String), Vec<RecordError>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| vec![error_at(path, format!("cannot read: {e}"))])?;
+    let to_errors = |msgs: Errors| {
+        msgs.into_iter()
+            .map(|message| error_at(path, message))
+            .collect::<Vec<_>>()
+    };
+    match parse_text(&text, path, None).map_err(to_errors)? {
+        Parsed::Version(record) => {
+            let canonical = canonical_version(&record);
+            Ok((record, canonical))
+        }
+        Parsed::Package(_) => Err(vec![error_at(path, "expected a version record".to_owned())]),
+    }
 }
 
 fn error_at(path: &Path, message: String) -> RecordError {

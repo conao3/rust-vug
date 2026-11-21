@@ -40,6 +40,7 @@
               pkgs.rust-analyzer
               pkgs.lean4
               pkgs.gnumake
+              pkgs.bubblewrap
               leanfran
             ];
             LEANFRAN_CLI = "${leanfran}/bin/leanfran";
