@@ -26,7 +26,9 @@ const BUILD_RULES: &str = "2";
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
 /// The wrapper drops `--target=...` (zig takes `-target`), adds `VUG_CFLAGS`,
-/// and adds `VUG_LDFLAGS` unless the call only compiles or preprocesses.
+/// and adds `VUG_LDFLAGS` unless the call only compiles or preprocesses. In
+/// `-Wl,` arguments it drops the words the seed linker driver rejects
+/// (`-stats`, `-lc`) and spells `-R<dir>` as `-rpath,<dir>`.
 const COMPILER_WRAPPER: &str = r#"#!/bin/sh
 link=1
 for a; do
@@ -34,6 +36,20 @@ for a; do
   case "$a" in
     --target=*) ;;
     -c | -E | -S | -M | -MM) link=0; set -- "$@" "$a" ;;
+    -Wl,*)
+      words=
+      IFS=,
+      for w in ${a#-Wl,}; do
+        case "$w" in
+          -stats | -lc) ;;
+          -R) words="$words,-rpath" ;;
+          -R?*) words="$words,-rpath,${w#-R}" ;;
+          *) words="$words,$w" ;;
+        esac
+      done
+      unset IFS
+      if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
+      ;;
     *) set -- "$@" "$a" ;;
   esac
 done
