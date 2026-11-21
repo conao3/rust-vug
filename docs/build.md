@@ -121,7 +121,9 @@ dependency.
 ## How a build finds its dependencies
 
 The compiler wrappers add flags from two environment variables that the
-build sets from the dependencies in the build root: `VUG_CFLAGS` on every
+build sets from the dependencies in the build root, after the arguments of
+the package itself, so a directory the package names is searched before the
+directories of its dependencies: `VUG_CFLAGS` on every
 call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 `-MM`). What a dependency contributes is decided by the files it holds:
 

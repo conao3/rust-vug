@@ -106,7 +106,7 @@ if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
       else set -- "$@" "$a"; fi
       prev=$a
     done
-    exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} "$@" -MT "$out" > /dev/null
+    exec /seed/zig/zig {tool} -target x86_64-linux-musl "$@" ${VUG_CFLAGS-} -MT "$out" > /dev/null
   ) || exit
   for a; do
     shift
@@ -117,9 +117,9 @@ if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
   done
 fi
 if [ "$link" = 1 ]; then
-  exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} ${VUG_LDFLAGS-} "$@"
+  exec /seed/zig/zig {tool} -target x86_64-linux-musl "$@" ${VUG_CFLAGS-} ${VUG_LDFLAGS-}
 fi
-exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} "$@"
+exec /seed/zig/zig {tool} -target x86_64-linux-musl "$@" ${VUG_CFLAGS-}
 "#;
 
 /// `bin/ar`, `bin/ranlib`, and `bin/ld` of the seed.
