@@ -1,0 +1,8 @@
+name = "xfetch"
+license = "Apache-2.0"
+
+[upstream]
+homepage = "https://xfetch.example.org/"
+sources = [
+  "https://dl.example.org/xfetch/",
+]

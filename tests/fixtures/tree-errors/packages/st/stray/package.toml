@@ -1,0 +1,7 @@
+name = "stray"
+license = "MIT"
+
+[upstream]
+sources = [
+  "https://stray.example.org/",
+]

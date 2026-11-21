@@ -1,0 +1,11 @@
+# the hello package
+license = "GPL-3.0-or-later"
+name = "hello"
+
+
+[upstream]
+sources = [
+  "https://ftp.gnu.org/gnu/hello/",   # the main mirror
+  "https://alpha.gnu.org/gnu/hello/",
+]
+homepage = "https://www.gnu.org/software/hello/"

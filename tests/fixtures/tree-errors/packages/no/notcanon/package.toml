@@ -1,0 +1,8 @@
+# a comment makes this non-canonical
+name = "notcanon"
+license = "MIT"
+
+[upstream]
+sources = [
+  "https://notcanon.example.org/",
+]

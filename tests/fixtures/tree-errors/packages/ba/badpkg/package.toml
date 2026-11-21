@@ -1,0 +1,7 @@
+name = "badpkg"
+license = "MIT"
+
+[upstream]
+sources = [
+  "https://badpkg.example.org/",
+]

@@ -1,0 +1,7 @@
+name = "r"
+license = "MIT"
+
+[upstream]
+sources = [
+  "https://r.example.org/dist/",
+]

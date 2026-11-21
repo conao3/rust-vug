@@ -1,0 +1,19 @@
+version = "1.0"
+patches = [
+  "1.0-missing.patch",
+]
+
+[source]
+url = "https://badpkg.example.org/badpkg-1.0.tar.gz"
+sha256 = "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab"
+
+[build]
+kind = "autotools"
+
+[dependencies]
+build = []
+run = []
+
+[check]
+enabled = true
+skip = []

@@ -1,0 +1,7 @@
+name = "badver"
+license = "MIT"
+
+[upstream]
+sources = [
+  "https://badver.example.org/",
+]
