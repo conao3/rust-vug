@@ -65,6 +65,10 @@ pub(crate) enum BuildOptions {
     BootstrapMake {
         configure_flags: Vec<String>,
     },
+    Make {
+        make_flags: Vec<String>,
+        install_flags: Vec<String>,
+    },
     Linux {
         defconfig: String,
         config: Vec<String>,
@@ -389,6 +393,25 @@ fn parse_version(
                     .unwrap_or_default(),
                 };
             }
+            "make" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "make-flags", "install-flags"],
+                    "build.",
+                    &mut errors,
+                );
+                build = BuildOptions::Make {
+                    make_flags: opt_string_array(build_table, "make-flags", "build.", &mut errors)
+                        .unwrap_or_default(),
+                    install_flags: opt_string_array(
+                        build_table,
+                        "install-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                };
+            }
             "linux" => {
                 unknown_keys(
                     build_table,
@@ -433,7 +456,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", \"make\", or \"prebuilt\""
                         .to_owned(),
                 );
             }
@@ -659,6 +682,18 @@ fn canonical_version(record: &VersionRecord) -> String {
             write_string_field(&mut out, "kind", "bootstrap-make");
             if !configure_flags.is_empty() {
                 write_array(&mut out, "configure-flags", configure_flags);
+            }
+        }
+        BuildOptions::Make {
+            make_flags,
+            install_flags,
+        } => {
+            write_string_field(&mut out, "kind", "make");
+            if !make_flags.is_empty() {
+                write_array(&mut out, "make-flags", make_flags);
+            }
+            if !install_flags.is_empty() {
+                write_array(&mut out, "install-flags", install_flags);
             }
         }
         BuildOptions::Linux { defconfig, config } => {

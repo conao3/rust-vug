@@ -96,6 +96,34 @@ pub fn bootstrap_make_steps(prefix: &str, configure_flags: &[String]) -> Vec<Ste
     ]
 }
 
+/// Steps of the `make` build kind, for packages that ship a Makefile and no
+/// configure script.
+///
+/// 1. `["make", "-j<jobs>", <make_flags>...]`
+/// 2. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
+/// 3. `["make", "install", <make_flags>..., <install_flags>...]`
+pub fn make_steps(
+    make_flags: &[String],
+    install_flags: &[String],
+    check: bool,
+    jobs: u32,
+) -> Vec<Step> {
+    let jobs = format!("-j{jobs}");
+    let mut build = vec!["make".to_string(), jobs.clone()];
+    build.extend(make_flags.iter().cloned());
+    let mut steps = vec![build];
+    if check {
+        let mut step = vec!["make".to_string(), jobs, "check".to_string()];
+        step.extend(make_flags.iter().cloned());
+        steps.push(step);
+    }
+    let mut install = vec!["make".to_string(), "install".to_string()];
+    install.extend(make_flags.iter().cloned());
+    install.extend(install_flags.iter().cloned());
+    steps.push(install);
+    steps
+}
+
 /// Steps of the `linux` build kind.
 ///
 /// Every `make` call carries the tool names of the seed, the flags for the

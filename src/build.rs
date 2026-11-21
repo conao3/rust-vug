@@ -561,6 +561,15 @@ impl<'a> Builder<'a> {
             BuildOptions::BootstrapMake { configure_flags } => {
                 steps::bootstrap_make_steps(&prefix, &expand(configure_flags)?)
             }
+            BuildOptions::Make {
+                make_flags,
+                install_flags,
+            } => steps::make_steps(
+                &expand(make_flags)?,
+                &expand(install_flags)?,
+                record.check_enabled,
+                settings.jobs,
+            ),
             BuildOptions::Linux { defconfig, config } => {
                 let mut host_ldflags = ldflags.clone();
                 host_ldflags.extend(build_rpaths.iter().cloned());

@@ -97,7 +97,8 @@ Unknown keys and unknown tables are errors.
 
 ### Paths in build options
 
-Inside the strings of `configure-flags`, `make-flags`, and `install-flags`:
+Inside the strings of `configure-flags`, `make-flags`, and `install-flags`
+(of every build kind that has them):
 
 - `{out}` is replaced by the store path the package is installed to.
 - `{dep:NAME}` is replaced by the store path of the dependency `NAME`, which
@@ -129,6 +130,26 @@ Builds GNU make where no `make` exists yet: `./configure --prefix=<output>
 | Key | Type | Default |
 |---|---|---|
 | `build.configure-flags` | array of strings, order kept | empty |
+
+### Build kind `make`
+
+For packages that ship a Makefile and no configure script. Runs `make
+<make-flags>`, `make check <make-flags>` (when `check.enabled`), and `make
+install <make-flags> <install-flags>`. The install location is passed as a
+flag, the way the package's Makefile names it:
+
+```toml
+[build]
+kind = "make"
+make-flags = [
+  "PREFIX={out}",
+]
+```
+
+| Key | Type | Default |
+|---|---|---|
+| `build.make-flags` | array of strings, order kept | empty |
+| `build.install-flags` | array of strings, order kept | empty |
 
 ### Build kind `linux`
 

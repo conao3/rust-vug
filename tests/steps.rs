@@ -292,3 +292,19 @@ fn linux() {
     );
     assert_eq!(steps[9], step(&["cp", ".config", "/out/boot/config"]));
 }
+
+#[test]
+fn make_kind() {
+    assert_eq!(
+        vug::steps::make_steps(&owned(&["PREFIX=/out"]), &owned(&["DESTDIR="]), true, 2),
+        vec![
+            step(&["make", "-j2", "PREFIX=/out"]),
+            step(&["make", "-j2", "check", "PREFIX=/out"]),
+            step(&["make", "install", "PREFIX=/out", "DESTDIR="]),
+        ]
+    );
+    assert_eq!(
+        vug::steps::make_steps(&[], &[], false, 1),
+        vec![step(&["make", "-j1"]), step(&["make", "install"])]
+    );
+}
