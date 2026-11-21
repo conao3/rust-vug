@@ -105,3 +105,25 @@ pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, Fetch
     result?;
     Ok(target)
 }
+
+/// The body of a GET to `url`, or `None` when the status is 404.
+pub fn get(url: &str) -> Result<Option<Vec<u8>>, String> {
+    let mut res = match ureq::get(url).call() {
+        Ok(res) => res,
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    match res.status().as_u16() {
+        200 => {}
+        404 => return Ok(None),
+        status => return Err(format!("status {status}")),
+    }
+    let mut body = Vec::new();
+    res.body_mut()
+        .with_config()
+        .limit(u64::MAX)
+        .reader()
+        .read_to_end(&mut body)
+        .map_err(|e| e.to_string())?;
+    Ok(Some(body))
+}

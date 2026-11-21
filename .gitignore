@@ -2,3 +2,4 @@
 /target
 /lean/.lake
 /audit/.lake
+/result-*

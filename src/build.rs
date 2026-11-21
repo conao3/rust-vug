@@ -133,6 +133,8 @@ pub struct Settings {
     /// Directory holding `sources/`.
     pub cache_dir: PathBuf,
     pub jobs: u32,
+    /// Base URL of a binary cache (`docs/cache.md`).
+    pub binary_cache: Option<String>,
 }
 
 pub struct Built {
@@ -219,7 +221,8 @@ fn seed_field(table: &toml::Table, tool: &str, key: &str) -> Result<String, Stri
 
 /// Assembles the seed tools described by `<root>/seed.toml` and returns the
 /// host directory that is bound to `/seed`.
-fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
+/// Reads `seed.toml` and returns it with the id of the seed.
+fn read_seed(settings: &Settings) -> Result<(toml::Table, String), String> {
     let seed_path = settings.root.join("seed.toml");
     let text = io("read", &seed_path, fs::read_to_string(&seed_path))?;
     let table = text
@@ -232,21 +235,29 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
     let hash: [u8; 20] = hasher.finalize().as_bytes()[..20]
         .try_into()
         .map_err(|_| "seed hash".to_owned())?;
-    let id = treehash::encode_base32(&hash);
-    let seed_dir = settings.data_dir.join("seed").join(&id);
+    Ok((table, treehash::encode_base32(&hash)))
+}
+
+fn fetch_busybox(settings: &Settings, table: &toml::Table) -> Result<PathBuf, String> {
+    fetch_source(
+        settings,
+        &seed_field(table, "busybox", "url")?,
+        &seed_field(table, "busybox", "sha256")?,
+    )
+}
+
+/// Assembles the seed `id` in the data directory when it is missing.
+fn ensure_seed(settings: &Settings, table: &toml::Table, id: &str) -> Result<PathBuf, String> {
+    let seed_dir = settings.data_dir.join("seed").join(id);
     if seed_dir.exists() {
-        return Ok((seed_dir, id));
+        return Ok(seed_dir);
     }
 
-    let busybox = fetch_source(
-        settings,
-        &seed_field(&table, "busybox", "url")?,
-        &seed_field(&table, "busybox", "sha256")?,
-    )?;
+    let busybox = fetch_busybox(settings, table)?;
     let zig = fetch_source(
         settings,
-        &seed_field(&table, "zig", "url")?,
-        &seed_field(&table, "zig", "sha256")?,
+        &seed_field(table, "zig", "url")?,
+        &seed_field(table, "zig", "sha256")?,
     )?;
 
     let staging = settings.data_dir.join("seed").join(format!("{id}.tmp"));
@@ -321,7 +332,7 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
             .to_vec(),
     })?;
     io("rename", &seed_dir, fs::rename(&staging, &seed_dir))?;
-    Ok((seed_dir, id))
+    Ok(seed_dir)
 }
 
 fn version_stems(versions_dir: &Path) -> Result<Vec<String>, String> {
@@ -454,28 +465,49 @@ impl Built {
 
 pub struct Builder<'a> {
     settings: &'a Settings,
-    seed_dir: PathBuf,
+    seed: toml::Table,
     seed_id: String,
     in_progress: Vec<String>,
 }
 
 impl<'a> Builder<'a> {
-    /// The seed directory on the host.
-    pub fn seed_dir(&self) -> &Path {
-        &self.seed_dir
+    /// The busybox of the seed, as a file on the host: the one of the
+    /// running system when it is the same file, else the fetched one.
+    pub fn busybox(&self) -> Result<PathBuf, String> {
+        let running = PathBuf::from("/run/current-system/bin/busybox");
+        if let Ok(actual) = fetch::sha256_file(&running)
+            && actual == seed_field(&self.seed, "busybox", "sha256")?
+        {
+            return Ok(running);
+        }
+        fetch_busybox(self.settings, &self.seed)
     }
 
     pub fn new(settings: &'a Settings) -> Result<Self, String> {
-        let (seed_dir, seed_id) = ensure_seed(settings)?;
+        let (seed, seed_id) = read_seed(settings)?;
         Ok(Self {
             settings,
-            seed_dir,
+            seed,
             seed_id,
             in_progress: Vec::new(),
         })
     }
 
+    /// Builds `name` (or takes it from the index or the binary cache) and
+    /// returns it with its output and run-time closure present in the store.
     pub fn build(&mut self, name: &str, requested: Option<&str>) -> Result<Built, String> {
+        self.resolve(name, requested, true)
+    }
+
+    /// Finds the id of `name`. With `present` the output and its run-time
+    /// closure are also put into the store; without it an id that the index
+    /// or the binary cache knows is returned as it is.
+    fn resolve(
+        &mut self,
+        name: &str,
+        requested: Option<&str>,
+        present: bool,
+    ) -> Result<Built, String> {
         if !model::valid_name(name) {
             return Err(format!("{name:?}: not a valid package name"));
         }
@@ -486,12 +518,81 @@ impl<'a> Builder<'a> {
             ));
         }
         self.in_progress.push(name.to_owned());
-        let result = self.build_inner(name, requested);
+        let result = self.build_inner(name, requested, present);
         self.in_progress.pop();
         result
     }
 
-    fn build_inner(&mut self, name: &str, requested: Option<&str>) -> Result<Built, String> {
+    /// The id a binary cache records for the build `key`.
+    fn cached_key(&self, key: &str) -> Result<Option<String>, String> {
+        let Some(base) = &self.settings.binary_cache else {
+            return Ok(None);
+        };
+        let url = format!("{}/keys/{key}", base.trim_end_matches('/'));
+        let body = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))?;
+        Ok(body
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|text| text.trim().to_owned())
+            .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_alphanumeric())))
+    }
+
+    /// Takes the store path `id` from the binary cache. Returns whether the
+    /// cache had it. The unpacked tree must hash to `id`.
+    fn substitute(&self, id: &str) -> Result<bool, String> {
+        let settings = self.settings;
+        let Some(base) = &settings.binary_cache else {
+            return Ok(false);
+        };
+        let url = format!("{}/paths/{id}.cpio", base.trim_end_matches('/'));
+        let Some(archive) = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))? else {
+            return Ok(false);
+        };
+        eprintln!("substituting {STORE}/{id}");
+        let work = settings
+            .data_dir
+            .join("tmp")
+            .join(format!("{}-substitute", std::process::id()));
+        if work.exists() {
+            io("remove", &work, fs::remove_dir_all(&work))?;
+        }
+        let out = work.join(id);
+        io("create", &out, fs::create_dir_all(&out))?;
+        io("unpack", &out, vug::cpio::read_newc(&archive, &out))?;
+        let path = format!("{STORE}/{id}");
+        let placeholder = placeholder_path();
+        io(
+            "rewrite",
+            &out,
+            rewrite::rewrite_tree(&out, path.as_bytes(), placeholder.as_bytes()),
+        )?;
+        let actual = treehash::encode_base32(&io("hash", &out, treehash::hash_tree(&out))?);
+        if actual != id {
+            return Err(format!("{url}: the content hashes to {actual}"));
+        }
+        io(
+            "rewrite",
+            &out,
+            rewrite::rewrite_tree(&out, placeholder.as_bytes(), path.as_bytes()),
+        )?;
+        let store_dir = settings.data_dir.join("store");
+        io("create", &store_dir, fs::create_dir_all(&store_dir))?;
+        let final_path = store_dir.join(id);
+        if !final_path.exists()
+            && let Err(error) = fs::rename(&out, &final_path)
+            && !final_path.exists()
+        {
+            return Err(format!("rename {}: {error}", final_path.display()));
+        }
+        io("remove", &work, fs::remove_dir_all(&work))?;
+        Ok(true)
+    }
+
+    fn build_inner(
+        &mut self,
+        name: &str,
+        requested: Option<&str>,
+        present: bool,
+    ) -> Result<Built, String> {
         let settings = self.settings;
         let package_dir = settings.root.join(model::package_dir(name));
         let version = match requested {
@@ -518,7 +619,7 @@ impl<'a> Builder<'a> {
         dep_names.sort();
         dep_names.dedup();
         for dep in &dep_names {
-            let built = self.build(dep, None)?;
+            let built = self.resolve(dep, None, present && record.deps_run.contains(dep))?;
             dep_ids.extend(built.closure.iter().cloned());
             direct.insert(dep.clone(), format!("{STORE}/{}", built.id));
             if record.deps_run.contains(dep) {
@@ -540,21 +641,40 @@ impl<'a> Builder<'a> {
 
         let store_dir = settings.data_dir.join("store");
         let index_path = settings.data_dir.join("index").join(name).join(&version);
-        if let Ok(line) = fs::read_to_string(&index_path)
-            && let Some((found_key, id)) = line.trim_end().split_once(' ')
-            && found_key == key
-            && store_dir.join(id).exists()
+        let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
+            let (found_key, id) = line.trim_end().split_once(' ')?;
+            (found_key == key).then(|| id.to_owned())
+        });
+        if known.is_none()
+            && let Some(id) = self.cached_key(&key)?
         {
-            run_closure.insert(id.to_owned());
+            if let Some(parent) = index_path.parent() {
+                io("create", parent, fs::create_dir_all(parent))?;
+            }
+            io(
+                "write",
+                &index_path,
+                fs::write(&index_path, format!("{key} {id}\n")),
+            )?;
+            known = Some(id);
+        }
+        if let Some(id) = known
+            && (!present || store_dir.join(&id).exists() || self.substitute(&id)?)
+        {
+            run_closure.insert(id.clone());
             return Ok(Built {
                 name: name.to_owned(),
                 version,
-                id: id.to_owned(),
+                id,
                 fresh: false,
                 closure: run_closure,
             });
         }
 
+        for dep in &dep_names {
+            self.resolve(dep, None, true)?;
+        }
+        let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
         let archive = fetch_source(settings, &record.url, &record.sha256)?;
         let work = settings
             .data_dir
@@ -568,7 +688,7 @@ impl<'a> Builder<'a> {
         io("create", &out, fs::create_dir_all(&out))?;
         let root_bin = work.join("bin");
         io("create", &root_bin, fs::create_dir_all(&root_bin))?;
-        link_programs(&self.seed_dir.join("bin"), "/seed/bin", &root_bin)?;
+        link_programs(&seed_dir.join("bin"), "/seed/bin", &root_bin)?;
         for id in &dep_ids {
             link_programs(
                 &store_dir.join(id).join("bin"),
@@ -747,7 +867,7 @@ impl<'a> Builder<'a> {
             writable,
         };
         let mut binds = vec![
-            bind(&self.seed_dir, "/seed", false),
+            bind(&seed_dir, "/seed", false),
             bind(&root_bin, "/bin", false),
             bind(&root_bin, "/usr/bin", false),
             bind(&build_dir, "/build", true),
@@ -844,4 +964,45 @@ pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[S
         .arg(format!("{STORE}/{id}/{program}"))
         .args(arguments);
     format!("bwrap: {}", command.exec())
+}
+
+/// Writes the binary cache of the data directory into `directory`
+/// (`docs/cache.md`). Returns the numbers of keys and of archives written.
+pub fn export_cache(data_dir: &Path, directory: &Path) -> Result<(usize, usize), String> {
+    let keys_dir = directory.join("keys");
+    let paths_dir = directory.join("paths");
+    io("create", &keys_dir, fs::create_dir_all(&keys_dir))?;
+    io("create", &paths_dir, fs::create_dir_all(&paths_dir))?;
+    let index = data_dir.join("index");
+    let (mut keys, mut paths) = (0, 0);
+    let list = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+        let mut entries: Vec<PathBuf> = io("read", dir, fs::read_dir(dir))?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .collect();
+        entries.sort();
+        Ok(entries)
+    };
+    for package in list(&index)? {
+        for version in list(&package)? {
+            let line = io("read", &version, fs::read_to_string(&version))?;
+            let Some((key, id)) = line.trim_end().split_once(' ') else {
+                continue;
+            };
+            let key_path = keys_dir.join(key);
+            io("write", &key_path, fs::write(&key_path, format!("{id}\n")))?;
+            keys += 1;
+            let tree = data_dir.join("store").join(id);
+            let archive = paths_dir.join(format!("{id}.cpio"));
+            if tree.exists() && !archive.exists() {
+                let partial = paths_dir.join(format!("{id}.cpio.partial"));
+                let mut out =
+                    std::io::BufWriter::new(io("create", &partial, fs::File::create(&partial))?);
+                io("write", &partial, vug::cpio::write_newc(&tree, &mut out))?;
+                drop(out);
+                io("rename", &archive, fs::rename(&partial, &archive))?;
+                paths += 1;
+            }
+        }
+    }
+    Ok((keys, paths))
 }

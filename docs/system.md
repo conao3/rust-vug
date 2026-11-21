@@ -211,13 +211,27 @@ $ qemu-system-x86_64 -enable-kvm -m 1024 -nographic \
 | Command | Result |
 |---|---|
 | `build-system` | The system in the store. |
-| `build-image --image FILE [--size SIZE]` | Also an ext4 image (default size `4g`) whose root holds the store paths of the system, generation 1 pointing to it, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
+| `build-image --image FILE [--size SIZE]` | Also an ext4 image (default size `4g`) whose root holds the store paths of the system, generation 1 pointing to it, the index of the data directory at `/vug/index`, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
+| `switch-system` | The system in the store, then its `bin/switch-to-system` runs. For a machine that runs a vug system. |
 | `export-system --archive FILE [--base SYSTEM]` | Also a cpio archive ("newc") of the store paths of the system, without those of the system `SYSTEM` (an id or a store path in the same store). |
 
-All three take the parameters of `vug package build-package` and build what
+All four take the parameters of `vug package build-package` and build what
 is missing. `StorePaths` is the number of store paths of the system.
 
-To bring a new system to a running machine, export it with the running
+On a machine that runs a vug system, the data directory defaults to `/vug`
+and the cache directory to `/var/cache/vug`. With the package `vug` in the
+system, a change to the records takes effect with
+
+```console
+# vug system switch-system --root /vug/tree --name demo --binary-cache http://cache.example
+```
+
+which builds only the system itself when the index knows every package, and
+takes from the binary cache (`docs/cache.md`) what the store lacks. The
+busybox of the new system is the one of the running system when the seed
+names the same file, so a change that adds no package needs no network.
+
+Without `vug` on the machine: export the new system with the running
 system as the base, unpack the archive at `/` as root
 (`/run/current-system/bin/busybox cpio -id`), and run its
 `bin/switch-to-system`.

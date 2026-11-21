@@ -106,3 +106,68 @@ pub fn write_newc(root: &Path, out: &mut impl Write) -> io::Result<()> {
     entry(out, 0, 0, 1, b"TRAILER!!!", &[])?;
     out.flush()
 }
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
+}
+
+/// Unpacks a newc archive into the existing directory `dest`. Owners and
+/// times are not restored. An entry whose name is absolute or has a `..`
+/// component is an error.
+pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
+    let mut at = 0;
+    let mut directories = Vec::new();
+    loop {
+        let header = data
+            .get(at..at + 110)
+            .ok_or_else(|| invalid("truncated header"))?;
+        if &header[..6] != b"070701" {
+            return Err(invalid("not a newc archive"));
+        }
+        let field = |index: usize| -> io::Result<usize> {
+            std::str::from_utf8(&header[6 + index * 8..14 + index * 8])
+                .ok()
+                .and_then(|text| usize::from_str_radix(text, 16).ok())
+                .ok_or_else(|| invalid("bad header field"))
+        };
+        let mode = field(1)? as u32;
+        let size = field(6)?;
+        let name_size = field(11)?;
+        let name_start = at + 110;
+        let name = data
+            .get(name_start..name_start + name_size.max(1) - 1)
+            .ok_or_else(|| invalid("truncated name"))?;
+        let data_start = (name_start + name_size).next_multiple_of(4);
+        let content = data
+            .get(data_start..data_start + size)
+            .ok_or_else(|| invalid("truncated content"))?;
+        at = (data_start + size).next_multiple_of(4);
+        if name == b"TRAILER!!!" {
+            break;
+        }
+        let relative = Path::new(std::ffi::OsStr::from_bytes(name));
+        if relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(invalid("entry name leaves the archive root"));
+        }
+        let path = dest.join(relative);
+        match mode & 0o170000 {
+            S_IFDIR => {
+                fs::create_dir_all(&path)?;
+                directories.push((path, mode & 0o7777));
+            }
+            S_IFLNK => std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(content), &path)?,
+            S_IFREG => {
+                fs::write(&path, content)?;
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o777))?;
+            }
+            _ => return Err(invalid("unsupported file type")),
+        }
+    }
+    for (path, mode) in directories.into_iter().rev() {
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    Ok(())
+}

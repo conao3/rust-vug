@@ -805,7 +805,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     let work = work_dir(settings, "system")?;
     let out = work.join("out");
 
-    let busybox = builder.seed_dir().join("bin/busybox");
+    let busybox = builder.busybox()?;
     write_file(
         &out.join("bin/busybox"),
         &io("read", &busybox, fs::read(&busybox))?,
@@ -996,6 +996,17 @@ pub fn build_image(
         &root.join("vug/profiles/system-1"),
     )?;
     symlink("system-1", &root.join("vug/profiles/system"))?;
+    let index = settings.data_dir.join("index");
+    if index.exists() {
+        copy_tree(&index, &root.join("vug/index"))?;
+    }
+    let tree = root.join("vug/tree");
+    io("create", &tree, fs::create_dir_all(&tree))?;
+    for part in ["seed.toml", "packages", "services", "systems"] {
+        if let Ok(from) = fs::canonicalize(settings.root.join(part)) {
+            copy_tree(&from, &tree.join(part))?;
+        }
+    }
     if image.symlink_metadata().is_ok() {
         io("remove", image, fs::remove_file(image))?;
     }
@@ -1047,4 +1058,25 @@ pub fn export(
     drop(out);
     remove_tree(&work)?;
     Ok((system, ids.len()))
+}
+
+/// Builds the system and replaces this process by its `switch-to-system`.
+/// Returns only when that fails, with the reason.
+pub fn switch(settings: &Settings, name: &str) -> String {
+    use std::os::unix::process::CommandExt;
+
+    let system = match build(settings, name) {
+        Ok(system) => system,
+        Err(error) => return error,
+    };
+    let program = settings
+        .data_dir
+        .join("store")
+        .join(&system.id)
+        .join("bin/switch-to-system");
+    format!(
+        "{}: {}",
+        program.display(),
+        std::process::Command::new(&program).exec()
+    )
 }

@@ -57,6 +57,11 @@ enum Commands {
         #[command(subcommand)]
         command: PackageCommands,
     },
+    /// The store.
+    Store {
+        #[command(subcommand)]
+        command: StoreCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -67,6 +72,24 @@ enum SystemCommands {
     BuildImage(ImageArgs),
     /// Build a system and write an archive of its store paths.
     ExportSystem(ExportArgs),
+    /// Build a system and switch the running machine to it.
+    SwitchSystem(BuildArgs),
+}
+
+#[derive(Subcommand)]
+enum StoreCommands {
+    /// Write the outputs and build keys of the store as a binary cache.
+    ExportCache(CacheArgs),
+}
+
+#[derive(Args)]
+struct CacheArgs {
+    /// Directory to write the cache into.
+    #[arg(long)]
+    directory: PathBuf,
+    /// Directory of the store (default: as for build-package).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -133,6 +156,9 @@ struct BuildArgs {
     /// Parallel build jobs.
     #[arg(long, default_value_t = 1)]
     jobs: u32,
+    /// Base URL of a binary cache to take outputs from.
+    #[arg(long)]
+    binary_cache: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -207,6 +233,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "--size",
     "--archive",
     "--base",
+    "--binary-cache",
+    "--directory",
 ];
 
 /// A bare `help` at the end of the arguments asks for the help of the command
@@ -307,7 +335,18 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
             SystemCommands::BuildImage(args) => run_build_image(&cli, args),
             SystemCommands::ExportSystem(args) => run_export_system(&cli, args),
+            SystemCommands::SwitchSystem(args) => {
+                let settings = settings_of(&cli, args)?;
+                Err((
+                    version::failure_status(),
+                    system::switch(&settings, &args.name),
+                ))
+            }
         },
+        Commands::Store { command } => {
+            let StoreCommands::ExportCache(args) = command;
+            run_export_cache(&cli, args)
+        }
         Commands::Package { command } => match command {
             PackageCommands::BuildPackage(args) => run_build(&cli, args),
             PackageCommands::RunPackage(args) => run_program(&cli, args),
@@ -470,6 +509,38 @@ fn xdg_dir(variable: &str, home_relative: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Whether this machine runs a vug system, whose store is `/vug/store`.
+fn on_vug_system() -> bool {
+    Path::new("/vug/store").is_dir()
+}
+
+fn default_data_dir() -> Result<PathBuf, String> {
+    if on_vug_system() {
+        Ok(PathBuf::from("/vug"))
+    } else {
+        xdg_dir("XDG_DATA_HOME", ".local/share")
+    }
+}
+
+fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {
+    let fail = |e: String| (version::failure_status(), e);
+    let data_dir = match &args.data_dir {
+        Some(dir) => dir.clone(),
+        None => default_data_dir().map_err(fail)?,
+    };
+    let (keys, paths) = build::export_cache(&data_dir, &args.directory).map_err(fail)?;
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Directory": args.directory,
+            "Keys": keys,
+            "Written": paths,
+        })),
+        Output::Text => write_out(&format!("{keys}\n{paths}\n")),
+        Output::Table => write_out(&format!("Keys\tWritten\n{keys}\t{paths}\n")),
+    }?;
+    Ok(0)
+}
+
 fn build_package(
     cli: &Cli,
     args: &BuildArgs,
@@ -486,10 +557,11 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
     let fail = |e: String| (version::failure_status(), e);
     let data_dir = match &args.data_dir {
         Some(dir) => dir.clone(),
-        None => xdg_dir("XDG_DATA_HOME", ".local/share").map_err(fail)?,
+        None => default_data_dir().map_err(fail)?,
     };
     let cache_dir = match &args.cache_dir {
         Some(dir) => dir.clone(),
+        None if on_vug_system() => PathBuf::from("/var/cache/vug"),
         None => xdg_dir("XDG_CACHE_HOME", ".cache").map_err(fail)?,
     };
     if cli.debug {
@@ -504,6 +576,7 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         data_dir: absolute(&data_dir)?,
         cache_dir: absolute(&cache_dir)?,
         jobs: args.jobs,
+        binary_cache: args.binary_cache.clone(),
     })
 }
 

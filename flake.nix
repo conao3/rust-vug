@@ -60,6 +60,15 @@
               license = pkgs.lib.licenses.asl20;
             };
           };
+          packages.static = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+            pname = "vug";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            LEANFRAN_OFFLINE = "1";
+            doCheck = false;
+            meta.license = pkgs.lib.licenses.asl20;
+          };
         };
     };
 }

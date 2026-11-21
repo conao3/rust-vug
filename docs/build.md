@@ -153,6 +153,10 @@ its current version. The build root holds every dependency together with
 what that dependency needs at run time, each at its store path, and `PATH`
 lists their `bin` directories before `/bin`.
 
+The dependencies of a build are first only resolved to ids. Their files are
+put into the store (from a binary cache, `docs/cache.md`, or by building)
+when the build runs, and the seed is fetched and assembled then.
+
 A finished build is recorded in `index/<name>/<version>` as `<key> <id>`.
 The key is the BLAKE3 hash of the canonical version record, the seed, the
 revision of vug's build rules, and the ids of the dependencies in the build
@@ -177,9 +181,10 @@ $ vug package build-package --root . --name hello
 | `--root DIR` | Package tree holding `seed.toml` and `packages/`. |
 | `--name NAME` | Package to build. |
 | `--package-version VERSION` | Version to build. Default: the greatest version record. |
-| `--data-dir DIR` | Holds `store/`, `index/`, and `seed/`. Default: `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
-| `--cache-dir DIR` | Holds `sources/`. Default: `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
+| `--data-dir DIR` | Holds `store/`, `index/`, and `seed/`. Default: `/vug` when `/vug/store` exists, else `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
+| `--cache-dir DIR` | Holds `sources/`. Default: `/var/cache/vug` when `/vug/store` exists, else `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
 | `--jobs N` | Parallel jobs for `make`. Default: 1. |
+| `--binary-cache URL` | A binary cache to take outputs from (`docs/cache.md`). |
 
 The build log goes to standard error. The flake package puts `bwrap`
 (bubblewrap) on its `PATH`; a `vug` built with `cargo` needs `bwrap` on

@@ -77,3 +77,44 @@ fn empty_tree_is_only_the_trailer() {
     write_newc(dir.path(), &mut archive).unwrap();
     assert!(entries(&archive).is_empty());
 }
+
+#[test]
+fn read_restores_what_write_wrote() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source = tempfile::tempdir().expect("temporary directory");
+    let root = source.path();
+    std::fs::create_dir_all(root.join("bin")).expect("create");
+    std::fs::write(root.join("bin/tool"), b"#!/bin/sh\n").expect("write");
+    std::fs::set_permissions(
+        root.join("bin/tool"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::write(root.join("data"), b"abcde").expect("write");
+    std::os::unix::fs::symlink("bin/tool", root.join("link")).expect("symlink");
+    let mut archive = Vec::new();
+    vug::cpio::write_newc(root, &mut archive).expect("write archive");
+
+    let dest = tempfile::tempdir().expect("temporary directory");
+    vug::cpio::read_newc(&archive, dest.path()).expect("read archive");
+    assert_eq!(
+        vug::treehash::hash_tree(root).expect("hash"),
+        vug::treehash::hash_tree(dest.path()).expect("hash")
+    );
+}
+
+#[test]
+fn read_rejects_names_that_leave_the_root() {
+    let source = tempfile::tempdir().expect("temporary directory");
+    std::fs::write(source.path().join("aa"), b"x").expect("write");
+    let mut archive = Vec::new();
+    vug::cpio::write_newc(source.path(), &mut archive).expect("write archive");
+    let at = archive
+        .windows(2)
+        .position(|w| w == b"aa")
+        .expect("entry name");
+    archive[at..at + 2].copy_from_slice(b"..");
+    let dest = tempfile::tempdir().expect("temporary directory");
+    assert!(vug::cpio::read_newc(&archive, dest.path()).is_err());
+}
