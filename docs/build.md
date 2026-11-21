@@ -143,7 +143,8 @@ $ vug package build-package --root . --name hello
 | `--cache-dir DIR` | Holds `sources/`. Default: `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
 | `--jobs N` | Parallel jobs for `make`. Default: 1. |
 
-The build log goes to standard error. `bwrap` (bubblewrap) must be on
+The build log goes to standard error. The flake package puts `bwrap`
+(bubblewrap) on its `PATH`; a `vug` built with `cargo` needs `bwrap` on
 `PATH`.
 
 ## Running a program

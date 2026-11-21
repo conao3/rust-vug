@@ -51,6 +51,10 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = ''
+              wrapProgram $out/bin/vug --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]}
+            '';
             meta = {
               mainProgram = "vug";
               license = pkgs.lib.licenses.asl20;
