@@ -407,7 +407,7 @@ fn cmake_steps_configure_build_and_install() {
     assert_eq!(
         joined,
         vec![
-            "cmake -S . -B build -G Unix Makefiles -DCMAKE_INSTALL_PREFIX=/out -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=/out/lib -DFOO=OFF",
+            "cmake -S . -B build -G Unix Makefiles -DCMAKE_INSTALL_PREFIX=/out -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_RPATH=/out/lib -DFOO=OFF",
             "cmake --build build -j 3",
             "ctest --test-dir build -j 3",
             "cmake --install build",

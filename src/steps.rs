@@ -151,8 +151,8 @@ pub fn make_steps(
 ///
 /// 1. `["cmake", "-S", ".", "-B", "build", "-G", "Unix Makefiles",
 ///    "-DCMAKE_INSTALL_PREFIX=<prefix>", "-DCMAKE_INSTALL_LIBDIR=lib",
-///    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
-///    "-DCMAKE_INSTALL_RPATH=<prefix>/lib", <setup_flags>...]`
+///    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_RPATH=<prefix>/lib",
+///    <setup_flags>...]`
 /// 2. `["cmake", "--build", "build", "-j", "<jobs>"]`
 /// 3. only when `check`: `["ctest", "--test-dir", "build", "-j", "<jobs>"]`
 /// 4. `["cmake", "--install", "build"]`
@@ -162,7 +162,6 @@ pub fn cmake_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32)
     setup.push(format!("-DCMAKE_INSTALL_PREFIX={prefix}"));
     setup.push("-DCMAKE_INSTALL_LIBDIR=lib".to_string());
     setup.push("-DCMAKE_BUILD_TYPE=Release".to_string());
-    setup.push("-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string());
     setup.push(format!("-DCMAKE_INSTALL_RPATH={prefix}/lib"));
     setup.extend(setup_flags.iter().cloned());
     let mut steps = vec![setup];
