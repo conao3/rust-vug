@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "3";
+const BUILD_RULES: &str = "4";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -34,8 +34,15 @@ asm=0
 dep=0
 for a; do
   shift
+  if [ "${isystem:-0}" = 1 ]; then
+    isystem=0
+    set -- "$@" "-I$a"
+    continue
+  fi
   case "$a" in
     --target=* | -mtune=generic) ;;
+    -isystem) isystem=1 ;;
+    -isystem?*) set -- "$@" "-I${a#-isystem}" ;;
     -m16) set -- "$@" -m16 -Xclang -target-feature -Xclang +16bit-mode ;;
     -mno-sse) set -- "$@" -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 ;;
     -march=x86-64) set -- "$@" -march=x86_64 ;;
@@ -568,7 +575,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             if host.join("include").is_dir() {
-                cflags.push(format!("-isystem{inside}/include"));
+                cflags.push(format!("-I{inside}/include"));
             }
             if host.join("lib").is_dir() {
                 ldflags.push(format!("-L{inside}/lib"));

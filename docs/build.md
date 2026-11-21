@@ -50,7 +50,8 @@ Checking a store path reverses step 3 and compares the hash with the id.
    the source archive, the patches, and an empty output directory at the
    placeholder path.
 3. Run the build inside `bwrap --unshare-all --clearenv`: no network, no
-   host file system, and only the environment variables `PATH`, `HOME`,
+   host file system, a root that is read-only outside the build directory,
+   `/tmp`, and the output, and only the environment variables `PATH`, `HOME`,
    `SOURCE_DATE_EPOCH`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
 4. Unpack with `tar -xf <archive> --strip-components=<n>` and apply the
    patches with `patch -p1`.
@@ -83,6 +84,9 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   `x86_64-linux-musl`. They turn the spellings that packages use into what
   zig accepts:
   - `--target=...` and `-mtune=generic` are dropped.
+  - `-isystem <dir>` becomes `-I<dir>`: zig searches its own C library and
+    kernel headers before every `-isystem` directory, so a package could not
+    put its own copy of such a header first.
   - `-march=x86-64` becomes `-march=x86_64` (and `-v2` to `-v4` likewise).
   - `-m16` also enables the 16-bit mode feature, which zig switches off.
   - `-mno-sse` also disables SSE2 and later, which zig leaves on.
@@ -125,7 +129,7 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 |---|---|
 | `bin/` | Added to `PATH`. |
 | `lib/ld-musl-*.so.1` (a C library with its dynamic loader) | Programs are linked dynamically with that loader: `-fPIC` when compiling, `-dynamic -Wl,--dynamic-linker=<loader>` when linking. Nothing else of this dependency is added. |
-| `include/` | `-isystem<path>/include` |
+| `include/` | `-I<path>/include` |
 | `lib/` | `-L<path>/lib`, and `-Wl,-rpath,<path>/lib` when the dependency is needed at run time (it is in `dependencies.run`, or a run-time dependency of one that is). |
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |

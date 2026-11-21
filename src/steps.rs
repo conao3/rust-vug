@@ -318,8 +318,10 @@ pub fn shell_quote(word: &str) -> String {
 /// 2. `--proc`, `/proc`, `--dev`, `/dev`, `--tmpfs`, `/tmp`
 /// 3. for each bind in order: `--bind` (writable) or `--ro-bind`, source, dest
 /// 4. for each env pair in order: `--setenv`, name, value
-/// 5. `--chdir`, workdir
-/// 6. `--`, then the command words
+/// 5. `--remount-ro`, `/`: the root itself is read-only, so a build can write
+///    only to the writable binds and to `/tmp`
+/// 6. `--chdir`, workdir
+/// 7. `--`, then the command words
 pub fn bwrap_args(sandbox: &Sandbox) -> Vec<String> {
     let mut args = vec![
         "--unshare-all".to_string(),
@@ -342,6 +344,8 @@ pub fn bwrap_args(sandbox: &Sandbox) -> Vec<String> {
         args.push(name.clone());
         args.push(value.clone());
     }
+    args.push("--remount-ro".to_string());
+    args.push("/".to_string());
     args.push("--chdir".to_string());
     args.push(sandbox.workdir.clone());
     args.push("--".to_string());
