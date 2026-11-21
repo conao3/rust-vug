@@ -344,7 +344,7 @@ fn version_build_kind_bad() {
     let v = dir.join("versions/1.0.toml");
     std::fs::write(
         &v,
-        version_toml("1.0").replace("kind = \"autotools\"", "kind = \"cmake\""),
+        version_toml("1.0").replace("kind = \"autotools\"", "kind = \"scons\""),
     )
     .unwrap();
     assert_invalid(&check_record(&v), "build.kind");

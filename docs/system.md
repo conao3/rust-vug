@@ -66,7 +66,8 @@ user = "root"
 | `file.path` | string | yes | A path below `/etc`. No listed path equals or lies inside another. |
 | `file.kind` | `"link"` or `"seed"` | no (default `"link"`) | How the file is managed, see below. |
 | `file.mode` | string of octal digits | no (default `"644"`) | Permission bits. A link file takes `"644"` or `"755"`. |
-| `file.content` | string | yes | Contents. |
+| `file.content` | string | yes, unless `file.target` | Contents. |
+| `file.target` | string | no | For a link file: the absolute path the file is a link to, in place of content (`/etc/localtime` to a zone file, for example). |
 | `group.name`, `group.gid` | string, integer | per group | A group. Names and ids are unique. |
 | `user.name`, `user.uid` | string, integer | per user | A user. Names and ids are unique. |
 | `user.group` | string | per user | Primary group, one of the groups of the record. |
@@ -81,7 +82,7 @@ read, and a package tree is usually public: it is the place for `""` (no
 password) or `"!"`, not for the hash of a real password. A password set on
 the machine with `passwd` lives only in `/etc/shadow`.
 
-`{pkg:NAME}` in `init`, `sh`, and `file.content` is replaced by the store path of
+`{pkg:NAME}` in `init`, `sh`, `file.content`, and `file.target` is replaced by the store path of
 the package `NAME` of the system. Unknown keys are errors.
 
 ## Service records
@@ -114,7 +115,7 @@ ExecStart=-/bin/agetty --autologin {param:user} - vt220
 | `parameter.<name>` | table | no | A parameter. `default` (a string) is its value when the system gives none; without `default` the system must give one. |
 | `packages`, `file`, `group`, `user`, `setuid` | as in a system record | no | What the service adds. |
 
-`{param:NAME}` in `file.path` and `file.content` is replaced by the value of
+`{param:NAME}` in `file.path`, `file.content`, and `file.target` is replaced by the value of
 the parameter. `{pkg:NAME}` names a package of the merged system.
 
 A system is the union of its own record and its service records, taken in

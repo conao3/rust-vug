@@ -233,6 +233,10 @@ fn system_record_errors() {
             "written by vug itself",
         ),
         (
+            "[[file]]\npath = \"/etc/localtime\"\ntarget = \"/x\"\ncontent = \"\"\n",
+            "goes with a link file without content or mode",
+        ),
+        (
             "[[setuid]]\npackage = \"sudo\"\nprogram = \"bin/sudo\"\n",
             "is not a package of this system",
         ),

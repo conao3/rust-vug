@@ -140,6 +140,37 @@ pub fn make_steps(
     steps
 }
 
+/// Steps of the `cmake` build kind.
+///
+/// 1. `["cmake", "-S", ".", "-B", "build", "-G", "Unix Makefiles",
+///    "-DCMAKE_INSTALL_PREFIX=<prefix>", "-DCMAKE_INSTALL_LIBDIR=lib",
+///    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+///    "-DCMAKE_INSTALL_RPATH=<prefix>/lib", <setup_flags>...]`
+/// 2. `["cmake", "--build", "build", "-j", "<jobs>"]`
+/// 3. only when `check`: `["ctest", "--test-dir", "build", "-j", "<jobs>"]`
+/// 4. `["cmake", "--install", "build"]`
+pub fn cmake_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32) -> Vec<Step> {
+    let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
+    let mut setup = words(&["cmake", "-S", ".", "-B", "build", "-G", "Unix Makefiles"]);
+    setup.push(format!("-DCMAKE_INSTALL_PREFIX={prefix}"));
+    setup.push("-DCMAKE_INSTALL_LIBDIR=lib".to_string());
+    setup.push("-DCMAKE_BUILD_TYPE=Release".to_string());
+    setup.push("-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string());
+    setup.push(format!("-DCMAKE_INSTALL_RPATH={prefix}/lib"));
+    setup.extend(setup_flags.iter().cloned());
+    let mut steps = vec![setup];
+    let mut build = words(&["cmake", "--build", "build", "-j"]);
+    build.push(jobs.to_string());
+    steps.push(build);
+    if check {
+        let mut test = words(&["ctest", "--test-dir", "build", "-j"]);
+        test.push(jobs.to_string());
+        steps.push(test);
+    }
+    steps.push(words(&["cmake", "--install", "build"]));
+    steps
+}
+
 /// Steps of the `meson` build kind.
 ///
 /// 1. `["meson", "setup", "build", "--prefix=<prefix>", "--libdir=lib",

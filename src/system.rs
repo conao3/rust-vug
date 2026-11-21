@@ -231,6 +231,8 @@ pub struct SystemFile {
     kind: FileKind,
     mode: u32,
     content: String,
+    /// For a link file that is a link to another path instead of content.
+    target: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -434,7 +436,11 @@ fn fragment(
 
     let mut files = Vec::new();
     for entry in tables(table, "file")? {
-        unknown_keys(entry, &["path", "kind", "mode", "content"], "file.")?;
+        unknown_keys(
+            entry,
+            &["path", "kind", "mode", "content", "target"],
+            "file.",
+        )?;
         let path = fill(string(entry, "path", "file.")?)?;
         let Some(relative) = path
             .strip_prefix("/etc/")
@@ -460,11 +466,26 @@ fn fragment(
                 "file.mode: {path}: a link file takes \"644\" or \"755\""
             ));
         }
+        let target = match entry.get("target") {
+            None => None,
+            Some(_) => Some(fill(string(entry, "target", "file.")?)?),
+        };
+        if target.is_some()
+            && (kind != FileKind::Link || entry.contains_key("content") || mode != 0o644)
+        {
+            return Err(format!(
+                "file.target: {path}: goes with a link file without content or mode"
+            ));
+        }
         files.push(SystemFile {
             path: relative.to_owned(),
             kind,
             mode,
-            content: fill(string(entry, "content", "file.")?)?,
+            content: match target {
+                Some(_) => String::new(),
+                None => fill(string(entry, "content", "file.")?)?,
+            },
+            target,
         });
     }
 
@@ -865,6 +886,18 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     let mut files: Vec<&SystemFile> = record.parts.files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     for file in files {
+        if let Some(target) = &file.target {
+            let target = pkg(target, &paths)?;
+            if !valid_image_path(&target) {
+                return Err(format!(
+                    "file.target: /etc/{}: {target:?}: expected an absolute path",
+                    file.path
+                ));
+            }
+            symlink(target, &out.join("etc").join(&file.path))?;
+            links.push_str(&format!("{}\n", file.path));
+            continue;
+        }
         let content = pkg(&file.content, &paths)?;
         match file.kind {
             FileKind::Link => {

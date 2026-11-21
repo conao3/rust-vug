@@ -783,6 +783,10 @@ impl<'a> Builder<'a> {
             ("PKG_CONFIG", pkg_config),
             ("PYTHONPATH", python_path.join(":")),
             (
+                "CMAKE_PREFIX_PATH",
+                direct.values().cloned().collect::<Vec<_>>().join(":"),
+            ),
+            (
                 "LDFLAGS",
                 if matches!(record.build, BuildOptions::Meson { .. }) {
                     ldflags
@@ -833,6 +837,12 @@ impl<'a> Builder<'a> {
                 &expand(install_flags)?,
                 build_targets,
                 install_targets,
+                record.check_enabled,
+                settings.jobs,
+            ),
+            BuildOptions::Cmake { setup_flags } => steps::cmake_steps(
+                &prefix,
+                &expand(setup_flags)?,
                 record.check_enabled,
                 settings.jobs,
             ),

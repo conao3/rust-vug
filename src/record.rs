@@ -72,6 +72,9 @@ pub(crate) enum BuildOptions {
         build_targets: Vec<String>,
         install_targets: Vec<String>,
     },
+    Cmake {
+        setup_flags: Vec<String>,
+    },
     Meson {
         setup_flags: Vec<String>,
     },
@@ -436,6 +439,18 @@ fn parse_version(
                     install_targets: list("install-targets", &mut errors),
                 };
             }
+            "cmake" => {
+                unknown_keys(build_table, &["kind", "setup-flags"], "build.", &mut errors);
+                build = BuildOptions::Cmake {
+                    setup_flags: opt_string_array(
+                        build_table,
+                        "setup-flags",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                };
+            }
             "meson" => {
                 unknown_keys(build_table, &["kind", "setup-flags"], "build.", &mut errors);
                 build = BuildOptions::Meson {
@@ -492,7 +507,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cmake\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
                         .to_owned(),
                 );
             }
@@ -742,6 +757,12 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !install_targets.is_empty() {
                 write_array(&mut out, "install-targets", install_targets);
+            }
+        }
+        BuildOptions::Cmake { setup_flags } => {
+            write_string_field(&mut out, "kind", "cmake");
+            if !setup_flags.is_empty() {
+                write_array(&mut out, "setup-flags", setup_flags);
             }
         }
         BuildOptions::Meson { setup_flags } => {

@@ -155,6 +155,21 @@ make-flags = [
 | `build.build-targets` | array of strings, order kept: targets of the first `make` | empty (the default target) |
 | `build.install-targets` | array of strings, order kept: targets of the last `make` | `install` |
 
+### Build kind `cmake`
+
+Runs `cmake -S . -B build -G "Unix Makefiles"
+-DCMAKE_INSTALL_PREFIX=<output> -DCMAKE_INSTALL_LIBDIR=lib
+-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+-DCMAKE_INSTALL_RPATH=<output>/lib <setup-flags>`, `cmake --build`, `ctest`
+(when `check.enabled`), and `cmake --install`. The record needs `cmake` and
+`make` among its build dependencies. cmake finds the headers and libraries of
+the dependencies through `CMAKE_PREFIX_PATH`, which every build sets to the
+store paths of the dependencies the record lists.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.setup-flags` | array of strings, order kept | empty |
+
 ### Build kind `meson`
 
 Runs `meson setup build --prefix=<output> --libdir=lib --buildtype=release
