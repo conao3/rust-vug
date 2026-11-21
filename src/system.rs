@@ -47,6 +47,19 @@ while IFS= read -r p; do
   echo "vug: /etc/$p exists and is not the link vug manages" >&2
   conflict=1
 done < $m/etc-links
+targets=/etc/.vug-targets
+while read -r p want; do
+  t=/etc/$p
+  if [ -L "$t" ]; then
+    have=$($b readlink "$t")
+    if [ "$have" = "$want" ]; then continue; fi
+    if [ -f $targets ] && $b grep -qxF -- "$p $have" $targets; then continue; fi
+  elif [ ! -e "$t" ]; then
+    continue
+  fi
+  echo "vug: /etc/$p exists and is not the link vug manages" >&2
+  conflict=1
+done < $m/etc-targets
 if [ "$mode" = check ]; then exit $conflict; fi
 if [ $conflict = 1 ] && [ "$mode" != boot ]; then exit 1; fi
 
@@ -81,6 +94,29 @@ while IFS= read -r p; do
 done < $m/etc-links
 $b cp $m/etc-links $state.tmp
 $b mv -f $state.tmp $state
+
+if [ -f $targets ]; then
+  while read -r p had; do
+    if $b grep -q -- "^$p " $m/etc-targets; then continue; fi
+    t=/etc/$p
+    if [ -L "$t" ] && [ "$($b readlink "$t")" = "$had" ]; then $b rm -f "$t"; fi
+  done < $targets
+fi
+while read -r p want; do
+  t=/etc/$p
+  if [ -L "$t" ]; then
+    have=$($b readlink "$t")
+    if [ "$have" = "$want" ]; then continue; fi
+    if [ ! -f $targets ] || ! $b grep -qxF -- "$p $have" $targets; then continue; fi
+  elif [ -e "$t" ]; then
+    continue
+  fi
+  $b mkdir -p "$($b dirname "$t")"
+  $b ln -s "$want" "$t.vug-tmp"
+  $b mv -T "$t.vug-tmp" "$t"
+done < $m/etc-targets
+$b cp $m/etc-targets $targets.tmp
+$b mv -f $targets.tmp $targets
 
 while read -r perm p; do
   t=/etc/$p
@@ -541,7 +577,10 @@ fn fragment(
             Some(_) => Some(fill(string(entry, "target", "file.")?)?),
         };
         if target.is_some()
-            && (kind != FileKind::Link || entry.contains_key("content") || mode != 0o644)
+            && (kind != FileKind::Link
+                || entry.contains_key("content")
+                || mode != 0o644
+                || relative.starts_with(".vug-"))
         {
             return Err(format!(
                 "file.target: {path}: goes with a link file without content or mode"
@@ -651,7 +690,7 @@ fn validate(parts: &Fragment) -> Result<(), String> {
         }
     }
     for (index, file) in parts.files.iter().enumerate() {
-        let reserved = file.path == ".vug-links"
+        let reserved = matches!(file.path.as_str(), ".vug-links" | ".vug-targets")
             || (!parts.users.is_empty()
                 && matches!(file.path.as_str(), "passwd" | "group" | "shadow"));
         if reserved {
@@ -1049,6 +1088,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     }
 
     let mut links = String::new();
+    let mut targets = String::new();
     let mut seeds = String::new();
     let mut files: Vec<&SystemFile> = record.parts.files.iter().collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1061,8 +1101,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                     file.path
                 ));
             }
-            symlink(target, &out.join("etc").join(&file.path))?;
-            links.push_str(&format!("{}\n", file.path));
+            targets.push_str(&format!("{} {target}\n", file.path));
             continue;
         }
         let content = pkg(&file.content, &paths)?;
@@ -1139,6 +1178,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     }
     for (file, text) in [
         ("etc-links", &links),
+        ("etc-targets", &targets),
         ("etc-seeds", &seeds),
         ("passwd", &passwd),
         ("group", &group),

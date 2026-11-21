@@ -67,7 +67,7 @@ user = "root"
 | `file.kind` | `"link"` or `"seed"` | no (default `"link"`) | How the file is managed, see below. |
 | `file.mode` | string of octal digits | no (default `"644"`) | Permission bits. A link file takes `"644"` or `"755"`. |
 | `file.content` | string | yes, unless `file.target` | Contents. |
-| `file.target` | string | no | For a link file: the absolute path the file is a link to, in place of content (`/etc/localtime` to a zone file, for example). |
+| `file.target` | string | no | For a link file: the absolute path the file is a direct link to, in place of content (`/etc/localtime` to `/usr/share/zoneinfo/<zone>`, whose name programs read from the link). |
 | `group.name`, `group.gid` | string, integer | per group | A group. Names and ids are unique. |
 | `user.name`, `user.uid` | string, integer | per user | A user. Names and ids are unique. |
 | `user.group` | string | per user | Primary group, one of the groups of the record. |
@@ -187,6 +187,7 @@ initramfs.
 | Kind | What `activate` puts at the path | On a later activation |
 |---|---|---|
 | `link` | A link to `/run/current-system/etc/<path>`. | The content changes with `/run/current-system`. A path the new system does not list is removed; a path it adds is linked. |
+| `link` with `target` | A link to the target itself. | The link is replaced when the new system names another target, and removed when it no longer lists the path. |
 | `seed` | A regular file with the content and mode of the record, when nothing is at the path. | Left alone. |
 | users | `/etc/passwd`, `/etc/group`, and `/etc/shadow` as regular files, when the record lists a user. | `passwd` and `group` are written again from the record. A user that already has an entry in `shadow` keeps it. A missing home directory is created. |
 
