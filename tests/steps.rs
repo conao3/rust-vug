@@ -247,3 +247,48 @@ fn bootstrap_make() {
         ]
     );
 }
+
+#[test]
+fn linux() {
+    let steps = vug::steps::linux_steps(
+        "/out",
+        "tinyconfig",
+        &owned(&["64BIT=y", "KERNEL_XZ=n", "LOG_BUF_SHIFT=14", "EXT4_FS=m"]),
+        4,
+        "-I/e/include",
+        "-L/e/lib",
+    );
+    assert_eq!(steps.len(), 10);
+    assert_eq!(steps[0][0], "make");
+    assert_eq!(steps[0].last().unwrap(), "tinyconfig");
+    assert!(steps[0].contains(&"HOSTCFLAGS=-I/e/include".to_string()));
+    assert!(steps[0].contains(&"HOSTLDFLAGS=-L/e/lib".to_string()));
+    assert!(steps[0].contains(&"LD=/bin/ld".to_string()));
+    assert_eq!(
+        steps[1],
+        step(&["bash", "scripts/config", "--enable", "64BIT"])
+    );
+    assert_eq!(
+        steps[2],
+        step(&["bash", "scripts/config", "--disable", "KERNEL_XZ"])
+    );
+    assert_eq!(
+        steps[3],
+        step(&["bash", "scripts/config", "--set-val", "LOG_BUF_SHIFT", "14"])
+    );
+    assert_eq!(
+        steps[4],
+        step(&["bash", "scripts/config", "--module", "EXT4_FS"])
+    );
+    assert_eq!(steps[5].last().unwrap(), "olddefconfig");
+    assert_eq!(
+        &steps[6][steps[6].len() - 2..],
+        &owned(&["-j4", "bzImage"])[..]
+    );
+    assert_eq!(steps[7], step(&["mkdir", "-p", "/out/boot"]));
+    assert_eq!(
+        steps[8],
+        step(&["cp", "arch/x86/boot/bzImage", "/out/boot/bzImage"])
+    );
+    assert_eq!(steps[9], step(&["cp", ".config", "/out/boot/config"]));
+}

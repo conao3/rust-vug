@@ -478,6 +478,64 @@ impl<'a> Builder<'a> {
             .collect();
         let strip = u32::try_from(record.strip_components)
             .map_err(|_| "source.strip-components: out of range".to_owned())?;
+        let mut cflags = Vec::new();
+        let mut ldflags = vec![
+            "-Wl,--undefined-version".to_owned(),
+            format!("-Wl,-rpath,{prefix}/lib"),
+        ];
+        let mut build_rpaths = Vec::new();
+        let mut pkg_config_path = Vec::new();
+        let mut pkg_config = String::new();
+        for id in &dep_ids {
+            let host = store_dir.join(id);
+            let inside = format!("{STORE}/{id}");
+            if let Some(loader) = loader_name(&host.join("lib")) {
+                cflags.push("-fPIC".to_owned());
+                ldflags.push("-dynamic".to_owned());
+                ldflags.push(format!("-Wl,--dynamic-linker={inside}/lib/{loader}"));
+                continue;
+            }
+            if host.join("include").is_dir() {
+                cflags.push(format!("-isystem{inside}/include"));
+            }
+            if host.join("lib").is_dir() {
+                ldflags.push(format!("-L{inside}/lib"));
+                if run_closure.contains(id) {
+                    ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
+                } else {
+                    build_rpaths.push(format!("-Wl,-rpath,{inside}/lib"));
+                }
+            }
+            for dir in ["lib/pkgconfig", "share/pkgconfig"] {
+                if host.join(dir).is_dir() {
+                    pkg_config_path.push(format!("{inside}/{dir}"));
+                }
+            }
+            if host.join("bin/pkgconf").is_file() {
+                pkg_config = format!("{inside}/bin/pkgconf");
+            }
+        }
+        let host_tools = matches!(record.build, BuildOptions::Linux { .. });
+        let extra = [
+            (
+                "VUG_CFLAGS",
+                if host_tools {
+                    String::new()
+                } else {
+                    cflags.join(" ")
+                },
+            ),
+            (
+                "VUG_LDFLAGS",
+                if host_tools {
+                    String::new()
+                } else {
+                    ldflags.join(" ")
+                },
+            ),
+            ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
+            ("PKG_CONFIG", pkg_config),
+        ];
         let expand = |flags: &[String]| -> Result<Vec<String>, String> {
             flags
                 .iter()
@@ -502,6 +560,18 @@ impl<'a> Builder<'a> {
             ),
             BuildOptions::BootstrapMake { configure_flags } => {
                 steps::bootstrap_make_steps(&prefix, &expand(configure_flags)?)
+            }
+            BuildOptions::Linux { defconfig, config } => {
+                let mut host_ldflags = ldflags.clone();
+                host_ldflags.extend(build_rpaths.iter().cloned());
+                steps::linux_steps(
+                    &prefix,
+                    defconfig,
+                    config,
+                    settings.jobs,
+                    &cflags.join(" "),
+                    &host_ldflags.join(" "),
+                )
             }
             BuildOptions::Prebuilt { install } => steps::prebuilt_steps(&prefix, install),
         });
@@ -528,49 +598,12 @@ impl<'a> Builder<'a> {
             binds.push(bind(&package_dir.join("patches"), "/patches", false));
         }
         let mut path = String::new();
-        let mut cflags = Vec::new();
-        let mut ldflags = vec![
-            "-Wl,--undefined-version".to_owned(),
-            format!("-Wl,-rpath,{prefix}/lib"),
-        ];
-        let mut pkg_config_path = Vec::new();
-        let mut pkg_config = String::new();
         for id in &dep_ids {
-            let host = store_dir.join(id);
             let inside = format!("{STORE}/{id}");
-            binds.push(bind(&host, &inside, false));
+            binds.push(bind(&store_dir.join(id), &inside, false));
             path.push_str(&format!("{inside}/bin:"));
-            if let Some(loader) = loader_name(&host.join("lib")) {
-                cflags.push("-fPIC".to_owned());
-                ldflags.push("-dynamic".to_owned());
-                ldflags.push(format!("-Wl,--dynamic-linker={inside}/lib/{loader}"));
-                continue;
-            }
-            if host.join("include").is_dir() {
-                cflags.push(format!("-isystem{inside}/include"));
-            }
-            if host.join("lib").is_dir() {
-                ldflags.push(format!("-L{inside}/lib"));
-                if run_closure.contains(id) {
-                    ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
-                }
-            }
-            for dir in ["lib/pkgconfig", "share/pkgconfig"] {
-                if host.join(dir).is_dir() {
-                    pkg_config_path.push(format!("{inside}/{dir}"));
-                }
-            }
-            if host.join("bin/pkgconf").is_file() {
-                pkg_config = format!("{inside}/bin/pkgconf");
-            }
         }
         path.push_str("/bin");
-        let extra = [
-            ("VUG_CFLAGS", cflags.join(" ")),
-            ("VUG_LDFLAGS", ldflags.join(" ")),
-            ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
-            ("PKG_CONFIG", pkg_config),
-        ];
 
         eprintln!("building {name} {version}");
         run_sandbox(&Sandbox {

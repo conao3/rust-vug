@@ -130,6 +130,23 @@ Builds GNU make where no `make` exists yet: `./configure --prefix=<output>
 |---|---|---|
 | `build.configure-flags` | array of strings, order kept | empty |
 
+### Build kind `linux`
+
+Builds a Linux kernel image for x86_64 with the seed compiler: `make
+<defconfig>`, the `config` entries applied with the kernel's
+`scripts/config`, `make olddefconfig`, `make bzImage`. The output holds
+`boot/bzImage` and `boot/config`.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.defconfig` | string: a configuration target of the kernel (`tinyconfig`, `defconfig`) | required |
+| `build.config` | array of strings `NAME=value`, order kept. `y` enables, `n` disables, `m` builds a module, anything else is set as the value | empty |
+
+The programs that run during the build (`objtool` and the other host tools)
+are compiled against the dependencies; the kernel itself is not. The record
+needs `bash`, `bison`, `flex`, `elfutils`, and `musl` among its build
+dependencies.
+
 ### Build kind `prebuilt`
 
 Unpacks the source archive and copies files into the output.

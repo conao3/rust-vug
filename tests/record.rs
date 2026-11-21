@@ -663,3 +663,28 @@ fn version_bootstrap_make_kind() {
     .unwrap();
     assert_invalid(&check_record(&v), "build.");
 }
+
+#[test]
+fn version_linux_kind() {
+    let tmp = TmpDir::new("linux-kind");
+    let dir = package_dir(&tmp, "hello");
+    let v = dir.join("versions/1.0.toml");
+    std::fs::write(
+        &v,
+        version_toml("1.0").replace(
+            "kind = \"autotools\"",
+            "kind = \"linux\"\ndefconfig = \"tinyconfig\"\nconfig = [\n  \"64BIT=y\",\n  \"KERNEL_XZ=n\",\n]",
+        ),
+    )
+    .unwrap();
+    assert_eq!(check_record(&v).status.code(), Some(0));
+    std::fs::write(
+        &v,
+        version_toml("1.0").replace(
+            "kind = \"autotools\"",
+            "kind = \"linux\"\ndefconfig = \"tinyconfig\"\nconfig = [\n  \"64bit\",\n]",
+        ),
+    )
+    .unwrap();
+    assert_invalid(&check_record(&v), "build.config");
+}

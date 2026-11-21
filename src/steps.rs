@@ -96,6 +96,91 @@ pub fn bootstrap_make_steps(prefix: &str, configure_flags: &[String]) -> Vec<Ste
     ]
 }
 
+/// Steps of the `linux` build kind.
+///
+/// Every `make` call carries the tool names of the seed, the flags for the
+/// programs that run during the build, and a fixed build identity:
+/// `LLVM_IAS=1 CC=cc HOSTCC=cc HOSTCXX=c++ LD=/bin/ld HOSTLD=/bin/ld AR=ar
+/// NM=nm OBJCOPY=objcopy OBJDUMP=objdump STRIP=strip READELF=readelf
+/// HOSTCFLAGS=<host_cflags> HOSTLDFLAGS=<host_ldflags>
+/// KBUILD_BUILD_TIMESTAMP=1980-01-01 KBUILD_BUILD_USER=vug
+/// KBUILD_BUILD_HOST=vug`.
+///
+/// 1. `make ... <defconfig>`
+/// 2. for each `NAME=value` in `config`, in order: `bash scripts/config`
+///    with `--enable NAME` for `y`, `--disable NAME` for `n`, `--module NAME`
+///    for `m`, and `--set-val NAME value` otherwise
+/// 3. `make ... olddefconfig`
+/// 4. `make ... -j<jobs> bzImage`
+/// 5. `mkdir -p <prefix>/boot`, then copy `arch/x86/boot/bzImage` to
+///    `<prefix>/boot/bzImage` and `.config` to `<prefix>/boot/config`
+pub fn linux_steps(
+    prefix: &str,
+    defconfig: &str,
+    config: &[String],
+    jobs: u32,
+    host_cflags: &str,
+    host_ldflags: &str,
+) -> Vec<Step> {
+    let make = |words: &[&str]| -> Step {
+        let mut step: Step = [
+            "make",
+            "LLVM_IAS=1",
+            "CC=cc",
+            "HOSTCC=cc",
+            "HOSTCXX=c++",
+            "LD=/bin/ld",
+            "HOSTLD=/bin/ld",
+            "AR=ar",
+            "NM=nm",
+            "OBJCOPY=objcopy",
+            "OBJDUMP=objdump",
+            "STRIP=strip",
+            "READELF=readelf",
+        ]
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
+        step.push(format!("HOSTCFLAGS={host_cflags}"));
+        step.push(format!("HOSTLDFLAGS={host_ldflags}"));
+        step.push("KBUILD_BUILD_TIMESTAMP=1980-01-01".to_string());
+        step.push("KBUILD_BUILD_USER=vug".to_string());
+        step.push("KBUILD_BUILD_HOST=vug".to_string());
+        step.extend(words.iter().map(|w| w.to_string()));
+        step
+    };
+    let mut steps = vec![make(&[defconfig])];
+    for entry in config {
+        let (name, value) = entry.split_once('=').unwrap_or((entry, "y"));
+        let mut step = vec!["bash".to_string(), "scripts/config".to_string()];
+        match value {
+            "y" => step.extend(["--enable".to_string(), name.to_string()]),
+            "n" => step.extend(["--disable".to_string(), name.to_string()]),
+            "m" => step.extend(["--module".to_string(), name.to_string()]),
+            _ => step.extend(["--set-val".to_string(), name.to_string(), value.to_string()]),
+        }
+        steps.push(step);
+    }
+    steps.push(make(&["olddefconfig"]));
+    steps.push(make(&[&format!("-j{jobs}"), "bzImage"]));
+    steps.push(vec![
+        "mkdir".to_string(),
+        "-p".to_string(),
+        format!("{prefix}/boot"),
+    ]);
+    steps.push(vec![
+        "cp".to_string(),
+        "arch/x86/boot/bzImage".to_string(),
+        format!("{prefix}/boot/bzImage"),
+    ]);
+    steps.push(vec![
+        "cp".to_string(),
+        ".config".to_string(),
+        format!("{prefix}/boot/config"),
+    ]);
+    steps
+}
+
 /// Steps of the `prebuilt` build kind. For each `(from, to)` in order:
 ///
 /// 1. `["mkdir", "-p", "<parent directory of prefix/to>"]`

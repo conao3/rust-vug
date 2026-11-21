@@ -65,6 +65,10 @@ pub(crate) enum BuildOptions {
     BootstrapMake {
         configure_flags: Vec<String>,
     },
+    Linux {
+        defconfig: String,
+        config: Vec<String>,
+    },
     Prebuilt {
         install: Vec<(String, String)>,
     },
@@ -385,6 +389,42 @@ fn parse_version(
                     .unwrap_or_default(),
                 };
             }
+            "linux" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "defconfig", "config"],
+                    "build.",
+                    &mut errors,
+                );
+                let defconfig =
+                    req_string(build_table, "defconfig", "build.", &mut errors).unwrap_or_default();
+                if !defconfig.is_empty()
+                    && !defconfig
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                {
+                    errors.push(
+                        "build.defconfig: expected lowercase letters, digits, and \"_\"".to_owned(),
+                    );
+                }
+                let config = opt_string_array(build_table, "config", "build.", &mut errors)
+                    .unwrap_or_default();
+                for entry in &config {
+                    let valid = entry.split_once('=').is_some_and(|(name, value)| {
+                        !name.is_empty()
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                            && !value.is_empty()
+                    });
+                    if !valid {
+                        errors.push(format!(
+                            "build.config: {entry:?}: expected \"NAME=y\", \"NAME=n\", or \"NAME=value\""
+                        ));
+                    }
+                }
+                build = BuildOptions::Linux { defconfig, config };
+            }
             "prebuilt" => {
                 unknown_keys(build_table, &["kind", "install"], "build.", &mut errors);
                 build = BuildOptions::Prebuilt {
@@ -393,7 +433,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"linux\", or \"prebuilt\""
                         .to_owned(),
                 );
             }
@@ -619,6 +659,13 @@ fn canonical_version(record: &VersionRecord) -> String {
             write_string_field(&mut out, "kind", "bootstrap-make");
             if !configure_flags.is_empty() {
                 write_array(&mut out, "configure-flags", configure_flags);
+            }
+        }
+        BuildOptions::Linux { defconfig, config } => {
+            write_string_field(&mut out, "kind", "linux");
+            write_string_field(&mut out, "defconfig", defconfig);
+            if !config.is_empty() {
+                write_array(&mut out, "config", config);
             }
         }
         BuildOptions::Prebuilt { install } => {
