@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "1";
+const BUILD_RULES: &str = "2";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -506,7 +506,9 @@ impl<'a> Builder<'a> {
             }
             if host.join("lib").is_dir() {
                 ldflags.push(format!("-L{inside}/lib"));
-                ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
+                if run_closure.contains(id) {
+                    ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
+                }
             }
             for dir in ["lib/pkgconfig", "share/pkgconfig"] {
                 if host.join(dir).is_dir() {
