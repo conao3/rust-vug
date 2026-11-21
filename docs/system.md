@@ -49,6 +49,11 @@ Unknown keys are errors.
   the listed packages; `/sbin`, `/usr/bin`, and `/usr/sbin` are links to it.
   When two packages have a program of the same name, the package listed
   later wins.
+- `/usr/lib` and `/usr/share` hold one link per entry of the `lib` and `share`
+  directories of the listed packages, and `/lib` is a link to `/usr/lib`.
+  Programs that look for their data under a fixed path (udev rules in
+  `/usr/lib/udev`, for example) find it there. When two packages have an
+  entry of the same name, the package listed later wins.
 - Empty `/dev`, `/etc`, `/proc`, `/root`, `/run`, `/sys`, `/tmp` (mode 1777),
   `/usr`, and `/var`.
 - The files of the record, written last.

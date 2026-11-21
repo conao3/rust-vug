@@ -244,6 +244,29 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
             }
         }
     }
+    for id in &roots {
+        for dir in ["lib", "share"] {
+            let Ok(entries) = fs::read_dir(store_dir.join(id).join(dir)) else {
+                continue;
+            };
+            let mut names: Vec<_> = entries
+                .filter_map(|entry| entry.ok().map(|e| e.file_name()))
+                .collect();
+            names.sort();
+            let into = staging.join("usr").join(dir);
+            io("create", &into, fs::create_dir_all(&into))?;
+            for name in names {
+                let link = into.join(&name);
+                if link.symlink_metadata().is_ok() {
+                    io("remove", &link, fs::remove_file(&link))?;
+                }
+                let target = Path::new(STORE).join(id).join(dir).join(&name);
+                io("symlink", &link, std::os::unix::fs::symlink(&target, &link))?;
+            }
+        }
+    }
+    let lib = staging.join("lib");
+    io("symlink", &lib, std::os::unix::fs::symlink("usr/lib", &lib))?;
     for file in &record.files {
         let path = staging.join(&file.path[1..]);
         if let Some(parent) = path.parent() {
