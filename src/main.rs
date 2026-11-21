@@ -57,6 +57,20 @@ enum Commands {
 enum PackageCommands {
     /// Build a package and its dependencies into the store.
     BuildPackage(BuildArgs),
+    /// Run a program of a package with the store visible at /vug/store.
+    RunPackage(RunArgs),
+}
+
+#[derive(Args)]
+struct RunArgs {
+    #[command(flatten)]
+    build: BuildArgs,
+    /// Program to run, relative to the package output.
+    #[arg(long)]
+    program: String,
+    /// Arguments passed to the program.
+    #[arg(long, num_args = 0.., allow_hyphen_values = true)]
+    arguments: Vec<String>,
 }
 
 #[derive(Args)]
@@ -147,6 +161,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "--data-dir",
     "--cache-dir",
     "--jobs",
+    "--program",
+    "--arguments",
 ];
 
 /// A bare `help` at the end of the arguments asks for the help of the command
@@ -243,10 +259,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
         },
-        Commands::Package { command } => {
-            let PackageCommands::BuildPackage(args) = command;
-            run_build(&cli, args)
-        }
+        Commands::Package { command } => match command {
+            PackageCommands::BuildPackage(args) => run_build(&cli, args),
+            PackageCommands::RunPackage(args) => run_program(&cli, args),
+        },
     }
 }
 
@@ -387,7 +403,10 @@ fn xdg_dir(variable: &str, home_relative: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
+fn build_package(
+    cli: &Cli,
+    args: &BuildArgs,
+) -> Result<(build::Settings, build::Built), (i32, String)> {
     let fail = |e: String| (version::failure_status(), e);
     let data_dir = match &args.data_dir {
         Some(dir) => dir.clone(),
@@ -413,6 +432,17 @@ fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
     let built = build::Builder::new(&settings)
         .and_then(|mut builder| builder.build(&args.name, args.package_version.as_deref()))
         .map_err(fail)?;
+    Ok((settings, built))
+}
+
+fn run_program(cli: &Cli, args: &RunArgs) -> Result<i32, (i32, String)> {
+    let (settings, built) = build_package(cli, &args.build)?;
+    let error = build::run_in_store(&settings, &built.id, &args.program, &args.arguments);
+    Err((version::failure_status(), error))
+}
+
+fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
+    let (settings, built) = build_package(cli, args)?;
     let path = format!("/vug/store/{}", built.id);
     let host_path = settings.data_dir.join("store").join(&built.id);
     match cli.output {

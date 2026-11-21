@@ -83,6 +83,28 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   `x86_64-linux-musl`; `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.
 
+## How a build finds its dependencies
+
+The compiler wrappers add flags from two environment variables that the
+build sets from the dependencies in the build root: `VUG_CFLAGS` on every
+call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
+`-MM`). What a dependency contributes is decided by the files it holds:
+
+| The dependency holds | Effect |
+|---|---|
+| `bin/` | Added to `PATH`. |
+| `lib/ld-musl-*.so.1` (a C library with its dynamic loader) | Programs are linked dynamically with that loader: `-fPIC` when compiling, `-dynamic -Wl,--dynamic-linker=<loader>` when linking. Nothing else of this dependency is added. |
+| `include/` | `-isystem<path>/include` |
+| `lib/` | `-L<path>/lib -Wl,-rpath,<path>/lib` |
+| `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
+| `bin/pkgconf` | `PKG_CONFIG` is set to it. |
+
+`-Wl,-rpath,<output>/lib` is always added when linking, so a program finds
+the libraries of its own package.
+
+A package that does not depend on a C library with a loader is linked
+statically against the C library bundled with the seed compiler.
+
 ## Dependencies and the index
 
 Each name in `dependencies.build` and `dependencies.run` is built first, at
@@ -119,6 +141,19 @@ $ vug package build-package --root . --name hello
 
 The build log goes to standard error. `bwrap` (bubblewrap) must be on
 `PATH`.
+
+## Running a program
+
+```console
+$ vug package run-package --root . --name slang --program bin/slsh --arguments --version
+slsh version 0.9.4-0; S-Lang version: 2.3.3
+```
+
+`run-package` builds the package when needed and then runs `--program` (a
+path relative to the output) in a mount namespace that shows the host file
+system and the store at `/vug/store`. It takes the parameters of
+`build-package`, and `--arguments` takes every word after it. The exit status
+is that of the program.
 
 ## Where the store lives
 

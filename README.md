@@ -51,6 +51,14 @@ $ vug package build-package --root . --name hello --jobs 4
 only the seed tools named in `seed.toml`, and moves the output to its store
 path (`docs/build.md`). It needs `bwrap` (bubblewrap) on `PATH`.
 
+```console
+$ vug package run-package --root . --name slang --program bin/slsh --arguments --version
+slsh version 0.9.4-0; S-Lang version: 2.3.3
+```
+
+`run-package` runs a program of a package with the store visible at
+`/vug/store`, which dynamically linked programs need.
+
 ## Check
 
 ```console

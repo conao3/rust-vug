@@ -95,6 +95,21 @@ skip = []
 
 Unknown keys and unknown tables are errors.
 
+### Paths in build options
+
+Inside the strings of `configure-flags`, `make-flags`, and `install-flags`:
+
+- `{out}` is replaced by the store path the package is installed to.
+- `{dep:NAME}` is replaced by the store path of the dependency `NAME`, which
+  must be listed in `dependencies.build` or `dependencies.run`.
+
+```toml
+configure-flags = [
+  "--with-z={dep:zlib}",
+  "--syslibdir={out}/lib",
+]
+```
+
 ### Build kind `autotools`
 
 Runs `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,

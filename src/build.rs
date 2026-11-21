@@ -1,6 +1,6 @@
 //! Building a package into the store (`docs/build.md`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
@@ -17,6 +17,29 @@ use crate::version;
 const STORE: &str = "/vug/store";
 const PLACEHOLDER_ID: &str = "00000000000000000000000000000000";
 const SOURCE_DATE_EPOCH: &str = "315532800";
+
+/// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
+///
+/// The wrapper drops `--target=...` (zig takes `-target`), adds `VUG_CFLAGS`,
+/// and adds `VUG_LDFLAGS` unless the call only compiles or preprocesses.
+const COMPILER_WRAPPER: &str = r#"#!/bin/sh
+link=1
+for a; do
+  shift
+  case "$a" in
+    --target=*) ;;
+    -c | -E | -S | -M | -MM) link=0; set -- "$@" "$a" ;;
+    *) set -- "$@" "$a" ;;
+  esac
+done
+if [ "$link" = 1 ]; then
+  exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} ${VUG_LDFLAGS-} "$@"
+fi
+exec /seed/zig/zig {tool} -target x86_64-linux-musl ${VUG_CFLAGS-} "$@"
+"#;
+
+/// `bin/ar`, `bin/ranlib`, and `bin/ld` of the seed.
+const TOOL_WRAPPER: &str = "#!/bin/sh\nexec /seed/zig/zig {tool} \"$@\"\n";
 
 pub struct Settings {
     /// Repository root containing `seed.toml` and `packages/`.
@@ -70,7 +93,7 @@ fn run_sandbox(sandbox: &Sandbox) -> Result<(), String> {
     }
 }
 
-fn build_env(path: String) -> Vec<(String, String)> {
+fn build_env(path: String, extra: &[(&str, String)]) -> Vec<(String, String)> {
     [
         ("PATH", path.as_str()),
         ("HOME", "/build"),
@@ -80,6 +103,12 @@ fn build_env(path: String) -> Vec<(String, String)> {
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .chain(
+        extra
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| ((*k).to_owned(), v.clone())),
+    )
     .collect()
 }
 
@@ -112,7 +141,11 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
     let table = text
         .parse::<toml::Table>()
         .map_err(|e| format!("seed.toml: {e}"))?;
-    let hash: [u8; 20] = blake3::hash(text.as_bytes()).as_bytes()[..20]
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(text.as_bytes());
+    hasher.update(COMPILER_WRAPPER.as_bytes());
+    hasher.update(TOOL_WRAPPER.as_bytes());
+    let hash: [u8; 20] = hasher.finalize().as_bytes()[..20]
         .try_into()
         .map_err(|_| "seed hash".to_owned())?;
     let id = treehash::encode_base32(&hash);
@@ -165,19 +198,11 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
         }
     }
 
-    for (name, tool) in [("cc", "cc"), ("c++", "c++")] {
-        write_executable(
-            &bin.join(name),
-            &format!(
-                "#!/bin/sh\nfor a; do\n  shift\n  case \"$a\" in\n    --target=*) ;;\n    *) set -- \"$@\" \"$a\" ;;\n  esac\ndone\nexec /seed/zig/zig {tool} -target x86_64-linux-musl \"$@\"\n"
-            ),
-        )?;
+    for tool in ["cc", "c++"] {
+        write_executable(&bin.join(tool), &COMPILER_WRAPPER.replace("{tool}", tool))?;
     }
     for (name, tool) in [("ar", "ar"), ("ranlib", "ranlib"), ("ld", "ld.lld")] {
-        write_executable(
-            &bin.join(name),
-            &format!("#!/bin/sh\nexec /seed/zig/zig {tool} \"$@\"\n"),
-        )?;
+        write_executable(&bin.join(name), &TOOL_WRAPPER.replace("{tool}", tool))?;
     }
     let gcc = bin.join("gcc");
     io("symlink", &gcc, std::os::unix::fs::symlink("cc", &gcc))?;
@@ -200,7 +225,7 @@ fn ensure_seed(settings: &Settings) -> Result<(PathBuf, String), String> {
                 writable: false,
             },
         ],
-        env: build_env("/bin".to_owned()),
+        env: build_env("/bin".to_owned(), &[]),
         workdir: "/seed/zig".to_owned(),
         command: ["tar", "-xf", "/src/zig.tar.xz", "--strip-components=1"]
             .map(str::to_owned)
@@ -236,6 +261,43 @@ fn current_version(versions_dir: &Path) -> Result<String, String> {
             }
         })
         .ok_or_else(|| format!("{}: no version records", versions_dir.display()))
+}
+
+/// The file name of the musl dynamic loader in `lib`, when there is one.
+fn loader_name(lib: &Path) -> Option<String> {
+    let mut names: Vec<String> = fs::read_dir(lib)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.starts_with("ld-musl-") && name.ends_with(".so.1"))
+        .collect();
+    names.sort();
+    names.into_iter().next()
+}
+
+/// Replaces `{out}` by the output path and `{dep:NAME}` by the store path of
+/// the dependency NAME.
+fn expand_flag(
+    flag: &str,
+    prefix: &str,
+    direct: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = flag;
+    while let Some(start) = rest.find("{dep:") {
+        let (before, tail) = rest.split_at(start);
+        let Some(end) = tail.find('}') else {
+            break;
+        };
+        let name = &tail["{dep:".len()..end];
+        let path = direct
+            .get(name)
+            .ok_or_else(|| format!("{flag:?}: {name:?} is not a dependency of this package"))?;
+        out.push_str(before);
+        out.push_str(path);
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out.replace("{out}", prefix))
 }
 
 fn file_name_of(url: &str) -> &str {
@@ -296,6 +358,7 @@ impl<'a> Builder<'a> {
         })?;
 
         let mut dep_ids = BTreeSet::new();
+        let mut direct = BTreeMap::new();
         let mut run_closure = BTreeSet::new();
         let mut dep_names = record.deps_build.clone();
         dep_names.extend(record.deps_run.iter().cloned());
@@ -304,6 +367,7 @@ impl<'a> Builder<'a> {
         for dep in &dep_names {
             let built = self.build(dep, None)?;
             dep_ids.extend(built.closure.iter().cloned());
+            direct.insert(dep.clone(), format!("{STORE}/{}", built.id));
             if record.deps_run.contains(dep) {
                 run_closure.extend(built.closure.iter().cloned());
             }
@@ -363,6 +427,12 @@ impl<'a> Builder<'a> {
             .collect();
         let strip = u32::try_from(record.strip_components)
             .map_err(|_| "source.strip-components: out of range".to_owned())?;
+        let expand = |flags: &[String]| -> Result<Vec<String>, String> {
+            flags
+                .iter()
+                .map(|flag| expand_flag(flag, &prefix, &direct))
+                .collect()
+        };
         let mut script: Vec<Step> = steps::unpack_steps(&archive_dest, strip, &patches);
         script.extend(match &record.build {
             BuildOptions::Autotools {
@@ -372,15 +442,15 @@ impl<'a> Builder<'a> {
             } => steps::autotools_steps(
                 &prefix,
                 &steps::Autotools {
-                    configure_flags: configure_flags.clone(),
-                    make_flags: make_flags.clone(),
-                    install_flags: install_flags.clone(),
+                    configure_flags: expand(configure_flags)?,
+                    make_flags: expand(make_flags)?,
+                    install_flags: expand(install_flags)?,
                     check: record.check_enabled,
                     jobs: settings.jobs,
                 },
             ),
             BuildOptions::BootstrapMake { configure_flags } => {
-                steps::bootstrap_make_steps(&prefix, configure_flags)
+                steps::bootstrap_make_steps(&prefix, &expand(configure_flags)?)
             }
             BuildOptions::Prebuilt { install } => steps::prebuilt_steps(&prefix, install),
         });
@@ -407,16 +477,49 @@ impl<'a> Builder<'a> {
             binds.push(bind(&package_dir.join("patches"), "/patches", false));
         }
         let mut path = String::new();
+        let mut cflags = Vec::new();
+        let mut ldflags = vec![format!("-Wl,-rpath,{prefix}/lib")];
+        let mut pkg_config_path = Vec::new();
+        let mut pkg_config = String::new();
         for id in &dep_ids {
-            binds.push(bind(&store_dir.join(id), &format!("{STORE}/{id}"), false));
-            path.push_str(&format!("{STORE}/{id}/bin:"));
+            let host = store_dir.join(id);
+            let inside = format!("{STORE}/{id}");
+            binds.push(bind(&host, &inside, false));
+            path.push_str(&format!("{inside}/bin:"));
+            if let Some(loader) = loader_name(&host.join("lib")) {
+                cflags.push("-fPIC".to_owned());
+                ldflags.push("-dynamic".to_owned());
+                ldflags.push(format!("-Wl,--dynamic-linker={inside}/lib/{loader}"));
+                continue;
+            }
+            if host.join("include").is_dir() {
+                cflags.push(format!("-isystem{inside}/include"));
+            }
+            if host.join("lib").is_dir() {
+                ldflags.push(format!("-L{inside}/lib"));
+                ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
+            }
+            for dir in ["lib/pkgconfig", "share/pkgconfig"] {
+                if host.join(dir).is_dir() {
+                    pkg_config_path.push(format!("{inside}/{dir}"));
+                }
+            }
+            if host.join("bin/pkgconf").is_file() {
+                pkg_config = format!("{inside}/bin/pkgconf");
+            }
         }
         path.push_str("/bin");
+        let extra = [
+            ("VUG_CFLAGS", cflags.join(" ")),
+            ("VUG_LDFLAGS", ldflags.join(" ")),
+            ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
+            ("PKG_CONFIG", pkg_config),
+        ];
 
         eprintln!("building {name} {version}");
         run_sandbox(&Sandbox {
             binds,
-            env: build_env(path),
+            env: build_env(path, &extra),
             workdir: "/build/src".to_owned(),
             command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
         })?;
@@ -457,5 +560,68 @@ impl<'a> Builder<'a> {
             fresh: true,
             closure: run_closure,
         })
+    }
+}
+
+/// Replaces this process by `program` of the output `id`, in a mount
+/// namespace that shows the host file system and the store at `/vug/store`.
+/// Returns only when that fails, with the reason.
+pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[String]) -> String {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = Command::new("bwrap");
+    let entries = match fs::read_dir("/") {
+        Ok(entries) => entries,
+        Err(e) => return format!("read /: {e}"),
+    };
+    let mut names: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .collect();
+    names.sort();
+    for path in names {
+        let flag = if path == Path::new("/dev") {
+            "--dev-bind"
+        } else {
+            "--bind"
+        };
+        command.arg(flag).arg(&path).arg(&path);
+    }
+    command
+        .arg("--ro-bind")
+        .arg(settings.data_dir.join("store"))
+        .arg(STORE)
+        .arg("--")
+        .arg(format!("{STORE}/{id}/{program}"))
+        .args(arguments);
+    format!("bwrap: {}", command.exec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn direct() -> BTreeMap<String, String> {
+        BTreeMap::from([("zlib".to_owned(), "/vug/store/zzz".to_owned())])
+    }
+
+    #[test]
+    fn expand_out_and_dependency() {
+        assert_eq!(
+            expand_flag("--with-z={dep:zlib} --libdir={out}/lib", "/o", &direct()),
+            Ok("--with-z=/vug/store/zzz --libdir=/o/lib".to_owned())
+        );
+    }
+
+    #[test]
+    fn expand_leaves_other_braces() {
+        assert_eq!(
+            expand_flag("CFLAGS=-DX={1}", "/o", &direct()),
+            Ok("CFLAGS=-DX={1}".to_owned())
+        );
+    }
+
+    #[test]
+    fn expand_rejects_unknown_dependency() {
+        assert!(expand_flag("{dep:openssl}", "/o", &direct()).is_err());
     }
 }
