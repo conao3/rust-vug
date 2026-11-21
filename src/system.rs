@@ -773,6 +773,46 @@ fn symlink(target: impl AsRef<Path>, link: &Path) -> Result<(), String> {
     io("symlink", link, std::os::unix::fs::symlink(target, link))
 }
 
+/// The directory on the host behind a store path, when it is a directory
+/// and not a link.
+fn store_directory(store_dir: &Path, path: &Path) -> Option<PathBuf> {
+    let host = store_dir.join(path.strip_prefix(STORE).ok()?);
+    fs::symlink_metadata(&host)
+        .ok()
+        .filter(|metadata| metadata.is_dir())
+        .map(|_| host)
+}
+
+/// Puts the store path `target` at `link` in a link farm. Where `link`
+/// already is a directory of another package and `target` is a directory
+/// too, the two are merged entry by entry; otherwise `target` replaces what
+/// is there.
+fn merge_link(store_dir: &Path, target: &Path, link: &Path) -> Result<(), String> {
+    let Some(new_dir) = store_directory(store_dir, target) else {
+        return symlink(target, link);
+    };
+    let Ok(metadata) = fs::symlink_metadata(link) else {
+        return symlink(target, link);
+    };
+    if metadata.file_type().is_symlink() {
+        let earlier = io("readlink", link, fs::read_link(link))?;
+        let Some(earlier_dir) = store_directory(store_dir, &earlier) else {
+            return symlink(target, link);
+        };
+        io("remove", link, fs::remove_file(link))?;
+        io("create", link, fs::create_dir(link))?;
+        for entry in entry_names(&earlier_dir) {
+            symlink(earlier.join(&entry), &link.join(&entry))?;
+        }
+    } else if !metadata.is_dir() {
+        return symlink(target, link);
+    }
+    for entry in entry_names(&new_dir) {
+        merge_link(store_dir, &target.join(&entry), &link.join(&entry))?;
+    }
+    Ok(())
+}
+
 fn entry_names(dir: &Path) -> Vec<std::ffi::OsString> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
@@ -865,8 +905,9 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
             ("share", "share"),
         ] {
             for entry in entry_names(&store_dir.join(id).join(from)) {
-                symlink(
-                    Path::new(STORE).join(id).join(from).join(&entry),
+                merge_link(
+                    &store_dir,
+                    &Path::new(STORE).join(id).join(from).join(&entry),
                     &out.join("sw").join(into).join(&entry),
                 )?;
             }

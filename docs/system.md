@@ -135,7 +135,7 @@ says.
 | `bin/switch-to-system` | Switches a running system to this one. |
 | `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
 | `kernel` | A link to the kernel image. |
-| `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. When two packages have an entry of the same name, the package listed later wins. `sw/sbin` is a link to `bin`, and `sw/bin/sh` a link to the `sh` program of the record. |
+| `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. A directory that two packages have is merged entry by entry, at every depth; for anything else of the same name, the package listed later wins. `sw/sbin` is a link to `bin`, and `sw/bin/sh` a link to the `sh` program of the record. |
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
 | `manifest/` | The paths and kinds of the files, the modes of the seed files, `passwd`, `group`, `shadow`, the home directories, the setuid programs, and `closure`: the store paths of the system, its kernel, its packages, and everything they need at run time. |
