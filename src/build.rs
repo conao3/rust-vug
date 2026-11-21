@@ -550,8 +550,11 @@ impl<'a> Builder<'a> {
         )?;
         io("create", &store_dir, fs::create_dir_all(&store_dir))?;
         let final_path = store_dir.join(&id);
-        if !final_path.exists() {
-            io("rename", &final_path, fs::rename(&out, &final_path))?;
+        if !final_path.exists()
+            && let Err(error) = fs::rename(&out, &final_path)
+            && !final_path.exists()
+        {
+            return Err(format!("rename {}: {error}", final_path.display()));
         }
         io("remove", &work, fs::remove_dir_all(&work))?;
 
