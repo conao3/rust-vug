@@ -135,7 +135,7 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 |---|---|
 | `bin/` | Added to `PATH`. |
 | `lib/ld-musl-*.so.1` (a C library with its dynamic loader) | Programs are linked dynamically with that loader: `-fPIC` when compiling, `-dynamic -Wl,--dynamic-linker=<loader>` when linking. Nothing else of this dependency is added. |
-| `include/` | `-I<path>/include` |
+| `include/` | `-isystem <path>/include`: a system header directory, so a warning inside a header of a dependency is not reported (and is no error under `-Werror`). The compiler searches its own C library and kernel headers first. |
 | `lib/` | `-L<path>/lib`, and `-Wl,-rpath,<path>/lib` when the dependency is needed at run time (it is in `dependencies.run`, or a run-time dependency of one that is). |
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |

@@ -33,7 +33,7 @@ pub struct TreeReport {
 
 pub(crate) enum Parsed {
     Package(PackageRecord),
-    Version(VersionRecord),
+    Version(Box<VersionRecord>),
 }
 
 pub(crate) struct PackageRecord {
@@ -62,6 +62,7 @@ pub(crate) enum BuildOptions {
         make_flags: Vec<String>,
         install_flags: Vec<String>,
         install_targets: Vec<String>,
+        configure_command: Vec<String>,
     },
     BootstrapMake {
         configure_flags: Vec<String>,
@@ -356,6 +357,7 @@ fn parse_version(
         make_flags: Vec::new(),
         install_flags: Vec::new(),
         install_targets: Vec::new(),
+        configure_command: Vec::new(),
     };
     if let Some(build_table) = req_table(map, "build", "", &mut errors) {
         let kind = req_string(build_table, "kind", "build.", &mut errors).unwrap_or_default();
@@ -365,6 +367,7 @@ fn parse_version(
                     build_table,
                     &[
                         "kind",
+                        "configure-command",
                         "configure-flags",
                         "make-flags",
                         "install-flags",
@@ -393,6 +396,13 @@ fn parse_version(
                     install_targets: opt_string_array(
                         build_table,
                         "install-targets",
+                        "build.",
+                        &mut errors,
+                    )
+                    .unwrap_or_default(),
+                    configure_command: opt_string_array(
+                        build_table,
+                        "configure-command",
                         "build.",
                         &mut errors,
                     )
@@ -718,8 +728,12 @@ fn canonical_version(record: &VersionRecord) -> String {
             make_flags,
             install_flags,
             install_targets,
+            configure_command,
         } => {
             write_string_field(&mut out, "kind", "autotools");
+            if !configure_command.is_empty() {
+                write_array(&mut out, "configure-command", configure_command);
+            }
             if !configure_flags.is_empty() {
                 write_array(&mut out, "configure-flags", configure_flags);
             }
@@ -837,7 +851,7 @@ pub(crate) fn load_version(path: &Path) -> Result<(VersionRecord, String), Vec<R
     match parse_text(&text, path, None).map_err(to_errors)? {
         Parsed::Version(record) => {
             let canonical = canonical_version(&record);
-            Ok((record, canonical))
+            Ok((*record, canonical))
         }
         Parsed::Package(_) => Err(vec![error_at(path, "expected a version record".to_owned())]),
     }
@@ -877,7 +891,7 @@ fn parse_text(text: &str, path: &Path, dir_name: Option<&str>) -> Result<Parsed,
         let sources = upstream_sources_of(path);
         let (record, errors) = parse_version(&table, &stem, sources);
         if errors.is_empty() {
-            Ok(Parsed::Version(record))
+            Ok(Parsed::Version(Box::new(record)))
         } else {
             Err(errors)
         }
@@ -1217,6 +1231,7 @@ sources = [
                 make_flags: Vec::new(),
                 install_flags: Vec::new(),
                 install_targets: Vec::new(),
+                configure_command: Vec::new(),
             },
             deps_build: vec!["make".to_owned()],
             deps_run: Vec::new(),

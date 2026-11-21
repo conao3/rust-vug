@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "4";
+const BUILD_RULES: &str = "5";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -730,7 +730,8 @@ impl<'a> Builder<'a> {
                 continue;
             }
             if host.join("include").is_dir() {
-                cflags.push(format!("-I{inside}/include"));
+                cflags.push("-isystem".to_owned());
+                cflags.push(format!("{inside}/include"));
             }
             if host.join("lib").is_dir() {
                 ldflags.push(format!("-L{inside}/lib"));
@@ -813,9 +814,11 @@ impl<'a> Builder<'a> {
                 make_flags,
                 install_flags,
                 install_targets,
+                configure_command,
             } => steps::autotools_steps(
                 &prefix,
                 &steps::Autotools {
+                    configure_command: expand(configure_command)?,
                     configure_flags: expand(configure_flags)?,
                     make_flags: expand(make_flags)?,
                     install_flags: expand(install_flags)?,

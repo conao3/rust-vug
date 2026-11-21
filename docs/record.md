@@ -119,6 +119,7 @@ Runs `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
 
 | Key | Type | Default |
 |---|---|---|
+| `build.configure-command` | array of strings, order kept | empty, which means `./configure --prefix=<output>` |
 | `build.configure-flags` | array of strings, order kept | empty |
 | `build.make-flags` | array of strings, order kept | empty |
 | `build.install-flags` | array of strings, order kept | empty |

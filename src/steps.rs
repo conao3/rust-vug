@@ -5,6 +5,9 @@
 pub type Step = Vec<String>;
 
 pub struct Autotools {
+    /// The words that start the configure step; empty means
+    /// `./configure --prefix=<prefix>`.
+    pub configure_command: Vec<String>,
     pub configure_flags: Vec<String>,
     pub make_flags: Vec<String>,
     pub install_flags: Vec<String>,
@@ -59,7 +62,11 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
 /// 3. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
 /// 4. `["make", "install", <make_flags>..., <install_flags>...]`
 pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
-    let mut configure = vec!["./configure".to_string(), format!("--prefix={prefix}")];
+    let mut configure = if options.configure_command.is_empty() {
+        vec!["./configure".to_string(), format!("--prefix={prefix}")]
+    } else {
+        options.configure_command.clone()
+    };
     configure.extend(options.configure_flags.iter().cloned());
 
     let jobs = format!("-j{}", options.jobs);

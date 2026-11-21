@@ -39,6 +39,7 @@ fn unpack_with_patches() {
 #[test]
 fn autotools_with_check() {
     let options = Autotools {
+        configure_command: vec![],
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
@@ -61,6 +62,7 @@ fn autotools_with_check() {
 #[test]
 fn autotools_without_check() {
     let options = Autotools {
+        configure_command: vec![],
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
@@ -84,6 +86,7 @@ fn autotools_without_check() {
 #[test]
 fn autotools_minimal() {
     let options = Autotools {
+        configure_command: vec![],
         configure_flags: vec![],
         make_flags: vec![],
         install_flags: vec![],
@@ -374,6 +377,7 @@ fn meson_kind() {
 #[test]
 fn autotools_install_targets_replace_install() {
     let options = Autotools {
+        configure_command: vec![],
         configure_flags: vec![],
         make_flags: vec![],
         install_flags: vec!["sysconfdir=/out/etc".to_string()],
@@ -403,6 +407,28 @@ fn cmake_steps_configure_build_and_install() {
             "cmake --build build -j 3",
             "ctest --test-dir build -j 3",
             "cmake --install build",
+        ]
+    );
+}
+
+#[test]
+fn autotools_configure_command_replaces_the_default() {
+    let options = Autotools {
+        configure_command: vec!["./Configure".to_string(), "-Dprefix=/out".to_string()],
+        configure_flags: vec!["-des".to_string()],
+        make_flags: vec![],
+        install_flags: vec![],
+        install_targets: vec![],
+        check: false,
+        jobs: 1,
+    };
+    let steps = autotools_steps("/out", &options);
+    assert_eq!(
+        steps[0],
+        vec![
+            "./Configure".to_string(),
+            "-Dprefix=/out".to_string(),
+            "-des".to_string()
         ]
     );
 }
