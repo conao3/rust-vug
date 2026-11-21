@@ -1,0 +1,60 @@
+{
+  description = "vug: a declarative package manager and system builder";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    leanfran = {
+      url = "github:conao3/lean-leanfran/1bb464c6d419da8037698053f52dd23476a042d9";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+  outputs =
+    inputs:
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
+      imports = [ inputs.treefmt-nix.flakeModule ];
+      perSystem =
+        { pkgs, system, ... }:
+        let
+          leanfran = inputs.leanfran.packages.${system}.rust-compiler;
+        in
+        {
+          treefmt = {
+            projectRootFile = "flake.nix";
+            programs.nixfmt.enable = true;
+            programs.rustfmt.enable = true;
+          };
+          devShells.default = pkgs.mkShell {
+            packages = [
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.clippy
+              pkgs.rustfmt
+              pkgs.rust-analyzer
+              pkgs.lean4
+              pkgs.gnumake
+              leanfran
+            ];
+            LEANFRAN_CLI = "${leanfran}/bin/leanfran";
+          };
+          packages.default = pkgs.rustPlatform.buildRustPackage {
+            pname = "vug";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            LEANFRAN_OFFLINE = "1";
+            meta = {
+              mainProgram = "vug";
+              license = pkgs.lib.licenses.asl20;
+            };
+          };
+        };
+    };
+}
