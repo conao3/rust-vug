@@ -18,6 +18,11 @@ const STORE: &str = "/vug/store";
 const PLACEHOLDER_ID: &str = "00000000000000000000000000000000";
 const SOURCE_DATE_EPOCH: &str = "315532800";
 
+/// Part of every index key. Increase it whenever the steps, flags, or
+/// environment that a build receives change, so that outputs recorded under
+/// the previous rules are built again.
+const BUILD_RULES: &str = "1";
+
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
 /// The wrapper drops `--target=...` (zig takes `-target`), adds `VUG_CFLAGS`,
@@ -376,6 +381,7 @@ impl<'a> Builder<'a> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(canonical.as_bytes());
         hasher.update(self.seed_id.as_bytes());
+        hasher.update(BUILD_RULES.as_bytes());
         for id in &dep_ids {
             hasher.update(id.as_bytes());
         }
@@ -478,7 +484,10 @@ impl<'a> Builder<'a> {
         }
         let mut path = String::new();
         let mut cflags = Vec::new();
-        let mut ldflags = vec![format!("-Wl,-rpath,{prefix}/lib")];
+        let mut ldflags = vec![
+            "-Wl,--undefined-version".to_owned(),
+            format!("-Wl,-rpath,{prefix}/lib"),
+        ];
         let mut pkg_config_path = Vec::new();
         let mut pkg_config = String::new();
         for id in &dep_ids {

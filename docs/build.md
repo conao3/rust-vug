@@ -99,8 +99,11 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |
 
-`-Wl,-rpath,<output>/lib` is always added when linking, so a program finds
-the libraries of its own package.
+Two flags are always added when linking: `-Wl,-rpath,<output>/lib`, so a
+program finds the libraries of its own package, and
+`-Wl,--undefined-version`, so a linker version script may name symbols that
+the library does not define (the seed linker rejects that by default, and
+many packages rely on it).
 
 A package that does not depend on a C library with a loader is linked
 statically against the C library bundled with the seed compiler.
@@ -113,8 +116,9 @@ what that dependency needs at run time, each at its store path, and `PATH`
 lists their `bin` directories before `/bin`.
 
 A finished build is recorded in `index/<name>/<version>` as `<key> <id>`.
-The key is the BLAKE3 hash of the canonical version record, the seed, and
-the ids of the dependencies in the build root. A build whose key is already
+The key is the BLAKE3 hash of the canonical version record, the seed, the
+revision of vug's build rules, and the ids of the dependencies in the build
+root. A build whose key is already
 in the index returns the recorded id without running.
 
 ## Command
