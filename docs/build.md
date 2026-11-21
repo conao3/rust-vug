@@ -102,6 +102,10 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     for `c++`); without it zig does not search the C library headers.
   - a link whose inputs are only libraries gets an empty source file as
     well; zig cannot link without an object of its own.
+  - `-fno-sanitize=undefined` comes before the arguments of the package:
+    without an optimization level zig compiles with the undefined-behavior
+    sanitizer, and a program then aborts where the same code built by
+    another compiler runs.
   - an unused command-line argument and a use of `__DATE__` or `__TIME__`
     are never errors (zig makes the second one an error at `-O3`; with
     `SOURCE_DATE_EPOCH` set the macros are reproducible).
