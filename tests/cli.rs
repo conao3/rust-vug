@@ -170,3 +170,70 @@ fn debug_flag() {
     assert_eq!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stderr).contains("left"));
 }
+
+fn system_error(record: &str) -> String {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let systems = root.path().join("systems");
+    std::fs::create_dir(&systems).expect("create systems");
+    std::fs::write(systems.join("demo.toml"), record).expect("write record");
+    let output = vug(&[
+        "system",
+        "build-system",
+        "--root",
+        root.path().to_str().expect("path"),
+        "--name",
+        "demo",
+        "--data-dir",
+        root.path().join("data").to_str().expect("path"),
+        "--cache-dir",
+        root.path().join("cache").to_str().expect("path"),
+    ]);
+    assert_ne!(output.status.code(), Some(0));
+    String::from_utf8(output.stderr).expect("stderr is UTF-8")
+}
+
+const SYSTEM_HEAD: &str =
+    "name = \"demo\"\nkernel = \"linux\"\ninit = \"/bin/sh\"\npackages = []\n";
+
+#[test]
+fn system_record_errors() {
+    for (body, expected) in [
+        (
+            "[[file]]\npath = \"/init\"\ncontent = \"\"\n",
+            "expected a path below /etc",
+        ),
+        (
+            "[[file]]\npath = \"/etc/a\"\ncontent = \"\"\n[[file]]\npath = \"/etc/a/b\"\ncontent = \"\"\n",
+            "inside another listed path",
+        ),
+        (
+            "[[file]]\npath = \"/etc/a\"\nmode = \"600\"\ncontent = \"\"\n",
+            "a link file takes",
+        ),
+        (
+            "[[file]]\npath = \"/etc/a\"\nkind = \"copy\"\ncontent = \"\"\n",
+            "expected \"link\" or \"seed\"",
+        ),
+        (
+            "[[group]]\nname = \"root\"\ngid = 0\n[[user]]\nname = \"root\"\nuid = 0\ngroup = \"wheel\"\nhome = \"/root\"\nshell = \"/bin/sh\"\n",
+            "is not a group of this system",
+        ),
+        (
+            "[[group]]\nname = \"root\"\ngid = 0\n[[user]]\nname = \"root\"\nuid = 0\ngroup = \"root\"\nhome = \"/root\"\nshell = \"/bin/sh\"\n[[file]]\npath = \"/etc/passwd\"\ncontent = \"\"\n",
+            "written by vug itself",
+        ),
+        (
+            "[[setuid]]\npackage = \"sudo\"\nprogram = \"bin/sudo\"\n",
+            "is not a package of this system",
+        ),
+    ] {
+        let error = system_error(&format!("{SYSTEM_HEAD}{body}"));
+        assert!(error.contains(expected), "{body:?}: {error}");
+    }
+}
+
+#[test]
+fn system_record_needs_init() {
+    let error = system_error("name = \"demo\"\nkernel = \"linux\"\npackages = []\n");
+    assert!(error.contains("init: expected a string"), "{error}");
+}

@@ -61,8 +61,36 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SystemCommands {
-    /// Build the kernel image and the initramfs of a system.
+    /// Build a system into the store.
     BuildSystem(BuildArgs),
+    /// Build a system and write a disk image that boots it.
+    BuildImage(ImageArgs),
+    /// Build a system and write an archive of its store paths.
+    ExportSystem(ExportArgs),
+}
+
+#[derive(Args)]
+struct ImageArgs {
+    #[command(flatten)]
+    build: BuildArgs,
+    /// Image file to write.
+    #[arg(long)]
+    image: PathBuf,
+    /// Size of the file system (a number with a k, m, g, or t suffix).
+    #[arg(long, default_value = "4g")]
+    size: String,
+}
+
+#[derive(Args)]
+struct ExportArgs {
+    #[command(flatten)]
+    build: BuildArgs,
+    /// Archive file to write.
+    #[arg(long)]
+    archive: PathBuf,
+    /// A system whose store paths are left out (an id or a store path).
+    #[arg(long)]
+    base: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -175,6 +203,10 @@ const VALUE_OPTIONS: &[&str] = &[
     "--jobs",
     "--program",
     "--arguments",
+    "--image",
+    "--size",
+    "--archive",
+    "--base",
 ];
 
 /// A bare `help` at the end of the arguments asks for the help of the command
@@ -271,10 +303,11 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
         },
-        Commands::System { command } => {
-            let SystemCommands::BuildSystem(args) = command;
-            run_build_system(&cli, args)
-        }
+        Commands::System { command } => match command {
+            SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
+            SystemCommands::BuildImage(args) => run_build_image(&cli, args),
+            SystemCommands::ExportSystem(args) => run_export_system(&cli, args),
+        },
         Commands::Package { command } => match command {
             PackageCommands::BuildPackage(args) => run_build(&cli, args),
             PackageCommands::RunPackage(args) => run_program(&cli, args),
@@ -456,29 +489,62 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
     })
 }
 
-fn run_build_system(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
-    let settings = settings_of(cli, args)?;
-    let built = system::build(&settings, &args.name).map_err(|e| (version::failure_status(), e))?;
+fn print_system(
+    cli: &Cli,
+    built: &system::BuiltSystem,
+    extra: serde_json::Value,
+) -> Result<i32, (i32, String)> {
+    let path = format!("/vug/store/{}", built.id);
     match cli.output {
-        Output::Json => print_json(&json!({
-            "Name": built.name,
-            "Kernel": built.kernel,
-            "Initrd": built.initrd,
-            "Packages": built.packages,
-        })),
-        Output::Text => write_out(&format!(
-            "{}\n{}\n",
-            built.kernel.display(),
-            built.initrd.display()
-        )),
+        Output::Json => {
+            let mut value = json!({
+                "Name": built.name,
+                "Path": path,
+                "Kernel": built.kernel,
+                "StorePaths": built.closure.len(),
+            });
+            if let (Some(value), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
+                value.extend(extra.clone());
+            }
+            print_json(&value)
+        }
+        Output::Text => write_out(&format!("{path}\n")),
         Output::Table => write_out(&format!(
-            "Name\tKernel\tInitrd\n{}\t{}\t{}\n",
+            "Name\tPath\tKernel\n{}\t{path}\t{}\n",
             built.name,
-            built.kernel.display(),
-            built.initrd.display()
+            built.kernel.display()
         )),
     }?;
     Ok(0)
+}
+
+fn run_build_system(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
+    let settings = settings_of(cli, args)?;
+    let built = system::build(&settings, &args.name).map_err(|e| (version::failure_status(), e))?;
+    print_system(cli, &built, json!({}))
+}
+
+fn run_build_image(cli: &Cli, args: &ImageArgs) -> Result<i32, (i32, String)> {
+    let settings = settings_of(cli, &args.build)?;
+    let built = system::build_image(&settings, &args.build.name, &args.image, &args.size)
+        .map_err(|e| (version::failure_status(), e))?;
+    print_system(cli, &built, json!({ "Image": args.image }))
+}
+
+fn run_export_system(cli: &Cli, args: &ExportArgs) -> Result<i32, (i32, String)> {
+    let settings = settings_of(cli, &args.build)?;
+    let (built, written) = system::export(
+        &settings,
+        &args.build.name,
+        &args.archive,
+        args.base.as_deref(),
+    )
+    .map_err(|e| (version::failure_status(), e))?;
+    print_system(
+        cli,
+        &built,
+        json!({ "Archive": args.archive, "Written": written }),
+    )
 }
 
 fn run_program(cli: &Cli, args: &RunArgs) -> Result<i32, (i32, String)> {

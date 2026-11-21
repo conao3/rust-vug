@@ -62,10 +62,13 @@ slsh version 0.9.4-0; S-Lang version: 2.3.3
 
 ```console
 $ vug system build-system --root . --name minimal
+$ vug system build-image --root . --name minimal --image minimal.img
 ```
 
-`build-system` builds the kernel image and the initramfs of a system record
-(`docs/system.md`); the two boot together in QEMU.
+`build-system` builds a system record (`docs/system.md`) into one store
+path: packages, files below `/etc`, users, and the scripts that start it and
+switch a running machine to it. `build-image` also writes a disk image that
+boots it in QEMU.
 
 ## Check
 

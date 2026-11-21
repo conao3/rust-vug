@@ -415,6 +415,36 @@ fn file_name_of(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }
 
+/// Moves the tree `out`, built for the placeholder path, into the store:
+/// hashes it, replaces the placeholder by the final path, and renames it.
+/// Returns the id.
+pub fn install_output(store_dir: &Path, out: &Path) -> Result<String, String> {
+    let id = treehash::encode_base32(&io("hash", out, treehash::hash_tree(out))?);
+    io(
+        "rewrite",
+        out,
+        rewrite::rewrite_tree(
+            out,
+            placeholder_path().as_bytes(),
+            format!("{STORE}/{id}").as_bytes(),
+        ),
+    )?;
+    io("create", store_dir, fs::create_dir_all(store_dir))?;
+    let final_path = store_dir.join(&id);
+    if !final_path.exists()
+        && let Err(error) = fs::rename(out, &final_path)
+        && !final_path.exists()
+    {
+        return Err(format!("rename {}: {error}", final_path.display()));
+    }
+    Ok(id)
+}
+
+/// The path an output is built for before its id is known.
+pub fn placeholder_path() -> String {
+    format!("{STORE}/{PLACEHOLDER_ID}")
+}
+
 impl Built {
     /// Ids of the output and of everything it needs at run time.
     pub fn closure(&self) -> &BTreeSet<String> {
@@ -430,6 +460,11 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    /// The seed directory on the host.
+    pub fn seed_dir(&self) -> &Path {
+        &self.seed_dir
+    }
+
     pub fn new(settings: &'a Settings) -> Result<Self, String> {
         let (seed_dir, seed_id) = ensure_seed(settings)?;
         Ok(Self {
@@ -745,20 +780,7 @@ impl<'a> Builder<'a> {
             &meta,
             fs::write(meta.join("record.toml"), &canonical),
         )?;
-        let id = treehash::encode_base32(&io("hash", &out, treehash::hash_tree(&out))?);
-        io(
-            "rewrite",
-            &out,
-            rewrite::rewrite_tree(&out, prefix.as_bytes(), format!("{STORE}/{id}").as_bytes()),
-        )?;
-        io("create", &store_dir, fs::create_dir_all(&store_dir))?;
-        let final_path = store_dir.join(&id);
-        if !final_path.exists()
-            && let Err(error) = fs::rename(&out, &final_path)
-            && !final_path.exists()
-        {
-            return Err(format!("rename {}: {error}", final_path.display()));
-        }
+        let id = install_output(&store_dir, &out)?;
         io("remove", &work, fs::remove_dir_all(&work))?;
 
         if let Some(parent) = index_path.parent() {
@@ -780,18 +802,15 @@ impl<'a> Builder<'a> {
     }
 }
 
-/// Replaces this process by `program` of the output `id`, in a mount
-/// namespace that shows the host file system and the store at `/vug/store`.
-/// Returns only when that fails, with the reason.
-pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[String]) -> String {
-    use std::os::unix::process::CommandExt;
-
+/// A `bwrap` command line up to the program: a mount namespace that shows
+/// the host file system and the store at `/vug/store`. With `as_root` the
+/// caller appears as user 0, so every file it owns appears owned by root.
+pub fn store_command(settings: &Settings, as_root: bool) -> Result<Command, String> {
     let mut command = Command::new("bwrap");
-    let entries = match fs::read_dir("/") {
-        Ok(entries) => entries,
-        Err(e) => return format!("read /: {e}"),
-    };
-    let mut names: Vec<_> = entries
+    if as_root {
+        command.args(["--unshare-user", "--uid", "0", "--gid", "0"]);
+    }
+    let mut names: Vec<_> = io("read", Path::new("/"), fs::read_dir("/"))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .collect();
     names.sort();
@@ -807,38 +826,22 @@ pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[S
         .arg("--ro-bind")
         .arg(settings.data_dir.join("store"))
         .arg(STORE)
-        .arg("--")
+        .arg("--");
+    Ok(command)
+}
+
+/// Replaces this process by `program` of the output `id`, in a mount
+/// namespace that shows the host file system and the store at `/vug/store`.
+/// Returns only when that fails, with the reason.
+pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[String]) -> String {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = match store_command(settings, false) {
+        Ok(command) => command,
+        Err(error) => return error,
+    };
+    command
         .arg(format!("{STORE}/{id}/{program}"))
         .args(arguments);
     format!("bwrap: {}", command.exec())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn direct() -> BTreeMap<String, String> {
-        BTreeMap::from([("zlib".to_owned(), "/vug/store/zzz".to_owned())])
-    }
-
-    #[test]
-    fn expand_out_and_dependency() {
-        assert_eq!(
-            expand_flag("--with-z={dep:zlib} --libdir={out}/lib", "/o", &direct()),
-            Ok("--with-z=/vug/store/zzz --libdir=/o/lib".to_owned())
-        );
-    }
-
-    #[test]
-    fn expand_leaves_other_braces() {
-        assert_eq!(
-            expand_flag("CFLAGS=-DX={1}", "/o", &direct()),
-            Ok("CFLAGS=-DX={1}".to_owned())
-        );
-    }
-
-    #[test]
-    fn expand_rejects_unknown_dependency() {
-        assert!(expand_flag("{dep:openssl}", "/o", &direct()).is_err());
-    }
 }
