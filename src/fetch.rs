@@ -45,7 +45,8 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
 ///   returned without any network access.
 /// - When it exists with different content, it is deleted and fetched again.
 /// - Otherwise the body of a GET to `url` is streamed to
-///   `cache_dir/<sha256>.partial`, hashed, and renamed to
+///   `cache_dir/<sha256>.<process id>.partial` (so that two processes fetching
+///   the same file do not write to one file), hashed, and renamed to
 ///   `cache_dir/<sha256>` when the hash matches.
 /// - On a hash mismatch the partial file is removed and
 ///   `FetchError::HashMismatch` is returned with both hex values.
@@ -70,7 +71,7 @@ pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, Fetch
         return Err(FetchError::Http(format!("status {}", res.status())));
     }
 
-    let partial = cache_dir.join(format!("{sha256}.partial"));
+    let partial = cache_dir.join(format!("{sha256}.{}.partial", std::process::id()));
     let result = (|| {
         let mut out = File::create(&partial).map_err(FetchError::Io)?;
         let mut reader = res.body_mut().with_config().limit(u64::MAX).reader();
