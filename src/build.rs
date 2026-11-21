@@ -400,6 +400,13 @@ fn file_name_of(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }
 
+impl Built {
+    /// Ids of the output and of everything it needs at run time.
+    pub fn closure(&self) -> &BTreeSet<String> {
+        &self.closure
+    }
+}
+
 pub struct Builder<'a> {
     settings: &'a Settings,
     seed_dir: PathBuf,

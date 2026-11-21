@@ -60,6 +60,13 @@ slsh version 0.9.4-0; S-Lang version: 2.3.3
 `run-package` runs a program of a package with the store visible at
 `/vug/store`, which dynamically linked programs need.
 
+```console
+$ vug system build-system --root . --name minimal
+```
+
+`build-system` builds the kernel image and the initramfs of a system record
+(`docs/system.md`); the two boot together in QEMU.
+
 ## Check
 
 ```console

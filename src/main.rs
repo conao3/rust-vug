@@ -1,6 +1,7 @@
 mod build;
 mod naming;
 mod record;
+mod system;
 mod version;
 
 use std::io::{Read as _, Write as _};
@@ -46,11 +47,22 @@ enum Commands {
         #[command(subcommand)]
         command: RecordCommands,
     },
+    /// Systems.
+    System {
+        #[command(subcommand)]
+        command: SystemCommands,
+    },
     /// Packages.
     Package {
         #[command(subcommand)]
         command: PackageCommands,
     },
+}
+
+#[derive(Subcommand)]
+enum SystemCommands {
+    /// Build the kernel image and the initramfs of a system.
+    BuildSystem(BuildArgs),
 }
 
 #[derive(Subcommand)]
@@ -259,6 +271,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
         },
+        Commands::System { command } => {
+            let SystemCommands::BuildSystem(args) = command;
+            run_build_system(&cli, args)
+        }
         Commands::Package { command } => match command {
             PackageCommands::BuildPackage(args) => run_build(&cli, args),
             PackageCommands::RunPackage(args) => run_program(&cli, args),
@@ -408,6 +424,15 @@ fn build_package(
     args: &BuildArgs,
 ) -> Result<(build::Settings, build::Built), (i32, String)> {
     let fail = |e: String| (version::failure_status(), e);
+    let settings = settings_of(cli, args)?;
+    let built = build::Builder::new(&settings)
+        .and_then(|mut builder| builder.build(&args.name, args.package_version.as_deref()))
+        .map_err(fail)?;
+    Ok((settings, built))
+}
+
+fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, String)> {
+    let fail = |e: String| (version::failure_status(), e);
     let data_dir = match &args.data_dir {
         Some(dir) => dir.clone(),
         None => xdg_dir("XDG_DATA_HOME", ".local/share").map_err(fail)?,
@@ -423,16 +448,37 @@ fn build_package(
         );
     }
     let absolute = |dir: &Path| std::path::absolute(dir).map_err(|e| fail(e.to_string()));
-    let settings = build::Settings {
+    Ok(build::Settings {
         root: absolute(&args.root)?,
         data_dir: absolute(&data_dir)?,
         cache_dir: absolute(&cache_dir)?,
         jobs: args.jobs,
-    };
-    let built = build::Builder::new(&settings)
-        .and_then(|mut builder| builder.build(&args.name, args.package_version.as_deref()))
-        .map_err(fail)?;
-    Ok((settings, built))
+    })
+}
+
+fn run_build_system(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
+    let settings = settings_of(cli, args)?;
+    let built = system::build(&settings, &args.name).map_err(|e| (version::failure_status(), e))?;
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Name": built.name,
+            "Kernel": built.kernel,
+            "Initrd": built.initrd,
+            "Packages": built.packages,
+        })),
+        Output::Text => write_out(&format!(
+            "{}\n{}\n",
+            built.kernel.display(),
+            built.initrd.display()
+        )),
+        Output::Table => write_out(&format!(
+            "Name\tKernel\tInitrd\n{}\t{}\t{}\n",
+            built.name,
+            built.kernel.display(),
+            built.initrd.display()
+        )),
+    }?;
+    Ok(0)
 }
 
 fn run_program(cli: &Cli, args: &RunArgs) -> Result<i32, (i32, String)> {
