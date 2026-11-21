@@ -620,6 +620,19 @@ impl<'a> Builder<'a> {
             ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
             ("PKG_CONFIG", pkg_config),
             ("PYTHONPATH", python_path.join(":")),
+            (
+                "LDFLAGS",
+                if matches!(record.build, BuildOptions::Meson { .. }) {
+                    ldflags
+                        .iter()
+                        .filter(|flag| flag.starts_with("-Wl,-rpath,"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                },
+            ),
         ];
         let expand = |flags: &[String]| -> Result<Vec<String>, String> {
             flags
