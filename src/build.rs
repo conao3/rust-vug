@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "5";
+const BUILD_RULES: &str = "6";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -34,6 +34,10 @@ asm=0
 dep=0
 for a; do
   shift
+  if [ "${want_output:-0}" = 1 ]; then
+    want_output=0
+    output=$a
+  fi
   if [ "${isystem:-0}" = 1 ]; then
     isystem=0
     set -- "$@" "-I$a"
@@ -48,7 +52,8 @@ for a; do
     -march=x86-64) set -- "$@" -march=x86_64 ;;
     -march=x86-64-v[234]) set -- "$@" "-march=x86_64_v${a#-march=x86-64-v}" ;;
     -S) link=0; asm=1; set -- "$@" "$a" ;;
-    -c | -E | -M | -MM) link=0; set -- "$@" "$a" ;;
+    -E) link=0; preprocess=1; set -- "$@" "$a" ;;
+    -c | -M | -MM) link=0; set -- "$@" "$a" ;;
     -MD | -MMD | -Wp,-MD,* | -Wp,-MMD,*) dep=1; set -- "$@" "$a" ;;
     -Wl,*)
       words=
@@ -66,7 +71,7 @@ for a; do
       unset IFS
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
       ;;
-    -o) output_given=1; set -- "$@" "$a" ;;
+    -o) output_given=1; want_output=1; set -- "$@" "$a" ;;
     -) stdin=1; set -- "$@" "$a" ;;
     -x | -x?*) lang=1; set -- "$@" "$a" ;;
     -*) set -- "$@" "$a" ;;
@@ -106,7 +111,7 @@ if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
       else set -- "$@" "$a"; fi
       prev=$a
     done
-    exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined "$@" ${VUG_CFLAGS-} -MT "$out" > /dev/null
+    exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" ${VUG_CFLAGS-} -MT "$out" > /dev/null
   ) || exit
   for a; do
     shift
@@ -116,10 +121,23 @@ if [ "$asm" = 1 ] && [ "$dep" = 1 ]; then
     esac
   done
 fi
-if [ "$link" = 1 ]; then
-  exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined "$@" ${VUG_CFLAGS-} ${VUG_LDFLAGS-}
+if [ "${stdin:-0}" = 1 ] && [ "${preprocess:-0}" = 1 ]; then
+  marker='s|"[^"]*zig-local/tmp/[0-9a-f]*-stdin\.c"|"<stdin>"|'
+  if [ -n "${output:-}" ]; then
+    /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" ${VUG_CFLAGS-} || exit
+    if [ -f "$output" ]; then sed -i "$marker" "$output"; fi
+    exit 0
+  fi
+  /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" ${VUG_CFLAGS-} > /tmp/vug-cc-$$.i
+  status=$?
+  sed "$marker" /tmp/vug-cc-$$.i
+  rm -f /tmp/vug-cc-$$.i
+  exit $status
 fi
-exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined "$@" ${VUG_CFLAGS-}
+if [ "$link" = 1 ]; then
+  exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" ${VUG_CFLAGS-} ${VUG_LDFLAGS-}
+fi
+exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" ${VUG_CFLAGS-}
 "#;
 
 /// `bin/ar`, `bin/ranlib`, and `bin/ld` of the seed.

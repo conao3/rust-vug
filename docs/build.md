@@ -49,7 +49,7 @@ Checking a store path reverses step 3 and compares the hash with the id.
 2. Create the build root: the seed tools, each dependency at its store path,
    the source archive, the patches, and an empty output directory at the
    placeholder path.
-3. Run the build inside `bwrap --unshare-all --clearenv`: no network, no
+3. Run the build inside `bwrap --unshare-all --hostname vug --clearenv`: no network, no
    host file system, a root that is read-only outside the build directory,
    `/tmp`, and the output, and only the environment variables `PATH`, `HOME`,
    `SOURCE_DATE_EPOCH`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
@@ -106,6 +106,12 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     without an optimization level zig compiles with the undefined-behavior
     sanitizer, and a program then aborts where the same code built by
     another compiler runs.
+  - `-UNDEBUG` comes before the arguments of the package: with an
+    optimization level zig defines `NDEBUG`, which switches every `assert`
+    off; a package that wants that passes `-DNDEBUG` itself.
+  - preprocessed output of standard input (`-E -`) names the input
+    `<stdin>` in its line markers, as other compilers do; zig names a
+    temporary file.
   - an unused command-line argument and a use of `__DATE__` or `__TIME__`
     are never errors (zig makes the second one an error at `-O3`; with
     `SOURCE_DATE_EPOCH` set the macros are reproducible).

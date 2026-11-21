@@ -18,7 +18,7 @@ const INIT: &str = r#"#!{self}/bin/busybox sh
 b={self}/bin/busybox
 $b mountpoint -q /proc || $b mount -t proc proc /proc
 $b mount -o remount,rw /
-for d in dev etc home root run sys tmp var; do
+for d in boot dev etc home root run sys tmp var; do
   if [ ! -d /$d ]; then $b mkdir /$d; fi
 done
 $b chmod 1777 /tmp
@@ -162,6 +162,7 @@ if [ -z "$n" ]; then
 fi
 $b ln -s system-$n $p/.system.$$
 $b mv -T $p/.system.$$ $p/system
+if [ -x $self/bin/install-boot ]; then $self/bin/install-boot; fi
 
 sc=$self/sw/bin/systemctl
 live=0
@@ -218,6 +219,64 @@ echo "vug: generation $n is $self"
 
 const FRAGMENT_KEYS: [&str; 5] = ["packages", "file", "group", "user", "setuid"];
 
+const INSTALL_BOOT: &str = r#"#!{self}/bin/busybox sh
+set -eu
+b={self}/bin/busybox
+esp=/boot
+if ! $b mountpoint -q $esp; then
+  echo "vug: $esp is not mounted; the boot entries are unchanged" >&2
+  exit 1
+fi
+p=/vug/profiles
+$b mkdir -p $esp/EFI/BOOT $esp/vug
+$b cp {self}/boot/loader $esp/EFI/BOOT/BOOTX64.EFI.tmp
+$b mv -f $esp/EFI/BOOT/BOOTX64.EFI.tmp $esp/EFI/BOOT/BOOTX64.EFI
+default=$($b readlink $p/system)
+default=${default#system-}
+body=$esp/limine.conf.body
+: > $body
+keep=
+index=0
+chosen=1
+for g in $($b ls $p | $b sed -n 's/^system-\([0-9][0-9]*\)$/\1/p' | $b sort -rn); do
+  s=$p/system-$g
+  if [ ! -f $s/boot/entry ]; then continue; fi
+  index=$((index + 1))
+  k=$($b readlink -f $s/kernel)
+  id=${k#/vug/store/}
+  id=${id%%/*}
+  if [ ! -f $esp/vug/$id.bzImage ]; then
+    $b cp "$k" $esp/vug/$id.bzImage.tmp
+    $b mv -f $esp/vug/$id.bzImage.tmp $esp/vug/$id.bzImage
+  fi
+  keep="$keep $id.bzImage"
+  if [ "$g" = "$default" ]; then chosen=$index; fi
+  echo "/vug generation $g" >> $body
+  $b cat $s/boot/entry >> $body
+done
+{
+  echo "timeout: 3"
+  echo "default_entry: $chosen"
+  $b cat $body
+} > $esp/limine.conf.tmp
+$b mv -f $esp/limine.conf.tmp $esp/limine.conf
+$b rm -f $body
+for f in $($b ls $esp/vug); do
+  case " $keep " in
+    *" $f "*) ;;
+    *) $b rm -f $esp/vug/$f ;;
+  esac
+done
+$b sync
+"#;
+
+const ESP_NAME: &str = "vug-esp";
+const ROOT_NAME: &str = "vug-root";
+const ESP_UUID: &str = "76756700-0000-4000-8000-000000000002";
+const ROOT_UUID: &str = "76756700-0000-4000-8000-000000000003";
+const ESP_BYTES: u64 = 256 << 20;
+const MIB: u64 = 1 << 20;
+
 #[derive(Clone, Copy, PartialEq)]
 enum FileKind {
     Link,
@@ -267,7 +326,16 @@ pub struct SystemRecord {
     kernel: String,
     init: String,
     sh: Option<String>,
+    boot: Option<Boot>,
     parts: Fragment,
+}
+
+struct Boot {
+    /// The EFI program of the loader, with `{pkg:NAME}`.
+    loader: String,
+    /// What the kernel takes as `root=`.
+    root: String,
+    arguments: Vec<String>,
 }
 
 pub struct BuiltSystem {
@@ -278,6 +346,8 @@ pub struct BuiltSystem {
     /// Ids of the system, its kernel, its packages, and what they need at
     /// run time.
     pub closure: BTreeSet<String>,
+    /// Whether the system has boot entries for an EFI loader.
+    pub efi: bool,
 }
 
 fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, String> {
@@ -657,7 +727,7 @@ fn load_service(
 /// names, and merges them.
 pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
     let (text, table) = parse(&root.join("systems").join(format!("{name}.toml")))?;
-    let mut allowed = vec!["name", "kernel", "init", "sh", "service"];
+    let mut allowed = vec!["name", "kernel", "init", "sh", "boot", "service"];
     allowed.extend(FRAGMENT_KEYS);
     unknown_keys(&table, &allowed, "")?;
     if string(&table, "name", "")? != name {
@@ -674,6 +744,33 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
     let sh = match table.get("sh") {
         None => None,
         Some(_) => Some(string(&table, "sh", "")?),
+    };
+    let boot = match table.get("boot") {
+        None => None,
+        Some(value) => {
+            let entry = value.as_table().ok_or("boot: expected a table")?;
+            unknown_keys(entry, &["loader", "root", "arguments"], "boot.")?;
+            let arguments = match entry.get("arguments") {
+                None => Vec::new(),
+                Some(_) => strings(entry, "arguments", "boot.")?,
+            };
+            let root = match entry.get("root") {
+                None => format!("PARTLABEL={ROOT_NAME}"),
+                Some(_) => string(entry, "root", "boot.")?,
+            };
+            if arguments
+                .iter()
+                .chain([&root])
+                .any(|word| word.is_empty() || word.chars().any(|c| !c.is_ascii_graphic()))
+            {
+                return Err("boot: an argument is empty or has white space".to_owned());
+            }
+            Some(Boot {
+                loader: string(entry, "loader", "boot.")?,
+                root,
+                arguments,
+            })
+        }
     };
     let mut parts = fragment(&table, None)?;
     let mut texts = vec![("system.toml".to_owned(), text)];
@@ -698,6 +795,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         kernel,
         init,
         sh,
+        boot,
         parts,
     })
 }
@@ -892,6 +990,34 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         format!("{STORE}/{}/boot/bzImage", kernel.id),
         &out.join("kernel"),
     )?;
+    if let Some(boot) = &record.boot {
+        let loader = pkg(&boot.loader, &paths)?;
+        if !valid_image_path(&loader) {
+            return Err(format!(
+                "boot.loader: {loader:?}: expected an absolute path"
+            ));
+        }
+        symlink(loader, &out.join("boot/loader"))?;
+        let mut cmdline = format!("root={} rw init={this}/init", boot.root);
+        for argument in &boot.arguments {
+            cmdline.push(' ');
+            cmdline.push_str(argument);
+        }
+        write_file(
+            &out.join("boot/entry"),
+            format!(
+                "    protocol: linux\n    path: boot():/vug/{}.bzImage\n    cmdline: {cmdline}\n",
+                kernel.id
+            )
+            .as_bytes(),
+            0o644,
+        )?;
+        write_file(
+            &out.join("bin/install-boot"),
+            INSTALL_BOOT.replace("{self}", &this).as_bytes(),
+            0o755,
+        )?;
+    }
 
     for dir in ["bin", "lib", "share"] {
         io("create", &out, fs::create_dir_all(out.join("sw").join(dir)))?;
@@ -1036,6 +1162,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         id,
         kernel: kernel_image,
         closure,
+        efi: record.boot.is_some(),
     })
 }
 
@@ -1048,7 +1175,153 @@ fn copy_store(settings: &Settings, ids: &BTreeSet<String>, root: &Path) -> Resul
     Ok(())
 }
 
-/// Writes an ext4 image whose root holds the system as generation 1.
+/// A size as `mke2fs` takes it: a number of bytes with a k, m, g, or t suffix.
+fn size_in_bytes(size: &str) -> Result<u64, String> {
+    let error = || format!("{size:?}: expected a number with a k, m, g, or t suffix");
+    let (digits, shift) = match size.chars().last().map(|c| c.to_ascii_lowercase()) {
+        Some('k') => (&size[..size.len() - 1], 10),
+        Some('m') => (&size[..size.len() - 1], 20),
+        Some('g') => (&size[..size.len() - 1], 30),
+        Some('t') => (&size[..size.len() - 1], 40),
+        _ => return Err(error()),
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_shl(shift))
+        .filter(|n| *n > 0)
+        .ok_or_else(error)
+}
+
+fn run_tool(settings: &Settings, words: &[String], input: Option<&str>) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let mut command = build::store_command(settings, true)?;
+    command.args(words);
+    if input.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    let mut child = command.spawn().map_err(|e| format!("bwrap: {e}"))?;
+    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("{}: {e}", words[0]))?;
+    }
+    let status = child.wait().map_err(|e| format!("{}: {e}", words[0]))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{}: {status}", words[0]))
+    }
+}
+
+/// Writes the partition table and the EFI system partition of a disk image
+/// whose root partition takes `root_bytes`.
+fn write_efi_parts(
+    settings: &Settings,
+    system: &BuiltSystem,
+    work: &Path,
+    image: &Path,
+    root_bytes: u64,
+) -> Result<(), String> {
+    let mut builder = Builder::new(settings)?;
+    let tool = |builder: &mut Builder, package: &str, program: &str| {
+        builder
+            .build(package, None)
+            .map(|built| format!("{STORE}/{}/{program}", built.id))
+    };
+    let sfdisk = tool(&mut builder, "util-linux", "sbin/sfdisk")?;
+    let mkfs = tool(&mut builder, "dosfstools", "sbin/mkfs.fat")?;
+    let mcopy = tool(&mut builder, "mtools", "bin/mcopy")?;
+    let image_name = image.display().to_string();
+    let table = format!(
+        "label: gpt\nlabel-id: {IMAGE_UUID}\nfirst-lba: 2048\n\
+         start=2048, size={}, type=U, uuid={ESP_UUID}, name={ESP_NAME}\n\
+         start={}, size={}, type=L, uuid={ROOT_UUID}, name={ROOT_NAME}\n",
+        ESP_BYTES / 512,
+        (MIB + ESP_BYTES) / 512,
+        root_bytes / 512,
+    );
+    run_tool(
+        settings,
+        &[
+            sfdisk,
+            "--quiet".to_owned(),
+            "--no-reread".to_owned(),
+            "--no-tell-kernel".to_owned(),
+            image_name.clone(),
+        ],
+        Some(&table),
+    )?;
+    run_tool(
+        settings,
+        &[
+            mkfs,
+            "-F".to_owned(),
+            "32".to_owned(),
+            "-n".to_owned(),
+            "VUGESP".to_owned(),
+            "-i".to_owned(),
+            "76756700".to_owned(),
+            "--invariant".to_owned(),
+            "--offset".to_owned(),
+            (MIB / 512).to_string(),
+            image_name.clone(),
+            (ESP_BYTES / 1024).to_string(),
+        ],
+        None,
+    )?;
+
+    let store = settings.data_dir.join("store").join(&system.id);
+    let esp = work.join("esp");
+    let loader = esp.join("EFI/BOOT/BOOTX64.EFI");
+    let resolve = |link: &Path| -> Result<PathBuf, String> {
+        let target = io("readlink", link, fs::read_link(link))?;
+        target
+            .strip_prefix(STORE)
+            .map(|inside| settings.data_dir.join("store").join(inside))
+            .map_err(|_| format!("{}: not a link into the store", link.display()))
+    };
+    let from = resolve(&store.join("boot/loader"))?;
+    write_file(&loader, &io("read", &from, fs::read(&from))?, 0o644)?;
+    let kernel = resolve(&store.join("kernel"))?;
+    let kernel_id = kernel
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .ok_or("kernel: not a store path")?;
+    write_file(
+        &esp.join("vug").join(format!("{kernel_id}.bzImage")),
+        &io("read", &kernel, fs::read(&kernel))?,
+        0o644,
+    )?;
+    let entry = store.join("boot/entry");
+    write_file(
+        &esp.join("limine.conf"),
+        format!(
+            "timeout: 3\ndefault_entry: 1\n/vug generation 1\n{}",
+            io("read", &entry, fs::read_to_string(&entry))?
+        )
+        .as_bytes(),
+        0o644,
+    )?;
+    let mut words = vec![
+        mcopy,
+        "-i".to_owned(),
+        format!("{image_name}@@{MIB}"),
+        "-s".to_owned(),
+    ];
+    for entry in entry_names(&esp) {
+        words.push(esp.join(entry).display().to_string());
+    }
+    words.push("::/".to_owned());
+    run_tool(settings, &words, None)
+}
+
+/// Writes an ext4 image whose root holds the system as generation 1. For a
+/// system with boot entries the image is a GPT disk with an EFI system
+/// partition and the root partition.
 pub fn build_image(
     settings: &Settings,
     name: &str,
@@ -1084,12 +1357,26 @@ pub fn build_image(
     if image.symlink_metadata().is_ok() {
         io("remove", image, fs::remove_file(image))?;
     }
+    let mut options = format!("root_owner=0:0,hash_seed={IMAGE_UUID}");
+    if system.efi {
+        io("create", &root, fs::create_dir_all(root.join("boot")))?;
+        let root_bytes = size_in_bytes(size)?;
+        let disk = io("create", image, fs::File::create(image))?;
+        io(
+            "resize",
+            image,
+            disk.set_len(MIB + ESP_BYTES + root_bytes + MIB),
+        )?;
+        drop(disk);
+        write_efi_parts(settings, &system, &work, image, root_bytes)?;
+        options.push_str(&format!(",offset={}", MIB + ESP_BYTES));
+    }
     let status = build::store_command(settings, true)?
         .env("E2FSPROGS_FAKE_TIME", "315532800")
         .arg(format!("{STORE}/{}/sbin/mke2fs", tools.id))
-        .args(["-q", "-t", "ext4", "-L", "vug"])
+        .args(["-q", "-F", "-t", "ext4", "-L", "vug"])
         .args(["-U", IMAGE_UUID])
-        .args(["-E", &format!("root_owner=0:0,hash_seed={IMAGE_UUID}")])
+        .args(["-E", &options])
         .arg("-d")
         .arg(&root)
         .arg(image)

@@ -403,6 +403,8 @@ pub fn shell_quote(word: &str) -> String {
 pub fn bwrap_args(sandbox: &Sandbox) -> Vec<String> {
     let mut args = vec![
         "--unshare-all".to_string(),
+        "--hostname".to_string(),
+        "vug".to_string(),
         "--die-with-parent".to_string(),
         "--clearenv".to_string(),
         "--proc".to_string(),

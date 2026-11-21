@@ -76,13 +76,16 @@ user = "root"
 | `user.password` | string | no (default `"!"`, no login by password) | The password field of the first `shadow` entry of the user. |
 | `setuid.package`, `setuid.program` | string | per entry | A program of a package of the system that runs as root. |
 | `service.<name>` | table of strings | no | Adds the service record `<name>`, with these values for its parameters. |
+| `boot.loader` | string | with `[boot]` | The EFI program of a limine boot loader, usually `{pkg:limine}/share/limine/BOOTX64.EFI`. |
+| `boot.root` | string | no (default `PARTLABEL=vug-root`) | What the kernel takes as `root=`. |
+| `boot.arguments` | array of strings | no | Further kernel arguments. |
 
 `user.password` goes into a store path that every user of the machine can
 read, and a package tree is usually public: it is the place for `""` (no
 password) or `"!"`, not for the hash of a real password. A password set on
 the machine with `passwd` lives only in `/etc/shadow`.
 
-`{pkg:NAME}` in `init`, `sh`, `file.content`, and `file.target` is replaced by the store path of
+`{pkg:NAME}` in `init`, `sh`, `boot.loader`, `file.content`, and `file.target` is replaced by the store path of
 the package `NAME` of the system. Unknown keys are errors.
 
 ## Service records
@@ -135,6 +138,7 @@ says.
 | `bin/switch-to-system` | Switches a running system to this one. |
 | `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
 | `kernel` | A link to the kernel image. |
+| `boot/entry`, `boot/loader`, `bin/install-boot` | With `[boot]`: the boot entry of this system (kernel, `root=`, `init=` of this system, and the arguments), a link to the loader, and the script that writes the boot entries. |
 | `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. A directory that two packages have is merged entry by entry, at every depth; for anything else of the same name, the package listed later wins. `sw/sbin` is a link to `bin`, and `sw/bin/sh` a link to the `sh` program of the record. |
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
@@ -160,6 +164,23 @@ The root is an ordinary writable file system:
 
 The kernel is started with `root=<device> rw init=/vug/profiles/system/init`.
 `init=/vug/profiles/system-<N>/init` starts generation `N` instead.
+
+## Booting from the disk
+
+A system with `[boot]` starts through an EFI boot loader instead of a kernel
+given to the virtual machine. `bin/install-boot`, which `switch-to-system`
+runs, needs the EFI system partition mounted at `/boot` and writes there:
+
+| Path | Contents |
+|---|---|
+| `EFI/BOOT/BOOTX64.EFI` | The loader of the system being switched to. |
+| `vug/<id>.bzImage` | The kernel of every generation that has a boot entry; kernels of no generation are removed. |
+| `limine.conf` | One entry per generation, newest first, and the default generation as the default entry. |
+
+The root partition is found by its GPT name `vug-root`; a service record
+mounts the partition named `vug-esp` at `/boot`. The kernel has to hold the
+drivers of the disk, its file system, and the console, since there is no
+initramfs.
 
 ## Files below `/etc`
 
@@ -212,7 +233,7 @@ $ qemu-system-x86_64 -enable-kvm -m 1024 -nographic \
 | Command | Result |
 |---|---|
 | `build-system` | The system in the store. |
-| `build-image --image FILE [--size SIZE]` | Also an ext4 image (default size `4g`) whose root holds the store paths of the system, generation 1 pointing to it, the index of the data directory at `/vug/index`, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
+| `build-image --image FILE [--size SIZE]` | For a system with `[boot]`: also a GPT disk image with an EFI system partition of 256 MiB (the loader, the kernel, and the entry of generation 1) and a root partition of `SIZE`, made with `sfdisk`, `mkfs.fat`, `mcopy`, and `mke2fs` of the packages `util-linux`, `dosfstools`, `mtools`, and `e2fsprogs`. Written to a disk, it boots a machine with EFI firmware. Otherwise: also an ext4 image (default size `4g`) whose root holds the store paths of the system, generation 1 pointing to it, the index of the data directory at `/vug/index`, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
 | `switch-system` | The system in the store, then its `bin/switch-to-system` runs. For a machine that runs a vug system. |
 | `export-system --archive FILE [--base SYSTEM]` | Also a cpio archive ("newc") of the store paths of the system, without those of the system `SYSTEM` (an id or a store path in the same store). |
 

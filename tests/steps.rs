@@ -185,6 +185,8 @@ fn bwrap_full() {
         bwrap_args(&sandbox),
         owned(&[
             "--unshare-all",
+            "--hostname",
+            "vug",
             "--die-with-parent",
             "--clearenv",
             "--proc",
@@ -228,6 +230,8 @@ fn bwrap_minimal() {
         bwrap_args(&sandbox),
         owned(&[
             "--unshare-all",
+            "--hostname",
+            "vug",
             "--die-with-parent",
             "--clearenv",
             "--proc",
