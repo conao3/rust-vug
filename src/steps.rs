@@ -139,7 +139,14 @@ pub fn make_steps(
 ///    "--buildtype=release", <setup_flags>...]`
 /// 2. `["meson", "compile", "-C", "build", "-j", "<jobs>"]`
 /// 3. only when `check`: `["meson", "test", "-C", "build", "--no-rebuild"]`
-/// 4. `["meson", "install", "-C", "build", "--no-rebuild"]`
+/// 4. `["meson", "install", "-C", "build", "--no-rebuild", "--destdir",
+///    "/build/dest"]`
+/// 5. `["cp", "-a", "/build/dest<prefix>/.", "<prefix>/"]`, then
+///    `["rm", "-rf", "/build/dest/vug"]`
+/// 6. `["mkdir", "-p", "<prefix>/.vug/root"]`, then
+///    `["cp", "-a", "/build/dest/.", "<prefix>/.vug/root/"]`: what the
+///    package installs outside its prefix (`/etc`, `/var`) is kept under
+///    `.vug/root` of the output
 pub fn meson_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32) -> Vec<Step> {
     let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
     let mut setup = words(&["meson", "setup", "build"]);
@@ -154,7 +161,33 @@ pub fn meson_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32)
     if check {
         steps.push(words(&["meson", "test", "-C", "build", "--no-rebuild"]));
     }
-    steps.push(words(&["meson", "install", "-C", "build", "--no-rebuild"]));
+    steps.push(words(&[
+        "meson",
+        "install",
+        "-C",
+        "build",
+        "--no-rebuild",
+        "--destdir",
+        "/build/dest",
+    ]));
+    steps.push(vec![
+        "cp".to_string(),
+        "-a".to_string(),
+        format!("/build/dest{prefix}/."),
+        format!("{prefix}/"),
+    ]);
+    steps.push(words(&["rm", "-rf", "/build/dest/vug"]));
+    steps.push(vec![
+        "mkdir".to_string(),
+        "-p".to_string(),
+        format!("{prefix}/.vug/root"),
+    ]);
+    steps.push(vec![
+        "cp".to_string(),
+        "-a".to_string(),
+        "/build/dest/.".to_string(),
+        format!("{prefix}/.vug/root/"),
+    ]);
     steps
 }
 

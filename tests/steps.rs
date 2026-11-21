@@ -350,8 +350,20 @@ fn meson_kind() {
             ]),
             step(&["meson", "compile", "-C", "build", "-j", "3"]),
             step(&["meson", "test", "-C", "build", "--no-rebuild"]),
-            step(&["meson", "install", "-C", "build", "--no-rebuild"]),
+            step(&[
+                "meson",
+                "install",
+                "-C",
+                "build",
+                "--no-rebuild",
+                "--destdir",
+                "/build/dest"
+            ]),
+            step(&["cp", "-a", "/build/dest/out/.", "/out/"]),
+            step(&["rm", "-rf", "/build/dest/vug"]),
+            step(&["mkdir", "-p", "/out/.vug/root"]),
+            step(&["cp", "-a", "/build/dest/.", "/out/.vug/root/"]),
         ]
     );
-    assert_eq!(vug::steps::meson_steps("/out", &[], false, 1).len(), 3);
+    assert_eq!(vug::steps::meson_steps("/out", &[], false, 1).len(), 7);
 }

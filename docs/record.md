@@ -160,6 +160,10 @@ Runs `meson setup build --prefix=<output> --libdir=lib --buildtype=release
 `meson install`. The record needs `meson`, `python`, and a ninja
 implementation (`samurai`) among its build dependencies.
 
+Files that the package installs outside its prefix (default configuration
+under `/etc`, state directories under `/var`) are kept in the output under
+`.vug/root/`, at the path they were meant for.
+
 meson removes from an installed program every library search path it did not
 add itself. The build therefore also gives meson the run-time library paths
 of the dependencies through `LDFLAGS`, which meson keeps.
