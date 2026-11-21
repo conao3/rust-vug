@@ -118,3 +118,45 @@ fn read_rejects_names_that_leave_the_root() {
     let dest = tempfile::tempdir().expect("temporary directory");
     assert!(vug::cpio::read_newc(&archive, dest.path()).is_err());
 }
+
+fn header(mode: u32, name: &str, data: &[u8]) -> Vec<u8> {
+    let mut out = format!(
+        "070701{:08x}{mode:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}",
+        1,
+        0,
+        0,
+        1,
+        0,
+        data.len(),
+        0,
+        0,
+        0,
+        0,
+        name.len() + 1,
+        0
+    )
+    .into_bytes();
+    out.extend_from_slice(name.as_bytes());
+    out.push(0);
+    out.resize(out.len().next_multiple_of(4), 0);
+    out.extend_from_slice(data);
+    out.resize(out.len().next_multiple_of(4), 0);
+    out
+}
+
+#[test]
+fn read_does_not_write_through_a_link() {
+    let outside = tempfile::tempdir().expect("temporary directory");
+    let target = outside.path().to_str().expect("path");
+    for second in [
+        header(0o100644, "a/x", b"escaped"),
+        header(0o100644, "a", b"escaped"),
+    ] {
+        let mut archive = header(0o120777, "a", target.as_bytes());
+        archive.extend(second);
+        archive.extend(header(0, "TRAILER!!!", b""));
+        let dest = tempfile::tempdir().expect("temporary directory");
+        assert!(vug::cpio::read_newc(&archive, dest.path()).is_err());
+        assert_eq!(std::fs::read_dir(outside.path()).expect("read").count(), 0);
+    }
+}

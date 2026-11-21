@@ -39,5 +39,6 @@ output is fetched or built only when it is a dependency of a build that
 runs, or part of what the command returns (a package and what it needs at
 run time).
 
-The check in step 2 covers the content of a path. Nothing checks that a key
+Unpacking writes nothing outside the new store path, whatever the archive
+names. The check in step 2 covers the content of a path. Nothing checks that a key
 belongs to an id: a cache is trusted for `keys/`.

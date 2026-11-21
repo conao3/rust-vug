@@ -112,8 +112,10 @@ fn invalid(message: &str) -> io::Error {
 }
 
 /// Unpacks a newc archive into the existing directory `dest`. Owners and
-/// times are not restored. An entry whose name is absolute or has a `..`
-/// component is an error.
+/// times are not restored. Nothing is written outside `dest`: an entry
+/// whose name is absolute or has a `..` component, whose parent is not a
+/// directory that an earlier entry made, or whose name an earlier entry
+/// already has, is an error.
 pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
     let mut at = 0;
     let mut directories = Vec::new();
@@ -153,9 +155,18 @@ pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
             return Err(invalid("entry name leaves the archive root"));
         }
         let path = dest.join(relative);
+        let parent_is_directory = path
+            .parent()
+            .and_then(|parent| fs::symlink_metadata(parent).ok())
+            .is_some_and(|metadata| metadata.is_dir());
+        if !parent_is_directory || fs::symlink_metadata(&path).is_ok() {
+            return Err(invalid(
+                "entry is listed twice or is not inside a directory of the archive",
+            ));
+        }
         match mode & 0o170000 {
             S_IFDIR => {
-                fs::create_dir_all(&path)?;
+                fs::create_dir(&path)?;
                 directories.push((path, mode & 0o7777));
             }
             S_IFLNK => std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(content), &path)?,
