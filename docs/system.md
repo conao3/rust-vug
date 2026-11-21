@@ -13,6 +13,7 @@ per system that was switched to (a *generation*).
 name = "demo"
 kernel = "linux"
 init = "{pkg:systemd}/lib/systemd/systemd"
+sh = "{pkg:bash}/bin/bash"
 packages = [
   "bash",
   "coreutils",
@@ -57,6 +58,7 @@ program = "bin/sudo"
 | `name` | string | yes | Must equal the file name without `.toml`. |
 | `kernel` | string | yes | A package whose output holds `boot/bzImage` (build kind `linux`). |
 | `init` | string | yes | The command the system starts as process 1, split at white space. |
+| `sh` | string | no | The program `/bin/sh` runs. Without it `/bin/sh` exists only when a listed package has a program `sh`. |
 | `packages` | array of strings | yes | Packages whose programs appear in `/bin`. |
 | `file.path` | string | yes | A path below `/etc`. No listed path equals or lies inside another. |
 | `file.kind` | `"link"` or `"seed"` | no (default `"link"`) | How the file is managed, see below. |
@@ -70,7 +72,7 @@ program = "bin/sudo"
 | `user.password` | string | no (default `"!"`, no login by password) | The password field of the first `shadow` entry of the user. |
 | `setuid.package`, `setuid.program` | string | per entry | A program of a package of the system that runs as root. |
 
-`{pkg:NAME}` in `init` and `file.content` is replaced by the store path of
+`{pkg:NAME}` in `init`, `sh`, and `file.content` is replaced by the store path of
 the package `NAME` of the system. Unknown keys are errors.
 
 ## The system
@@ -84,7 +86,7 @@ the package `NAME` of the system. Unknown keys are errors.
 | `bin/switch-to-system` | Switches a running system to this one. |
 | `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
 | `kernel` | A link to the kernel image. |
-| `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. When two packages have an entry of the same name, the package listed later wins. `sw/sbin` is a link to `bin`. |
+| `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. When two packages have an entry of the same name, the package listed later wins. `sw/sbin` is a link to `bin`, and `sw/bin/sh` a link to the `sh` program of the record. |
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
 | `manifest/` | The paths and kinds of the files, the modes of the seed files, `passwd`, `group`, `shadow`, the home directories, the setuid programs, and `closure`: the store paths of the system, its kernel, its packages, and everything they need at run time. |

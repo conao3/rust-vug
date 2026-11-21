@@ -249,6 +249,7 @@ pub struct SystemRecord {
     text: String,
     kernel: String,
     init: String,
+    sh: Option<String>,
     packages: Vec<String>,
     files: Vec<SystemFile>,
     groups: Vec<Group>,
@@ -344,7 +345,7 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
     unknown_keys(
         &table,
         &[
-            "name", "kernel", "init", "packages", "file", "group", "user", "setuid",
+            "name", "kernel", "init", "sh", "packages", "file", "group", "user", "setuid",
         ],
         "",
     )?;
@@ -357,6 +358,10 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
     if init.split_whitespace().next().is_none() {
         return Err("init: expected a command".to_owned());
     }
+    let sh = match table.get("sh") {
+        None => None,
+        Some(_) => Some(string(&table, "sh", "")?),
+    };
     let packages = strings(&table, "packages", "")?;
     for package in packages.iter().chain([&kernel]) {
         if !model::valid_name(package) {
@@ -507,6 +512,7 @@ pub fn load(path: &Path, expected_name: &str) -> Result<SystemRecord, String> {
         text,
         kernel,
         init,
+        sh,
         packages,
         files,
         groups,
@@ -677,6 +683,14 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                 )?;
             }
         }
+    }
+
+    if let Some(sh) = &record.sh {
+        let target = expand(sh, &paths)?;
+        if !valid_image_path(&target) {
+            return Err(format!("sh: {sh:?}: expected an absolute path"));
+        }
+        symlink(target, &out.join("sw/bin/sh"))?;
     }
 
     let mut links = String::new();
