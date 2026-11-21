@@ -548,6 +548,18 @@ theorem validName_long :
     validName "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = false := by
   decide
 
+theorem validName_max :
+    validName "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = true := by
+  decide
+
+theorem validName_inner : validName "a+b.c_d-0" = true := by decide
+
+theorem validName_bad_inner : validName "a%b" = false := by decide
+
+theorem validName_dotdot_inner : validName "a..b" = true := by decide
+
+theorem validName_leading_dot : validName ".a" = false := by decide
+
 theorem validVersion_example : validVersion "2.12.2" = true := by decide
 
 theorem validVersion_upper : validVersion "1.A" = true := by decide
@@ -559,6 +571,22 @@ theorem validVersion_empty : validVersion "" = false := by decide
 theorem validVersion_toml_suffix : validVersion "1.toml" = false := by decide
 
 theorem validVersion_slash : validVersion "a/b" = false := by decide
+
+theorem validVersion_inner : validVersion "1+2.3_4~5-6" = true := by decide
+
+theorem validVersion_bad_inner : validVersion "1%2" = false := by decide
+
+theorem validVersion_leading_dot : validVersion ".1" = false := by decide
+
+theorem validVersion_dotdot : validVersion ".." = false := by decide
+
+theorem validVersion_max :
+    validVersion "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = true := by
+  decide
+
+theorem validVersion_long :
+    validVersion "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = false := by
+  decide
 
 theorem shard_hello : shard "hello" = "he" := rfl
 
