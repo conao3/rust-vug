@@ -24,9 +24,6 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// the previous rules are built again.
 const BUILD_RULES: &str = "7";
 
-/// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
-///
-
 pub struct Settings {
     /// Repository root containing `seed.toml` and `packages/`.
     pub root: PathBuf,

@@ -1,6 +1,8 @@
 //! The programs the seed gets in `bin/` next to busybox and zig (`docs/build.md`,
 //! "The seed"). Their text is part of the seed id.
 
+/// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
+///
 /// The wrapper adds `VUG_CFLAGS`, and `VUG_LDFLAGS` unless the call only
 /// compiles or preprocesses, and turns the GNU and clang spellings that
 /// packages use into what zig accepts (`docs/build.md`, "The seed").
