@@ -21,7 +21,7 @@ fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
 /// A new key pair as (secret, public), each 64 hex characters.
 pub fn generate() -> Result<(String, String), String> {
     let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| format!("random bytes: {e}"))?;
+    getrandom::fill(&mut seed).map_err(|e| format!("random bytes: {e}"))?;
     let key = SigningKey::from_bytes(&seed);
     Ok((to_hex(&seed), to_hex(key.verifying_key().as_bytes())))
 }
