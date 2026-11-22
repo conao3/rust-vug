@@ -24,9 +24,9 @@ for a; do
     output=$a
     is_output=1
   fi
-  if [ "${want_rpath:-0}" = 1 ]; then
-    want_rpath=0
-    set -- "$@" "-Wl,-rpath,${a#-Wl,}"
+  if [ -n "${want_value:-}" ]; then
+    set -- "$@" "-Wl,$want_value,${a#-Wl,}"
+    want_value=
     continue
   fi
   if [ "${want_lang:-0}" = 1 ]; then
@@ -90,7 +90,14 @@ for a; do
       case "$last" in
         -rpath | --rpath | -R)
           words=${words%,-rpath}
-          want_rpath=1
+          want_value=-rpath
+          ;;
+        -soname | --soname | -h | --version-script | --dynamic-list | -T | --script | -e | --entry)
+          words=${words%,*}
+          case "$last" in
+            -h) want_value=-soname ;;
+            *) want_value=$last ;;
+          esac
           ;;
       esac
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi

@@ -71,13 +71,21 @@ fn rpath_in_every_spelling() {
                 "-Wl,-soname",
                 "-Wl,x.so.1",
             ],
-            vec![
-                "-Wl,--as-needed",
-                "-Wl,-rpath,/a",
-                "-Wl,-soname",
-                "-Wl,x.so.1",
-            ],
+            vec!["-Wl,--as-needed", "-Wl,-rpath,/a", "-Wl,-soname,x.so.1"],
         ),
+        (
+            vec!["-Wl,--version-script", "f.sym"],
+            vec!["-Wl,--version-script,f.sym"],
+        ),
+        (
+            vec!["-Wl,--version-script", "-Wl,f.sym"],
+            vec!["-Wl,--version-script,f.sym"],
+        ),
+        (
+            vec!["-Wl,--version-script,f.sym"],
+            vec!["-Wl,--version-script,f.sym"],
+        ),
+        (vec!["-Wl,-h", "x.so.1"], vec!["-Wl,-soname,x.so.1"]),
     ] {
         let mut arguments = vec!["a.c", "-o", "a"];
         arguments.extend(&given);
