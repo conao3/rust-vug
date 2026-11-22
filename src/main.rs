@@ -1,4 +1,5 @@
 mod build;
+mod gc;
 mod naming;
 mod record;
 mod system;
@@ -74,12 +75,42 @@ enum SystemCommands {
     ExportSystem(ExportArgs),
     /// Build a system and switch the running machine to it.
     SwitchSystem(BuildArgs),
+    /// Remove old generations of the running machine.
+    DeleteGenerations(GenerationArgs),
+}
+
+#[derive(Args)]
+struct GenerationArgs {
+    /// Number of newest generations to keep.
+    #[arg(long)]
+    keep: usize,
+    /// Directory of the generation links.
+    #[arg(long, default_value = "/vug/profiles")]
+    profiles: PathBuf,
+}
+
+#[derive(Args)]
+struct GarbageArgs {
+    /// Directory of the store (default: as for build-package).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Directory of the generation links.
+    #[arg(long, default_value = "/vug/profiles")]
+    profiles: PathBuf,
+    /// List what would be removed without removing it.
+    #[arg(long, overrides_with = "no_dry_run")]
+    dry_run: bool,
+    /// Remove (after --dry-run).
+    #[arg(long, overrides_with = "dry_run")]
+    no_dry_run: bool,
 }
 
 #[derive(Subcommand)]
 enum StoreCommands {
     /// Write the outputs and build keys of the store as a binary cache.
     ExportCache(CacheArgs),
+    /// Remove the store paths that no generation needs.
+    CollectGarbage(GarbageArgs),
 }
 
 #[derive(Args)]
@@ -234,6 +265,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "--archive",
     "--base",
     "--binary-cache",
+    "--keep",
+    "--profiles",
     "--directory",
 ];
 
@@ -335,6 +368,7 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
             SystemCommands::BuildImage(args) => run_build_image(&cli, args),
             SystemCommands::ExportSystem(args) => run_export_system(&cli, args),
+            SystemCommands::DeleteGenerations(args) => run_delete_generations(&cli, args),
             SystemCommands::SwitchSystem(args) => {
                 let settings = settings_of(&cli, args)?;
                 Err((
@@ -343,10 +377,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
                 ))
             }
         },
-        Commands::Store { command } => {
-            let StoreCommands::ExportCache(args) = command;
-            run_export_cache(&cli, args)
-        }
+        Commands::Store { command } => match command {
+            StoreCommands::ExportCache(args) => run_export_cache(&cli, args),
+            StoreCommands::CollectGarbage(args) => run_collect_garbage(&cli, args),
+        },
         Commands::Package { command } => match command {
             PackageCommands::BuildPackage(args) => run_build(&cli, args),
             PackageCommands::RunPackage(args) => run_program(&cli, args),
@@ -520,6 +554,51 @@ fn default_data_dir() -> Result<PathBuf, String> {
     } else {
         xdg_dir("XDG_DATA_HOME", ".local/share")
     }
+}
+
+fn run_delete_generations(cli: &Cli, args: &GenerationArgs) -> Result<i32, (i32, String)> {
+    let fail = |e: String| (version::failure_status(), e);
+    let removed = gc::delete_generations(&args.profiles, args.keep).map_err(fail)?;
+    let refresh = Path::new("/run/current-system/bin/install-boot");
+    if !removed.is_empty() && refresh.exists() {
+        let status = std::process::Command::new(refresh)
+            .status()
+            .map_err(|e| fail(format!("{}: {e}", refresh.display())))?;
+        if !status.success() {
+            return Err(fail(format!("{}: {status}", refresh.display())));
+        }
+    }
+    match cli.output {
+        Output::Json => print_json(&json!({ "Removed": removed })),
+        Output::Text | Output::Table => {
+            write_out(&removed.iter().map(|n| format!("{n}\n")).collect::<String>())
+        }
+    }?;
+    Ok(0)
+}
+
+fn run_collect_garbage(cli: &Cli, args: &GarbageArgs) -> Result<i32, (i32, String)> {
+    let fail = |e: String| (version::failure_status(), e);
+    let data_dir = match &args.data_dir {
+        Some(dir) => dir.clone(),
+        None => default_data_dir().map_err(fail)?,
+    };
+    let (kept, removed) =
+        gc::collect_garbage(&data_dir, &args.profiles, args.dry_run).map_err(fail)?;
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Kept": kept,
+            "Removed": removed,
+            "DryRun": args.dry_run,
+        })),
+        Output::Text | Output::Table => write_out(
+            &removed
+                .iter()
+                .map(|id| format!("{id}\n"))
+                .collect::<String>(),
+        ),
+    }?;
+    Ok(0)
 }
 
 fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {

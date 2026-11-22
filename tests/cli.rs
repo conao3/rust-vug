@@ -280,3 +280,66 @@ fn service_record_errors() {
         assert!(error.contains(expected), "{body:?}: {error}");
     }
 }
+
+#[test]
+fn garbage_collection_keeps_what_generations_list() {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let store = root.path().join("data/store");
+    let profiles = root.path().join("profiles");
+    for id in ["aaaa", "bbbb", "ssss", "tttt"] {
+        std::fs::create_dir_all(store.join(id).join("manifest")).expect("create");
+    }
+    std::fs::write(
+        store.join("ssss/manifest/closure"),
+        "/vug/store/ssss\n/vug/store/aaaa\n",
+    )
+    .expect("write");
+    std::fs::write(
+        store.join("tttt/manifest/closure"),
+        "/vug/store/tttt\n/vug/store/bbbb\n",
+    )
+    .expect("write");
+    std::fs::create_dir(&profiles).expect("create");
+    std::os::unix::fs::symlink("/vug/store/tttt", profiles.join("system-1")).expect("symlink");
+    std::os::unix::fs::symlink("/vug/store/ssss", profiles.join("system-2")).expect("symlink");
+    std::os::unix::fs::symlink("system-2", profiles.join("system")).expect("symlink");
+    let data = root.path().join("data");
+    let args = |extra: &[&str]| {
+        let mut words = vec![
+            "store",
+            "collect-garbage",
+            "--data-dir",
+            data.to_str().expect("path"),
+            "--profiles",
+            profiles.to_str().expect("path"),
+        ];
+        words.extend(extra);
+        vug(&words)
+    };
+
+    let dry = args(&["--dry-run"]);
+    assert_eq!(dry.status.code(), Some(0));
+    let value: serde_json::Value = serde_json::from_slice(&dry.stdout).expect("JSON");
+    assert_eq!(value["Removed"].as_array().map(Vec::len), Some(0));
+    assert!(store.join("bbbb").exists());
+
+    let deleted = vug(&[
+        "system",
+        "delete-generations",
+        "--keep",
+        "1",
+        "--profiles",
+        profiles.to_str().expect("path"),
+    ]);
+    assert_eq!(deleted.status.code(), Some(0), "{deleted:?}");
+    assert!(!profiles.join("system-1").exists());
+    assert!(profiles.join("system-2").symlink_metadata().is_ok());
+
+    assert_eq!(args(&[]).status.code(), Some(0));
+    assert!(store.join("ssss").exists() && store.join("aaaa").exists());
+    assert!(!store.join("tttt").exists() && !store.join("bbbb").exists());
+
+    std::fs::remove_file(profiles.join("system-2")).expect("remove");
+    assert_ne!(args(&[]).status.code(), Some(0));
+    assert!(store.join("aaaa").exists());
+}

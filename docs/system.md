@@ -214,6 +214,22 @@ Paths the record does not list are never touched.
 Going back is switching to the earlier generation:
 `/vug/profiles/system-<N>/bin/switch-to-system`.
 
+## Cleaning up
+
+```console
+# vug system delete-generations --keep 3
+# vug store collect-garbage
+```
+
+`delete-generations` removes the generation links except the newest `--keep`,
+the default generation, and the running one, and then writes the boot
+entries again when the running system has them. `collect-garbage` removes
+every store path that no remaining generation (and not the running system)
+lists in its `manifest/closure`; `--dry-run` only lists them. It refuses to
+run where `--profiles` (default `/vug/profiles`) holds no generation. The
+index keeps the ids of removed outputs, so a later build takes them from a
+binary cache instead of building.
+
 ## Commands
 
 ```console
