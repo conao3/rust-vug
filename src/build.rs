@@ -395,15 +395,11 @@ fn file_name_of(url: &str) -> &str {
 /// (`docs/build.md`, "The C++ runtime"), found by a message of libc++abi
 /// and one of libc++.
 fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
-    // Each message is kept in two halves so that this program does not
-    // hold the bytes it searches for.
-    let markers: [Vec<u8>; 2] = [
-        ["terminate_handler unexp", "ectedly returned"]
-            .concat()
-            .into_bytes(),
-        ["unspecified generic_cat", "egory error"]
-            .concat()
-            .into_bytes(),
+    // The messages are written backwards so that this program does not hold
+    // the bytes it searches for.
+    const REVERSED: [&[u8]; 2] = [
+        b"denruter yldetcepxenu reldnah_etanimret",
+        b"rorre yrogetac_cireneg deificepsnu",
     ];
     let mut entries: Vec<PathBuf> = io("read", dir, fs::read_dir(dir))?
         .filter_map(|entry| Some(entry.ok()?.path()))
@@ -418,10 +414,10 @@ fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
         } else if meta.is_file() {
             let bytes = io("read", &path, fs::read(&path))?;
             if bytes.starts_with(b"\x7fELF")
-                && markers.iter().any(|marker| {
+                && REVERSED.iter().any(|marker| {
                     bytes
                         .windows(marker.len())
-                        .any(|window| window == marker.as_slice())
+                        .any(|window| window.iter().rev().eq(marker.iter()))
                 })
             {
                 return Ok(Some(path));
@@ -1138,4 +1134,29 @@ pub fn export_cache(
         }
     }
     Ok((keys, paths))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::private_cxx_runtime;
+
+    #[test]
+    fn static_cxx_runtime_is_found_in_elf_files_only() {
+        let message: String = "denruter yldetcepxenu reldnah_etanimret"
+            .chars()
+            .rev()
+            .collect();
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let lib = directory.path().join("lib");
+        std::fs::create_dir(&lib).expect("create");
+        std::fs::write(lib.join("notes.txt"), &message).expect("write");
+        std::fs::write(lib.join("libc.so"), b"\x7fELF plain").expect("write");
+        assert_eq!(private_cxx_runtime(directory.path()), Ok(None));
+        let object = [b"\x7fELF ".as_slice(), message.as_bytes()].concat();
+        std::fs::write(lib.join("libx.so"), object).expect("write");
+        assert_eq!(
+            private_cxx_runtime(directory.path()),
+            Ok(Some(lib.join("libx.so")))
+        );
+    }
 }
