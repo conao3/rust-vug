@@ -21,7 +21,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "6";
+const BUILD_RULES: &str = "7";
 
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
@@ -209,6 +209,7 @@ fn build_env(path: String, extra: &[(&str, String)]) -> Vec<(String, String)> {
         ("PATH", path.as_str()),
         ("HOME", "/build"),
         ("SOURCE_DATE_EPOCH", SOURCE_DATE_EPOCH),
+        ("build_alias", "x86_64-unknown-linux-musl"),
         ("ZIG_GLOBAL_CACHE_DIR", "/tmp/zig-global"),
         ("ZIG_LOCAL_CACHE_DIR", "/tmp/zig-local"),
     ]

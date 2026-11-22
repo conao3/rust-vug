@@ -52,7 +52,7 @@ Checking a store path reverses step 3 and compares the hash with the id.
 3. Run the build inside `bwrap --unshare-all --hostname vug --clearenv`: no network, no
    host file system, a root that is read-only outside the build directory,
    `/tmp`, and the output, and only the environment variables `PATH`, `HOME`,
-   `SOURCE_DATE_EPOCH`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
+   `SOURCE_DATE_EPOCH`, `build_alias`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
 4. Unpack with `tar -xf <archive> --strip-components=<n>` and apply the
    patches with `patch -p1`. A source whose file name has no `.tar` in it
    and does not end in `.tgz`, `.txz`, or `.tbz2` is not an archive: it is
@@ -61,6 +61,12 @@ Checking a store path reverses step 3 and compares the hash with the id.
 6. Copy the version record to `.vug/record.toml` in the output.
 7. Hash the output, replace the placeholder, and move the output to its
    store path.
+
+`build_alias` is `x86_64-unknown-linux-musl`. A configure script made by
+autoconf takes it as the system it builds on and for. Its own guess is
+`...-linux-gnu`, because the guess looks for a mark that the C library's
+`stdarg.h` leaves and the compiler's own `stdarg.h` comes first; packages
+then choose code paths for another C library.
 
 ## The seed
 
