@@ -436,3 +436,15 @@ fn autotools_configure_command_replaces_the_default() {
         ]
     );
 }
+
+#[test]
+fn a_single_file_source_is_copied() {
+    assert_eq!(
+        unpack_steps("/src/cacert.pem", 1, &[]),
+        vec![step(&["cp", "/src/cacert.pem", "cacert.pem"])]
+    );
+    assert_eq!(
+        unpack_steps("/src/a-1.0.tgz", 1, &[])[0][0],
+        "tar".to_string()
+    );
+}

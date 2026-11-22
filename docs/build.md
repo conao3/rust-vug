@@ -54,7 +54,9 @@ Checking a store path reverses step 3 and compares the hash with the id.
    `/tmp`, and the output, and only the environment variables `PATH`, `HOME`,
    `SOURCE_DATE_EPOCH`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
 4. Unpack with `tar -xf <archive> --strip-components=<n>` and apply the
-   patches with `patch -p1`.
+   patches with `patch -p1`. A source whose file name has no `.tar` in it
+   and does not end in `.tgz`, `.txz`, or `.tbz2` is not an archive: it is
+   copied into the source directory under its name.
 5. Run the steps of the build kind (`docs/record.md`).
 6. Copy the version record to `.vug/record.toml` in the output.
 7. Hash the output, replace the placeholder, and move the output to its

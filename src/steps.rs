@@ -35,15 +35,26 @@ pub struct Sandbox {
 
 /// Steps that unpack `archive` into the current directory and apply patches.
 ///
-/// 1. `["tar", "-xf", archive, "--strip-components=<strip>"]`
+/// 1. `["tar", "-xf", archive, "--strip-components=<strip>"]`, or, when the
+///    file name has no `.tar` in it and does not end in `.tgz`, `.txz`, or
+///    `.tbz2`, `["cp", archive, <file name>]`
 /// 2. for each patch, in order: `["patch", "-p1", "-i", patch]`
 pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> {
-    let mut steps = vec![vec![
-        "tar".to_string(),
-        "-xf".to_string(),
-        archive.to_string(),
-        format!("--strip-components={strip}"),
-    ]];
+    let name = archive.rsplit('/').next().unwrap_or(archive);
+    let is_archive = name.contains(".tar")
+        || [".tgz", ".txz", ".tbz2"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix));
+    let mut steps = vec![if is_archive {
+        vec![
+            "tar".to_string(),
+            "-xf".to_string(),
+            archive.to_string(),
+            format!("--strip-components={strip}"),
+        ]
+    } else {
+        vec!["cp".to_string(), archive.to_string(), name.to_string()]
+    }];
     for patch in patches {
         steps.push(vec![
             "patch".to_string(),
