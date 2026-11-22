@@ -126,6 +126,44 @@ fn seed_field(table: &toml::Table, tool: &str, key: &str) -> Result<String, Stri
 
 /// Assembles the seed tools described by `<root>/seed.toml` and returns the
 /// host directory that is bound to `/seed`.
+/// Fetches the crates that `Cargo.lock` in `build_dir` names into
+/// `build_dir/crates/<name>-<version>.crate`, each checked against the
+/// checksum of the lock file. Returns (name, version, sha256) per crate.
+fn fetch_crates(
+    settings: &Settings,
+    build_dir: &Path,
+) -> Result<Vec<(String, String, String)>, String> {
+    const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+    let lock_path = build_dir.join("Cargo.lock");
+    let lock = io("read", &lock_path, fs::read_to_string(&lock_path))?
+        .parse::<toml::Table>()
+        .map_err(|e| format!("Cargo.lock: {e}"))?;
+    let crates_dir = build_dir.join("crates");
+    io("create", &crates_dir, fs::create_dir_all(&crates_dir))?;
+    let mut crates = Vec::new();
+    let packages = lock.get("package").and_then(|v| v.as_array());
+    for package in packages.into_iter().flatten() {
+        let field = |key: &str| package.get(key).and_then(|v| v.as_str());
+        let (Some(name), Some(version)) = (field("name"), field("version")) else {
+            return Err("Cargo.lock: a package without name or version".to_owned());
+        };
+        let Some(source) = field("source") else {
+            continue;
+        };
+        let (true, Some(sha256)) = (source == REGISTRY, field("checksum")) else {
+            return Err(format!(
+                "Cargo.lock: {name} {version} comes from {source}; only crates.io with a checksum is supported"
+            ));
+        };
+        let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
+        let file = fetch_source(settings, &url, sha256)?;
+        let dest = crates_dir.join(format!("{name}-{version}.crate"));
+        io("copy", &dest, fs::copy(&file, &dest))?;
+        crates.push((name.to_owned(), version.to_owned(), sha256.to_owned()));
+    }
+    Ok(crates)
+}
+
 /// Reads `seed.toml` and returns it with the id of the seed.
 fn read_seed(settings: &Settings) -> Result<(toml::Table, String), String> {
     let seed_path = settings.root.join("seed.toml");
@@ -802,6 +840,17 @@ impl<'a> Builder<'a> {
                     &host_ldflags.join(" "),
                 )
             }
+            BuildOptions::Cargo { .. } => {
+                vec![vec![
+                    "cp".to_owned(),
+                    "Cargo.lock".to_owned(),
+                    "/build/Cargo.lock".to_owned(),
+                ]]
+            }
+            BuildOptions::Commands { commands } => commands
+                .iter()
+                .map(|words| expand(words))
+                .collect::<Result<Vec<_>, _>>()?,
             BuildOptions::Prebuilt { install } => steps::prebuilt_steps(&prefix, install),
         });
         for (path, target) in &record.links {
@@ -810,6 +859,26 @@ impl<'a> Builder<'a> {
                 script.push(vec!["mkdir".to_owned(), "-p".to_owned(), parent.to_owned()]);
             }
             script.push(vec!["ln".to_owned(), "-s".to_owned(), target.clone(), link]);
+        }
+        for (path, words) in &record.wrappers {
+            let file = format!("{prefix}/{path}");
+            if let Some((parent, _)) = file.rsplit_once('/') {
+                script.push(vec!["mkdir".to_owned(), "-p".to_owned(), parent.to_owned()]);
+            }
+            let command = expand(words)?
+                .iter()
+                .map(|word| steps::shell_quote(word))
+                .collect::<Vec<_>>()
+                .join(" ");
+            script.push(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "printf '%s\\n' \"$2\" \"$3\" > \"$1\" && chmod 755 \"$1\"".to_owned(),
+                "sh".to_owned(),
+                file,
+                "#!/bin/sh".to_owned(),
+                format!("exec {command} \"$@\""),
+            ]);
         }
         let script_path = build_dir.join("build.sh");
         io(
@@ -844,11 +913,38 @@ impl<'a> Builder<'a> {
 
         eprintln!("building {name} {version}");
         run_sandbox(&Sandbox {
-            binds,
-            env: build_env(path, &extra),
+            binds: binds.clone(),
+            env: build_env(path.clone(), &extra),
             workdir: "/build/src".to_owned(),
             command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
         })?;
+        if let BuildOptions::Cargo {
+            path: member,
+            flags,
+        } = &record.build
+        {
+            let crates = fetch_crates(settings, &build_dir)?;
+            io(
+                "write",
+                &script_path,
+                fs::write(
+                    &script_path,
+                    steps::shell_script(&steps::cargo_steps(
+                        &prefix,
+                        member,
+                        &expand(flags)?,
+                        settings.jobs,
+                        &crates,
+                    )),
+                ),
+            )?;
+            run_sandbox(&Sandbox {
+                binds,
+                env: build_env(path, &extra),
+                workdir: "/build/src".to_owned(),
+                command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
+            })?;
+        }
 
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;

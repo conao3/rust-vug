@@ -157,6 +157,39 @@ make-flags = [
 | `build.build-targets` | array of strings, order kept: targets of the first `make` | empty (the default target) |
 | `build.install-targets` | array of strings, order kept: targets of the last `make` | `install` |
 
+### Build kind `cargo`
+
+Builds a Rust package with `cargo install --path <path> --root <output>
+--offline --locked --no-track <flags>`. The record needs `rust` among its
+build dependencies.
+
+The build has no network, so the crates come first: the source is unpacked,
+its `Cargo.lock` is read, and every crate the lock file names is fetched
+from `https://static.crates.io/crates/<name>/<name>-<version>.crate` and
+checked against the checksum in the lock file. The SHA-256 of the source
+therefore fixes every crate. A lock file entry from another registry or from
+git is an error. In the build the crates are a vendor directory that
+replaces crates.io; the package's own `.cargo` directory is removed; the
+linker is `cc`, and programs link against the C library of the build
+(`-C target-feature=-crt-static`), so the record lists `musl` and
+`rust-libunwind` in `dependencies.run`.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.path` | string | `"."`: the directory of the package inside the source |
+| `build.flags` | array of strings, order kept | empty |
+
+### Build kind `commands`
+
+Runs the listed commands in order in the unpacked source. Each command is an
+array of words: the program and its arguments, with no shell in between. It
+is for the packages no other kind fits, such as a binary distribution that
+needs a library linked or files moved.
+
+| Key | Type | Default |
+|---|---|---|
+| `build.commands` | array of arrays of strings, order kept | required, non-empty |
+
 ### Build kind `cmake`
 
 Runs `cmake -S . -B build -G "Unix Makefiles"
@@ -231,6 +264,20 @@ output, at that path relative to the output, pointing to the value. This
 gives a file a second name that other packages look for. The table is the
 last one of a version record and is left out when empty.
 
+## Wrappers
+
+```toml
+[wrappers]
+"bin/rustc" = ["{dep:musl}/lib/ld-musl-x86_64.so.1", "--library-path", "{out}/lib", "{out}/libexec/rustc"]
+```
+
+After the steps of the build kind and the links, each key becomes an
+executable shell script in the output, at that path, that replaces itself by
+the listed command followed by its own arguments. `{out}` and `{dep:NAME}`
+are replaced as in flags. This starts a program that was built for a fixed
+loader path through the loader of the C library package. The table follows
+`[links]` and is left out when empty.
+
 ## Canonical form
 
 Every record has exactly one byte representation. Two records with the same
@@ -241,7 +288,8 @@ identical files.
 - No comments.
 - Top-level keys first, then tables, each in the order of the tables above
   (`package.toml`: `name`, `license`, `[upstream]`; version files: `version`,
-  `patches`, `[source]`, `[build]`, `[dependencies]`, `[check]`, `[links]`). Keys inside a
+  `patches`, `[source]`, `[build]`, `[dependencies]`, `[check]`, `[links]`,
+  `[wrappers]`). Keys inside a
   table follow the order of the tables above; `build.kind` comes first in
   `[build]`.
 - One blank line before each table header. No other blank lines.

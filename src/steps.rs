@@ -19,6 +19,7 @@ pub struct Autotools {
     pub jobs: u32,
 }
 
+#[derive(Clone)]
 pub struct Bind {
     pub source: String,
     pub dest: String,
@@ -185,6 +186,85 @@ pub fn cmake_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32)
         steps.push(test);
     }
     steps.push(words(&["cmake", "--install", "build"]));
+    steps
+}
+
+/// Steps of the `cargo` build kind, run in the unpacked source after the
+/// crates `(name, version, sha256)` are at `/build/crates/<name>-<version>.crate`.
+///
+/// 1. `["rm", "-rf", ".cargo"]`
+/// 2. per crate: unpack it to `/build/vendor/<name>-<version>` and write its
+///    `.cargo-checksum.json`
+/// 3. write `/build/cargo-home/config.toml`: the vendor directory replaces
+///    crates.io, the linker is `cc`, and programs link against the C
+///    library the linker chooses
+/// 4. `["env", "CARGO_HOME=/build/cargo-home", "cargo", "install", "--path",
+///    <path>, "--root", <prefix>, "--offline", "--locked", "--no-track",
+///    "--jobs", "<jobs>", <flags>...]`
+pub fn cargo_steps(
+    prefix: &str,
+    path: &str,
+    flags: &[String],
+    jobs: u32,
+    crates: &[(String, String, String)],
+) -> Vec<Step> {
+    let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
+    let mut steps = vec![
+        words(&["rm", "-rf", ".cargo"]),
+        words(&["mkdir", "-p", "/build/vendor", "/build/cargo-home"]),
+    ];
+    for (name, version, sha256) in crates {
+        let dir = format!("/build/vendor/{name}-{version}");
+        steps.push(vec!["mkdir".to_string(), "-p".to_string(), dir.clone()]);
+        steps.push(vec![
+            "tar".to_string(),
+            "-xzf".to_string(),
+            format!("/build/crates/{name}-{version}.crate"),
+            "--strip-components=1".to_string(),
+            "-C".to_string(),
+            dir.clone(),
+        ]);
+        steps.push(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf '%s' \"$2\" > \"$1\"".to_string(),
+            "sh".to_string(),
+            format!("{dir}/.cargo-checksum.json"),
+            format!("{{\"files\":{{}},\"package\":\"{sha256}\"}}"),
+        ]);
+    }
+    let mut config = words(&[
+        "sh",
+        "-c",
+        "printf '%s\\n' \"$@\" > /build/cargo-home/config.toml",
+        "sh",
+        "[source.crates-io]",
+        "replace-with = \"vendored\"",
+        "[source.vendored]",
+        "directory = \"/build/vendor\"",
+        "[target.x86_64-unknown-linux-musl]",
+        "linker = \"cc\"",
+        "rustflags = [\"-Clink-self-contained=no\", \"-Ctarget-feature=-crt-static\"]",
+    ]);
+    config.shrink_to_fit();
+    steps.push(config);
+    let mut install = words(&[
+        "env",
+        "CARGO_HOME=/build/cargo-home",
+        "cargo",
+        "install",
+        "--path",
+        path,
+        "--root",
+        prefix,
+        "--offline",
+        "--locked",
+        "--no-track",
+        "--jobs",
+    ]);
+    install.push(jobs.to_string());
+    install.extend(flags.iter().cloned());
+    steps.push(install);
     steps
 }
 

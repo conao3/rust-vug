@@ -448,3 +448,48 @@ fn a_single_file_source_is_copied() {
         "tar".to_string()
     );
 }
+
+#[test]
+fn cargo_steps_vendor_the_crates_and_install() {
+    let crates = vec![("a".to_string(), "1.0.0".to_string(), "ff".to_string())];
+    let steps = vug::steps::cargo_steps(
+        "/out",
+        ".",
+        &["--features".to_string(), "x".to_string()],
+        2,
+        &crates,
+    );
+    assert_eq!(steps[0], step(&["rm", "-rf", ".cargo"]));
+    assert_eq!(
+        steps[3],
+        step(&[
+            "tar",
+            "-xzf",
+            "/build/crates/a-1.0.0.crate",
+            "--strip-components=1",
+            "-C",
+            "/build/vendor/a-1.0.0"
+        ])
+    );
+    assert_eq!(steps[4][5], "{\"files\":{},\"package\":\"ff\"}");
+    assert_eq!(
+        steps.last().expect("install step"),
+        &step(&[
+            "env",
+            "CARGO_HOME=/build/cargo-home",
+            "cargo",
+            "install",
+            "--path",
+            ".",
+            "--root",
+            "/out",
+            "--offline",
+            "--locked",
+            "--no-track",
+            "--jobs",
+            "2",
+            "--features",
+            "x"
+        ])
+    );
+}

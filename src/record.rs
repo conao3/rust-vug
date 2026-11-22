@@ -57,6 +57,9 @@ pub(crate) struct VersionRecord {
     pub(crate) check_skip: Vec<String>,
     /// (path in the output, link target), ascending by path.
     pub(crate) links: Vec<(String, String)>,
+    /// (path in the output, command the program at that path runs),
+    /// ascending by path.
+    pub(crate) wrappers: Vec<(String, Vec<String>)>,
 }
 
 pub(crate) enum BuildOptions {
@@ -78,6 +81,13 @@ pub(crate) enum BuildOptions {
     },
     Cmake {
         setup_flags: Vec<String>,
+    },
+    Cargo {
+        path: String,
+        flags: Vec<String>,
+    },
+    Commands {
+        commands: Vec<Vec<String>>,
     },
     Meson {
         setup_flags: Vec<String>,
@@ -300,6 +310,7 @@ fn parse_version(
             "dependencies",
             "check",
             "links",
+            "wrappers",
         ],
         "",
         &mut errors,
@@ -513,6 +524,63 @@ fn parse_version(
                 }
                 build = BuildOptions::Linux { defconfig, config };
             }
+            "cargo" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "path", "flags"],
+                    "build.",
+                    &mut errors,
+                );
+                let path = match build_table.get("path") {
+                    None => ".".to_owned(),
+                    Some(value) => match value.as_str() {
+                        Some(path)
+                            if !path.is_empty()
+                                && !path.starts_with('/')
+                                && path.split('/').all(|part| part != "..") =>
+                        {
+                            path.to_owned()
+                        }
+                        _ => {
+                            errors.push("build.path: expected a path inside the source".to_owned());
+                            ".".to_owned()
+                        }
+                    },
+                };
+                build = BuildOptions::Cargo {
+                    path,
+                    flags: opt_string_array(build_table, "flags", "build.", &mut errors)
+                        .unwrap_or_default(),
+                };
+            }
+            "commands" => {
+                unknown_keys(build_table, &["kind", "commands"], "build.", &mut errors);
+                let mut commands = Vec::new();
+                match build_table.get("commands") {
+                    Some(toml::Value::Array(items)) if !items.is_empty() => {
+                        for item in items {
+                            let words: Option<Vec<String>> = item.as_array().and_then(|words| {
+                                words
+                                    .iter()
+                                    .map(|w| w.as_str().map(str::to_owned))
+                                    .collect()
+                            });
+                            match words {
+                                Some(words) if !words.is_empty() => commands.push(words),
+                                _ => errors.push(
+                                    "build.commands: expected non-empty arrays of strings"
+                                        .to_owned(),
+                                ),
+                            }
+                        }
+                    }
+                    _ => errors.push(
+                        "build.commands: expected a non-empty array of arrays of strings"
+                            .to_owned(),
+                    ),
+                }
+                build = BuildOptions::Commands { commands };
+            }
             "prebuilt" => {
                 unknown_keys(build_table, &["kind", "install"], "build.", &mut errors);
                 build = BuildOptions::Prebuilt {
@@ -521,7 +589,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cmake\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
                         .to_owned(),
                 );
             }
@@ -581,6 +649,39 @@ fn parse_version(
         Some(_) => errors.push("links: expected a table".to_owned()),
     }
 
+    let mut wrappers = Vec::new();
+    match map.get("wrappers") {
+        None => {}
+        Some(toml::Value::Table(table)) => {
+            for (path, command) in table {
+                let inside = !path.is_empty()
+                    && !path.starts_with('/')
+                    && path
+                        .split('/')
+                        .all(|part| !part.is_empty() && part != "." && part != "..");
+                let words: Option<Vec<String>> = command.as_array().and_then(|words| {
+                    words
+                        .iter()
+                        .map(|w| w.as_str().map(str::to_owned))
+                        .collect()
+                });
+                match words {
+                    Some(words) if inside && !words.is_empty() => {
+                        wrappers.push((path.clone(), words));
+                    }
+                    _ => errors.push(format!(
+                        "wrappers.{path}: expected a path inside the output and a non-empty array of strings"
+                    )),
+                }
+            }
+            if table.is_empty() {
+                errors.push("wrappers: expected at least one entry".to_owned());
+            }
+            wrappers.sort();
+        }
+        Some(_) => errors.push("wrappers: expected a table".to_owned()),
+    }
+
     (
         VersionRecord {
             version,
@@ -595,6 +696,7 @@ fn parse_version(
             check_enabled,
             check_skip,
             links,
+            wrappers,
         },
         errors,
     )
@@ -833,6 +935,30 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "config", config);
             }
         }
+        BuildOptions::Cargo { path, flags } => {
+            write_string_field(&mut out, "kind", "cargo");
+            if path != "." {
+                write_string_field(&mut out, "path", path);
+            }
+            if !flags.is_empty() {
+                write_array(&mut out, "flags", flags);
+            }
+        }
+        BuildOptions::Commands { commands } => {
+            write_string_field(&mut out, "kind", "commands");
+            out.push_str("commands = [\n");
+            for words in commands {
+                out.push_str("  [");
+                for (index, word) in words.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    write_escaped(&mut out, word);
+                }
+                out.push_str("],\n");
+            }
+            out.push_str("]\n");
+        }
         BuildOptions::Prebuilt { install } => {
             write_string_field(&mut out, "kind", "prebuilt");
             write_install(&mut out, install);
@@ -864,6 +990,20 @@ fn canonical_version(record: &VersionRecord) -> String {
             out.push_str(" = ");
             write_escaped(&mut out, target);
             out.push('\n');
+        }
+    }
+    if !record.wrappers.is_empty() {
+        out.push_str("\n[wrappers]\n");
+        for (path, words) in &record.wrappers {
+            write_escaped(&mut out, path);
+            out.push_str(" = [");
+            for (index, word) in words.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_escaped(&mut out, word);
+            }
+            out.push_str("]\n");
         }
     }
     out
@@ -1294,6 +1434,7 @@ sources = [
             check_enabled: true,
             check_skip: Vec::new(),
             links: Vec::new(),
+            wrappers: Vec::new(),
         }
     }
 
@@ -1354,6 +1495,7 @@ skip = []
             check_enabled: false,
             check_skip: Vec::new(),
             links: Vec::new(),
+            wrappers: Vec::new(),
         };
         assert_eq!(
             canonical_version(&record),
