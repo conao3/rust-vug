@@ -179,6 +179,32 @@ many packages rely on it).
 A package that does not depend on a C library with a loader is linked
 statically against the C library bundled with the seed compiler.
 
+## The C++ runtime
+
+`zig c++` links libc++ statically into every program and shared library it
+produces. Two objects of one process then hold separate copies of the
+runtime: `std::error_code` values compare unequal across them, and so do
+the type identities that exceptions and `dynamic_cast` rely on.
+
+A package whose C++ code meets other C++ code at run time therefore lists
+the runtime package in `dependencies.run`. The runtime package is the one
+whose output has `include/c++/v1/__config_site`: libc++, libc++abi and
+libunwind as shared libraries, of the LLVM release the seed's zig bundles.
+When it is among the dependencies of a build, `VUG_LIBCXX` holds its store
+path and the wrappers change as follows:
+
+- `c++` passes `-nostdlib++` and `-I$VUG_LIBCXX/include/c++/v1` (the
+  second not when the call has `-nostdinc++`), and at a link names
+  `libc++.so.1`, `libc++abi.so.1` and `libunwind.so.1` of that package by
+  path, with its `lib` as a run path. A call that has `-nostdlib` or
+  `-nostdlib++` itself gets no libraries.
+- `cc` and `c++` drop `-lc++`, `-lstdc++` and `-lc++abi`, and `cc` names
+  the same three libraries in their place.
+
+After the install step the build fails when a file of the output is an
+ELF object holding a statically linked C++ runtime, unless the record sets
+`check.private-cxx-runtime`.
+
 ## Dependencies and the index
 
 Each name in `dependencies.build` and `dependencies.run` is built first, at

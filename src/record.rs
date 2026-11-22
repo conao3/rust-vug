@@ -55,6 +55,7 @@ pub(crate) struct VersionRecord {
     pub(crate) deps_expose: Vec<String>,
     pub(crate) check_enabled: bool,
     pub(crate) check_skip: Vec<String>,
+    pub(crate) private_cxx_runtime: bool,
     /// (path in the output, link target), ascending by path.
     pub(crate) links: Vec<(String, String)>,
     /// (path in the output, command the program at that path runs),
@@ -638,8 +639,18 @@ fn parse_version(
     }
 
     let (mut check_enabled, mut check_skip) = (true, Vec::new());
+    let mut private_cxx_runtime = false;
     if let Some(check) = req_table(map, "check", "", &mut errors) {
-        unknown_keys(check, &["enabled", "skip"], "check.", &mut errors);
+        unknown_keys(
+            check,
+            &["enabled", "skip", "private-cxx-runtime"],
+            "check.",
+            &mut errors,
+        );
+        if check.contains_key("private-cxx-runtime") {
+            private_cxx_runtime =
+                req_bool(check, "private-cxx-runtime", "check.", &mut errors).unwrap_or(false);
+        }
         check_enabled = req_bool(check, "enabled", "check.", &mut errors).unwrap_or(true);
         check_skip = req_string_array(check, "skip", "check.", &mut errors).unwrap_or_default();
         check_unique("skip", "check.", &check_skip, &mut errors);
@@ -718,6 +729,7 @@ fn parse_version(
             deps_expose,
             check_enabled,
             check_skip,
+            private_cxx_runtime,
             links,
             wrappers,
         },
@@ -1009,6 +1021,9 @@ fn canonical_version(record: &VersionRecord) -> String {
     let mut check_skip = record.check_skip.clone();
     check_skip.sort();
     write_array(&mut out, "skip", &check_skip);
+    if record.private_cxx_runtime {
+        write_bool_field(&mut out, "private-cxx-runtime", true);
+    }
     if !record.links.is_empty() {
         out.push_str("\n[links]\n");
         for (path, target) in &record.links {
@@ -1459,6 +1474,7 @@ sources = [
             deps_expose: Vec::new(),
             check_enabled: true,
             check_skip: Vec::new(),
+            private_cxx_runtime: false,
             links: Vec::new(),
             wrappers: Vec::new(),
         }
@@ -1520,6 +1536,7 @@ skip = []
             deps_expose: Vec::new(),
             check_enabled: false,
             check_skip: Vec::new(),
+            private_cxx_runtime: false,
             links: Vec::new(),
             wrappers: Vec::new(),
         };

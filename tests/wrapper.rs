@@ -4,22 +4,36 @@
 use std::process::Command;
 
 fn run(directory: &std::path::Path, arguments: &[&str]) -> Vec<String> {
+    run_as(directory, "cc", "c", None, arguments)
+}
+
+fn run_as(
+    directory: &std::path::Path,
+    tool: &str,
+    lang: &str,
+    libcxx: Option<&str>,
+    arguments: &[&str],
+) -> Vec<String> {
     let zig = directory.join("zig");
     std::fs::write(&zig, "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done\n").expect("write");
     let wrapper = directory.join("cc");
     let text = vug::wrapper::COMPILER_WRAPPER
         .replace("/seed/zig/zig", &format!("sh {}", zig.display()))
-        .replace("{tool}", "cc")
-        .replace("{lang}", "c");
+        .replace("{tool}", tool)
+        .replace("{lang}", lang);
     std::fs::write(&wrapper, text).expect("write");
-    let output = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg(&wrapper)
         .args(arguments)
         .current_dir(directory)
         .env_remove("VUG_CFLAGS")
         .env_remove("VUG_LDFLAGS")
-        .output()
-        .expect("run wrapper");
+        .env_remove("VUG_LIBCXX");
+    if let Some(libcxx) = libcxx {
+        command.env("VUG_LIBCXX", libcxx);
+    }
+    let output = command.output().expect("run wrapper");
     assert!(output.status.success(), "{output:?}");
     String::from_utf8(output.stdout)
         .expect("UTF-8")
@@ -187,4 +201,63 @@ fn objects_with_unknown_names_get_a_known_one() {
     let got = run(directory.path(), &["x.oo", "-o", "out.oo"]);
     assert!(got[5].ends_with("/1.o"), "{got:?}");
     assert_eq!(got[6..8], ["-o", "out.oo"]);
+}
+
+fn cxx(tool: &str, lang: &str, libcxx: Option<&str>, arguments: &[&str]) -> Vec<String> {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    std::fs::write(directory.path().join("a.cpp"), "").expect("write");
+    run_as(directory.path(), tool, lang, libcxx, arguments)[5..]
+        .iter()
+        .filter(|a| !a.starts_with("-Wno-error="))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn shared_cxx_runtime_replaces_the_static_one() {
+    let libraries = [
+        "/r/lib/libc++.so.1",
+        "/r/lib/libc++abi.so.1",
+        "/r/lib/libunwind.so.1",
+        "-Wl,-rpath,/r/lib",
+    ];
+    let headers = ["-nostdlib++", "-I/r/include/c++/v1"];
+    let mut linked = vec!["a.cpp", "-o", "a"];
+    linked.extend(headers);
+    linked.extend(libraries);
+    assert_eq!(cxx("c++", "c++", Some("/r"), &["a.cpp", "-o", "a"]), linked);
+    assert_eq!(
+        cxx("c++", "c++", Some("/r"), &["a.cpp", "-lstdc++", "-o", "a"]),
+        linked
+    );
+    let mut compiled = vec!["-c", "a.cpp"];
+    compiled.extend(headers);
+    assert_eq!(cxx("c++", "c++", Some("/r"), &["-c", "a.cpp"]), compiled);
+    let mut driver = vec!["a.o", "-o", "a"];
+    driver.extend(libraries);
+    assert_eq!(
+        cxx("cc", "c", Some("/r"), &["a.o", "-lc++", "-o", "a"]),
+        driver
+    );
+    assert_eq!(
+        cxx("cc", "c", Some("/r"), &["a.o", "-o", "a"]),
+        ["a.o", "-o", "a"]
+    );
+}
+
+#[test]
+fn cxx_runtime_flags_of_the_caller_are_kept() {
+    assert_eq!(
+        cxx(
+            "c++",
+            "c++",
+            Some("/r"),
+            &["-nostdinc++", "-nostdlib++", "a.cpp", "-o", "a"]
+        ),
+        ["-nostdinc++", "-nostdlib++", "a.cpp", "-o", "a"]
+    );
+    assert_eq!(
+        cxx("c++", "c++", None, &["a.cpp", "-lc++", "-o", "a"]),
+        ["a.cpp", "-lc++", "-o", "a"]
+    );
 }

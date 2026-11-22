@@ -4,7 +4,8 @@
 /// `bin/cc` and `bin/c++` of the seed. `{tool}` is `cc` or `c++`.
 ///
 /// The wrapper adds `VUG_CFLAGS`, and `VUG_LDFLAGS` unless the call only
-/// compiles or preprocesses, and turns the GNU and clang spellings that
+/// compiles or preprocesses, uses the C++ runtime at `VUG_LIBCXX` in place
+/// of the one zig links statically, and turns the GNU and clang spellings that
 /// packages use into what zig accepts (`docs/build.md`, "The seed").
 pub const COMPILER_WRAPPER: &str = r#"#!/bin/sh
 link=1
@@ -107,6 +108,11 @@ for a; do
     -x) lang=1; want_lang=1; set -- "$@" "$a" ;;
     -x?*) lang=1; set -- "$@" "$a" ;;
     -nostdlib) nostdlib=1; set -- "$@" "$a" ;;
+    -nostdlib++) nostdlibcxx=1; set -- "$@" "$a" ;;
+    -nostdinc++) nostdinccxx=1; set -- "$@" "$a" ;;
+    -lc++ | -lstdc++ | -lc++abi)
+      if [ -n "${VUG_LIBCXX-}" ]; then cxx_libs=1; else set -- "$@" "$a"; fi
+      ;;
     -fsyntax-only) link=0 ;;
     -*) set -- "$@" "$a" ;;
     *.o | *.lo | *.a | *.c | *.cc | *.cpp | *.cxx | *.C | *.s | *.S) objects_given=1; set -- "$@" "$a" ;;
@@ -125,6 +131,18 @@ for a; do
       ;;
   esac
 done
+if [ -n "${VUG_LIBCXX-}" ] && [ "{lang}" = c++ ]; then
+  if [ "${nostdlibcxx:-0}" = 0 ]; then
+    set -- "$@" -nostdlib++
+    if [ "${nostdlib:-0}" = 0 ]; then cxx_libs=1; fi
+  fi
+  if [ "${nostdinccxx:-0}" = 0 ]; then
+    set -- "$@" "-I$VUG_LIBCXX/include/c++/v1"
+  fi
+fi
+if [ "$link" = 1 ] && [ "${cxx_libs:-0}" = 1 ]; then
+  set -- "$@" "$VUG_LIBCXX/lib/libc++.so.1" "$VUG_LIBCXX/lib/libc++abi.so.1" "$VUG_LIBCXX/lib/libunwind.so.1" "-Wl,-rpath,$VUG_LIBCXX/lib"
+fi
 if [ "${syntax_only:-0}" = 1 ]; then
   mkdir -p /tmp/vug-cc-$$
   set -- "$@" -c -o /tmp/vug-cc-$$/syntax.o

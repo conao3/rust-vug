@@ -22,7 +22,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "7";
+const BUILD_RULES: &str = "8";
 
 pub struct Settings {
     /// Repository root containing `seed.toml` and `packages/`.
@@ -378,6 +378,38 @@ fn file_name_of(url: &str) -> &str {
 /// Moves the tree `out`, built for the placeholder path, into the store:
 /// hashes it, replaces the placeholder by the final path, and renames it.
 /// Returns the id.
+/// The first file under `dir` that holds a statically linked libc++
+/// (`docs/build.md`, "The C++ runtime"), found by a message of libc++abi
+/// and one of libc++.
+fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
+    const MARKERS: [&[u8]; 2] = [
+        b"terminate_handler unexpectedly returned",
+        b"unspecified generic_category error",
+    ];
+    let mut entries: Vec<PathBuf> = io("read", dir, fs::read_dir(dir))?
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let meta = io("stat", &path, fs::symlink_metadata(&path))?;
+        if meta.is_dir() {
+            if let Some(found) = private_cxx_runtime(&path)? {
+                return Ok(Some(found));
+            }
+        } else if meta.is_file() {
+            let bytes = io("read", &path, fs::read(&path))?;
+            if bytes.starts_with(b"\x7fELF")
+                && MARKERS
+                    .iter()
+                    .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+            {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub fn install_output(store_dir: &Path, out: &Path) -> Result<String, String> {
     let id = treehash::encode_base32(&io("hash", out, treehash::hash_tree(out))?);
     io(
@@ -689,9 +721,13 @@ impl<'a> Builder<'a> {
         let mut pkg_config = String::new();
         let mut python_path = Vec::new();
         let mut aclocal_path = Vec::new();
+        let mut libcxx = String::new();
         for id in &dep_ids {
             let host = store_dir.join(id);
             let inside = format!("{STORE}/{id}");
+            if host.join("include/c++/v1/__config_site").is_file() {
+                libcxx = inside.clone();
+            }
             if let Some(loader) = loader_name(&host.join("lib")) {
                 cflags.push("-fPIC".to_owned());
                 ldflags.push("-dynamic".to_owned());
@@ -752,6 +788,7 @@ impl<'a> Builder<'a> {
                     ldflags.join(" ")
                 },
             ),
+            ("VUG_LIBCXX", libcxx),
             ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
             ("PKG_CONFIG", pkg_config),
             ("PYTHONPATH", python_path.join(":")),
@@ -947,6 +984,14 @@ impl<'a> Builder<'a> {
             })?;
         }
 
+        if !record.private_cxx_runtime
+            && let Some(file) = private_cxx_runtime(&out)?
+        {
+            return Err(format!(
+                "{name}: {} carries its own copy of the C++ runtime; add `libcxx` to dependencies.run",
+                file.strip_prefix(&out).unwrap_or(&file).display()
+            ));
+        }
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;
         io(

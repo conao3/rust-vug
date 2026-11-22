@@ -93,6 +93,7 @@ skip = []
 | `dependencies.expose` | array of strings | no | Package names that a build against this package needs as well, without the output needing them at run time: the headers its own headers include, the pkg-config files its pkg-config file requires. Sorted, no duplicates; left out when empty. |
 | `check.enabled` | boolean | yes | Whether the test suite runs. |
 | `check.skip` | array of strings | yes | Test names to skip. Sorted, no duplicates. |
+| `check.private-cxx-runtime` | boolean | no | `true` lets the output hold a statically linked C++ runtime (`build.md`, "The C++ runtime"): the runtime package itself and the tools it is built with. Left out when false. |
 
 Unknown keys and unknown tables are errors.
 
