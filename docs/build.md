@@ -121,11 +121,24 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - preprocessed output of standard input (`-E -`) names the input
     `<stdin>` in its line markers, as other compilers do; zig names a
     temporary file.
+  - any other input that is a relocatable object but has a file name zig
+    does not know (`.oo`) is passed under a name ending in `.o` as well.
+  - `-fsyntax-only` becomes a compile into a temporary object, and with it
+    `-x c-header` and `-x c++-header` become `-x c` and `-x c++`: zig fails
+    on `-fsyntax-only` after the check itself has passed.
+  - `-nostdlib` (without `-nostdinc`) keeps the headers of the C library on
+    the search path; zig drops them.
+  - `-Wl,-rpath` followed by the directory as its own argument is joined
+    into `-Wl,-rpath,<dir>`.
+  - `-Wl,-init,<function>` and `-Wl,-fini,<function>`, which zig rejects,
+    become a small source file that calls the function from a constructor
+    or a destructor.
   - an unused command-line argument and a use of `__DATE__` or `__TIME__`
     are never errors (zig makes the second one an error at `-O3`; with
     `SOURCE_DATE_EPOCH` set the macros are reproducible).
 - `bin/ar`, `bin/ranlib`, and `bin/ld` run the matching
   zig tools; `bin/gcc` links to `cc`.
+- `bin/cpp` runs `cc -E`, on standard input when no file is named.
 
 ## `/bin` and `/usr/bin`
 
@@ -155,6 +168,7 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |
 | `lib/python*/site-packages/` | Added to `PYTHONPATH`. |
+| `share/aclocal/` | Added to `ACLOCAL_PATH`, where `aclocal` and `autoreconf` find the macros of libtool, pkgconf, and others. |
 
 Two flags are always added when linking: `-Wl,-rpath,<output>/lib`, so a
 program finds the libraries of its own package, and

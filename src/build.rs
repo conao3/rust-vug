@@ -32,11 +32,35 @@ const COMPILER_WRAPPER: &str = r#"#!/bin/sh
 link=1
 asm=0
 dep=0
+case " $* " in
+  *" -fsyntax-only "*) syntax_only=1 ;;
+esac
+case " $* " in
+  *" -nostdinc "*) nostdinc=1 ;;
+esac
 for a; do
   shift
+  is_output=0
   if [ "${want_output:-0}" = 1 ]; then
     want_output=0
     output=$a
+    is_output=1
+  fi
+  if [ "${want_rpath:-0}" = 1 ]; then
+    want_rpath=0
+    set -- "$@" "-Wl,-rpath,$a"
+    continue
+  fi
+  if [ "${want_lang:-0}" = 1 ]; then
+    want_lang=0
+    if [ "${syntax_only:-0}" = 1 ]; then
+      case "$a" in
+        c-header) a=c ;;
+        c++-header) a=c++ ;;
+      esac
+    fi
+    set -- "$@" "$a"
+    continue
   fi
   if [ "${isystem:-0}" = 1 ]; then
     isystem=0
@@ -57,13 +81,24 @@ for a; do
     -MD | -MMD | -Wp,-MD,* | -Wp,-MMD,*) dep=1; set -- "$@" "$a" ;;
     -Wl,*)
       words=
+      last=
       IFS=,
       for w in ${a#-Wl,}; do
         if [ "${skip_word:-0}" = 1 ]; then
           skip_word=0
           continue
         fi
+        if [ -n "${take:-}" ]; then
+          eval "${take}_fn=\$w"
+          take=
+          continue
+        fi
+        last=$w
         case "$w" in
+          -init | --init) take=init ;;
+          -fini | --fini) take=fini ;;
+          -init=* | --init=*) init_fn=${w#*=} ;;
+          -fini=* | --fini=*) fini_fn=${w#*=} ;;
           -stats | -lc | -shared | --allow-multiple-definition | -Map=* | --Map=*) ;;
           -Map | --Map) skip_word=1 ;;
           -h) words="$words,-soname" ;;
@@ -74,15 +109,25 @@ for a; do
         esac
       done
       unset IFS
+      case "$last" in
+        -rpath | --rpath | -R)
+          words=${words%,-rpath}
+          want_rpath=1
+          ;;
+      esac
       if [ -n "$words" ]; then set -- "$@" "-Wl$words"; fi
       ;;
     -o) output_given=1; want_output=1; set -- "$@" "$a" ;;
     -) stdin=1; set -- "$@" "$a" ;;
-    -x | -x?*) lang=1; set -- "$@" "$a" ;;
+    -x) lang=1; want_lang=1; set -- "$@" "$a" ;;
+    -x?*) lang=1; set -- "$@" "$a" ;;
+    -nostdlib) nostdlib=1; set -- "$@" "$a" ;;
+    -fsyntax-only) link=0 ;;
     -*) set -- "$@" "$a" ;;
     *.o | *.lo | *.a | *.c | *.cc | *.cpp | *.cxx | *.C | *.s | *.S) objects_given=1; set -- "$@" "$a" ;;
-    *.so | *.os)
-      if [ -f "$a" ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
+    *.h | *.hh | *.hpp | *.i | *.ii | *.m | *.ld | *.lds | *.map | *.sym | *.def | *.txt | *.d) set -- "$@" "$a" ;;
+    *)
+      if [ "$is_output" = 0 ] && [ -f "$a" ] && [ "$(dd if="$a" bs=1 count=4 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
         objects=/tmp/vug-cc-$$
         mkdir -p "$objects"
         n=$((${n:-0} + 1))
@@ -93,9 +138,30 @@ for a; do
         set -- "$@" "$a"
       fi
       ;;
-    *) set -- "$@" "$a" ;;
   esac
 done
+if [ "${syntax_only:-0}" = 1 ]; then
+  mkdir -p /tmp/vug-cc-$$
+  set -- "$@" -c -o /tmp/vug-cc-$$/syntax.o
+fi
+if [ "${nostdlib:-0}" = 1 ] && [ "${nostdinc:-0}" = 0 ]; then
+  for d in x86_64-linux-musl generic-musl x86-linux-any any-linux-any; do
+    set -- "$@" -isystem "/seed/zig/lib/libc/include/$d"
+  done
+fi
+if [ "$link" = 1 ] && [ -n "${init_fn:-}${fini_fn:-}" ]; then
+  mkdir -p /tmp/vug-cc-$$
+  {
+    if [ -n "${init_fn:-}" ]; then
+      printf 'extern void %s(void);\n__attribute__((constructor)) static void vug_init(void) { %s(); }\n' "$init_fn" "$init_fn"
+    fi
+    if [ -n "${fini_fn:-}" ]; then
+      printf 'extern void %s(void);\n__attribute__((destructor)) static void vug_fini(void) { %s(); }\n' "$fini_fn" "$fini_fn"
+    fi
+  } > /tmp/vug-cc-$$/init.c
+  objects_given=1
+  set -- "$@" /tmp/vug-cc-$$/init.c
+fi
 set -- "$@" -Wno-error=unused-command-line-argument -Wno-error=date-time
 if [ "$link" = 1 ] && [ "${objects_given:-0}" = 0 ] && [ "${stdin:-0}" = 0 ] && [ "${output_given:-0}" = 1 ]; then
   mkdir -p /tmp/vug-cc-$$
@@ -146,6 +212,19 @@ exec /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UND
 "#;
 
 /// `bin/ar`, `bin/ranlib`, and `bin/ld` of the seed.
+/// `bin/cpp` of the seed: the C preprocessor, reading standard input when
+/// no input file is named.
+const CPP_WRAPPER: &str = r#"#!/bin/sh
+for a; do
+  case "$a" in
+    -) exec /seed/bin/cc -E "$@" ;;
+    -*) ;;
+    *) exec /seed/bin/cc -E "$@" ;;
+  esac
+done
+exec /seed/bin/cc -E "$@" -
+"#;
+
 const TOOL_WRAPPER: &str = "#!/bin/sh\nexec /seed/zig/zig {tool} \"$@\"\n";
 
 pub struct Settings {
@@ -258,6 +337,7 @@ fn read_seed(settings: &Settings) -> Result<(toml::Table, String), String> {
     hasher.update(text.as_bytes());
     hasher.update(COMPILER_WRAPPER.as_bytes());
     hasher.update(TOOL_WRAPPER.as_bytes());
+    hasher.update(CPP_WRAPPER.as_bytes());
     let hash: [u8; 20] = hasher.finalize().as_bytes()[..20]
         .try_into()
         .map_err(|_| "seed hash".to_owned())?;
@@ -330,6 +410,11 @@ fn ensure_seed(settings: &Settings, table: &toml::Table, id: &str) -> Result<Pat
     for (name, tool) in [("ar", "ar"), ("ranlib", "ranlib"), ("ld", "ld.lld")] {
         write_executable(&bin.join(name), &TOOL_WRAPPER.replace("{tool}", tool))?;
     }
+    let cpp = bin.join("cpp");
+    if cpp.symlink_metadata().is_ok() {
+        io("remove", &cpp, fs::remove_file(&cpp))?;
+    }
+    write_executable(&cpp, CPP_WRAPPER)?;
     let gcc = bin.join("gcc");
     io("symlink", &gcc, std::os::unix::fs::symlink("cc", &gcc))?;
 
@@ -756,6 +841,7 @@ impl<'a> Builder<'a> {
         let mut pkg_config_path = Vec::new();
         let mut pkg_config = String::new();
         let mut python_path = Vec::new();
+        let mut aclocal_path = Vec::new();
         for id in &dep_ids {
             let host = store_dir.join(id);
             let inside = format!("{STORE}/{id}");
@@ -764,6 +850,9 @@ impl<'a> Builder<'a> {
                 ldflags.push("-dynamic".to_owned());
                 ldflags.push(format!("-Wl,--dynamic-linker={inside}/lib/{loader}"));
                 continue;
+            }
+            if host.join("share/aclocal").is_dir() {
+                aclocal_path.push(format!("{inside}/share/aclocal"));
             }
             if host.join("include").is_dir() {
                 cflags.push("-isystem".to_owned());
@@ -819,6 +908,7 @@ impl<'a> Builder<'a> {
             ("PKG_CONFIG_PATH", pkg_config_path.join(":")),
             ("PKG_CONFIG", pkg_config),
             ("PYTHONPATH", python_path.join(":")),
+            ("ACLOCAL_PATH", aclocal_path.join(":")),
             (
                 "CMAKE_PREFIX_PATH",
                 direct.values().cloned().collect::<Vec<_>>().join(":"),
