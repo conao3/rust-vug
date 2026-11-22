@@ -218,6 +218,18 @@ Unpacks the source archive and copies files into the output.
 `from` is a path relative to the unpacked source. `to` is a path relative to
 the output. Neither may be absolute or contain a `..` component.
 
+## Links
+
+```toml
+[links]
+"lib/libtinfo.so" = "libtinfow.so"
+```
+
+After the steps of the build kind, each key becomes a symbolic link in the
+output, at that path relative to the output, pointing to the value. This
+gives a file a second name that other packages look for. The table is the
+last one of a version record and is left out when empty.
+
 ## Canonical form
 
 Every record has exactly one byte representation. Two records with the same
@@ -228,7 +240,7 @@ identical files.
 - No comments.
 - Top-level keys first, then tables, each in the order of the tables above
   (`package.toml`: `name`, `license`, `[upstream]`; version files: `version`,
-  `patches`, `[source]`, `[build]`, `[dependencies]`, `[check]`). Keys inside a
+  `patches`, `[source]`, `[build]`, `[dependencies]`, `[check]`, `[links]`). Keys inside a
   table follow the order of the tables above; `build.kind` comes first in
   `[build]`.
 - One blank line before each table header. No other blank lines.

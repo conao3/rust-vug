@@ -899,6 +899,13 @@ impl<'a> Builder<'a> {
             }
             BuildOptions::Prebuilt { install } => steps::prebuilt_steps(&prefix, install),
         });
+        for (path, target) in &record.links {
+            let link = format!("{prefix}/{path}");
+            if let Some((parent, _)) = link.rsplit_once('/') {
+                script.push(vec!["mkdir".to_owned(), "-p".to_owned(), parent.to_owned()]);
+            }
+            script.push(vec!["ln".to_owned(), "-s".to_owned(), target.clone(), link]);
+        }
         let script_path = build_dir.join("build.sh");
         io(
             "write",

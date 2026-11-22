@@ -54,6 +54,8 @@ pub(crate) struct VersionRecord {
     pub(crate) deps_run: Vec<String>,
     pub(crate) check_enabled: bool,
     pub(crate) check_skip: Vec<String>,
+    /// (path in the output, link target), ascending by path.
+    pub(crate) links: Vec<(String, String)>,
 }
 
 pub(crate) enum BuildOptions {
@@ -296,6 +298,7 @@ fn parse_version(
             "build",
             "dependencies",
             "check",
+            "links",
         ],
         "",
         &mut errors,
@@ -542,6 +545,33 @@ fn parse_version(
         check_unique("skip", "check.", &check_skip, &mut errors);
     }
 
+    let mut links = Vec::new();
+    match map.get("links") {
+        None => {}
+        Some(toml::Value::Table(table)) => {
+            for (path, target) in table {
+                let inside = !path.is_empty()
+                    && !path.starts_with('/')
+                    && path
+                        .split('/')
+                        .all(|part| !part.is_empty() && part != "." && part != "..");
+                match target.as_str() {
+                    Some(target) if inside && !target.is_empty() => {
+                        links.push((path.clone(), target.to_owned()));
+                    }
+                    _ => errors.push(format!(
+                        "links.{path}: expected a path inside the output and a target string"
+                    )),
+                }
+            }
+            if table.is_empty() {
+                errors.push("links: expected at least one entry".to_owned());
+            }
+            links.sort();
+        }
+        Some(_) => errors.push("links: expected a table".to_owned()),
+    }
+
     (
         VersionRecord {
             version,
@@ -554,6 +584,7 @@ fn parse_version(
             deps_run,
             check_enabled,
             check_skip,
+            links,
         },
         errors,
     )
@@ -811,6 +842,15 @@ fn canonical_version(record: &VersionRecord) -> String {
     let mut check_skip = record.check_skip.clone();
     check_skip.sort();
     write_array(&mut out, "skip", &check_skip);
+    if !record.links.is_empty() {
+        out.push_str("\n[links]\n");
+        for (path, target) in &record.links {
+            write_escaped(&mut out, path);
+            out.push_str(" = ");
+            write_escaped(&mut out, target);
+            out.push('\n');
+        }
+    }
     out
 }
 
@@ -1237,6 +1277,7 @@ sources = [
             deps_run: Vec::new(),
             check_enabled: true,
             check_skip: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -1295,6 +1336,7 @@ skip = []
             deps_run: vec!["ca-certificates".to_owned()],
             check_enabled: false,
             check_skip: Vec::new(),
+            links: Vec::new(),
         };
         assert_eq!(
             canonical_version(&record),
