@@ -48,7 +48,7 @@ for a; do
   fi
   if [ "${want_rpath:-0}" = 1 ]; then
     want_rpath=0
-    set -- "$@" "-Wl,-rpath,$a"
+    set -- "$@" "-Wl,-rpath,${a#-Wl,}"
     continue
   fi
   if [ "${want_lang:-0}" = 1 ]; then
