@@ -1,6 +1,6 @@
 [package]
 name = "vug"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2024"
 license = "Apache-2.0"
 description = "A declarative package manager and system builder with a content-addressed store"
@@ -17,6 +17,7 @@ toml = "1.2.2"
 ureq = "3.5"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 getrandom = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

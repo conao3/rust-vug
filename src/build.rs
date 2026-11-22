@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -70,12 +71,24 @@ fn run_sandbox(sandbox: &Sandbox) -> Result<(), String> {
         .as_fd()
         .try_clone_to_owned()
         .map_err(|e| format!("stderr: {e}"))?;
-    let status = Command::new("bwrap")
+    let mut command = Command::new("bwrap");
+    command
         .args(steps::bwrap_args(sandbox))
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stderr))
-        .status()
-        .map_err(|e| format!("bwrap: {e}"))?;
+        .stdout(Stdio::from(stderr));
+    // A build must not see which signals the caller of vug ignores (`nohup`
+    // leaves SIGHUP ignored, and an ignored signal stays ignored across exec).
+    // SAFETY: `signal` is async-signal-safe and the closure touches no memory
+    // of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
+            Ok(())
+        });
+    }
+    let status = command.status().map_err(|e| format!("bwrap: {e}"))?;
     if status.success() {
         Ok(())
     } else {
@@ -382,9 +395,15 @@ fn file_name_of(url: &str) -> &str {
 /// (`docs/build.md`, "The C++ runtime"), found by a message of libc++abi
 /// and one of libc++.
 fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
-    const MARKERS: [&[u8]; 2] = [
-        b"terminate_handler unexpectedly returned",
-        b"unspecified generic_category error",
+    // Each message is kept in two halves so that this program does not
+    // hold the bytes it searches for.
+    let markers: [Vec<u8>; 2] = [
+        ["terminate_handler unexp", "ectedly returned"]
+            .concat()
+            .into_bytes(),
+        ["unspecified generic_cat", "egory error"]
+            .concat()
+            .into_bytes(),
     ];
     let mut entries: Vec<PathBuf> = io("read", dir, fs::read_dir(dir))?
         .filter_map(|entry| Some(entry.ok()?.path()))
@@ -399,9 +418,11 @@ fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
         } else if meta.is_file() {
             let bytes = io("read", &path, fs::read(&path))?;
             if bytes.starts_with(b"\x7fELF")
-                && MARKERS
-                    .iter()
-                    .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+                && markers.iter().any(|marker| {
+                    bytes
+                        .windows(marker.len())
+                        .any(|window| window == marker.as_slice())
+                })
             {
                 return Ok(Some(path));
             }
