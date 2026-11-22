@@ -343,3 +343,15 @@ fn garbage_collection_keeps_what_generations_list() {
     assert_ne!(args(&[]).status.code(), Some(0));
     assert!(store.join("aaaa").exists());
 }
+
+#[test]
+fn signatures_verify_only_with_the_right_key_and_message() {
+    let (secret, public) = vug::sign::generate().expect("key pair");
+    let (_, other) = vug::sign::generate().expect("key pair");
+    let signature = vug::sign::sign(&secret, "key id").expect("sign");
+    assert!(vug::sign::verify(&public, "key id", &signature));
+    assert!(!vug::sign::verify(&public, "key other", &signature));
+    assert!(!vug::sign::verify(&other, "key id", &signature));
+    assert!(!vug::sign::verify(&public, "key id", ""));
+    assert!(vug::sign::sign("short", "key id").is_err());
+}

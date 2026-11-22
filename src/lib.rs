@@ -4,5 +4,6 @@
 pub mod cpio;
 pub mod fetch;
 pub mod rewrite;
+pub mod sign;
 pub mod steps;
 pub mod treehash;

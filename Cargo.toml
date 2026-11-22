@@ -1,6 +1,6 @@
 [package]
 name = "vug"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 license = "Apache-2.0"
 description = "A declarative package manager and system builder with a content-addressed store"
@@ -15,6 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
 toml = "1.2.1"
 ureq = "3.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

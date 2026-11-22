@@ -111,6 +111,8 @@ enum StoreCommands {
     ExportCache(CacheArgs),
     /// Remove the store paths that no generation needs.
     CollectGarbage(GarbageArgs),
+    /// Make a key pair for signing a binary cache.
+    GenerateKey,
 }
 
 #[derive(Args)]
@@ -121,6 +123,9 @@ struct CacheArgs {
     /// Directory of the store (default: as for build-package).
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// File holding the secret key that signs the build keys.
+    #[arg(long)]
+    secret_key_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -190,6 +195,9 @@ struct BuildArgs {
     /// Base URL of a binary cache to take outputs from.
     #[arg(long)]
     binary_cache: Option<String>,
+    /// Public key whose signature makes the cache's ids for build keys trusted.
+    #[arg(long)]
+    trusted_key: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -266,6 +274,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "--base",
     "--binary-cache",
     "--keep",
+    "--secret-key-file",
+    "--trusted-key",
     "--profiles",
     "--directory",
 ];
@@ -380,6 +390,15 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
         Commands::Store { command } => match command {
             StoreCommands::ExportCache(args) => run_export_cache(&cli, args),
             StoreCommands::CollectGarbage(args) => run_collect_garbage(&cli, args),
+            StoreCommands::GenerateKey => {
+                let (secret, public) =
+                    vug::sign::generate().map_err(|e| (version::failure_status(), e))?;
+                match cli.output {
+                    Output::Json => print_json(&json!({ "Secret": secret, "Public": public })),
+                    Output::Text | Output::Table => write_out(&format!("{secret}\n{public}\n")),
+                }?;
+                Ok(0)
+            }
         },
         Commands::Package { command } => match command {
             PackageCommands::BuildPackage(args) => run_build(&cli, args),
@@ -607,7 +626,17 @@ fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {
         Some(dir) => dir.clone(),
         None => default_data_dir().map_err(fail)?,
     };
-    let (keys, paths) = build::export_cache(&data_dir, &args.directory).map_err(fail)?;
+    let secret = match &args.secret_key_file {
+        None => None,
+        Some(file) => Some(
+            std::fs::read_to_string(file)
+                .map_err(|e| fail(format!("read {}: {e}", file.display())))?
+                .trim()
+                .to_owned(),
+        ),
+    };
+    let (keys, paths) =
+        build::export_cache(&data_dir, &args.directory, secret.as_deref()).map_err(fail)?;
     match cli.output {
         Output::Json => print_json(&json!({
             "Directory": args.directory,
@@ -656,6 +685,7 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         cache_dir: absolute(&cache_dir)?,
         jobs: args.jobs,
         binary_cache: args.binary_cache.clone(),
+        trusted_key: args.trusted_key.clone(),
     })
 }
 

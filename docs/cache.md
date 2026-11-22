@@ -7,7 +7,7 @@ outputs instead of building them.
 
 | Path | Contents |
 |---|---|
-| `keys/<key>` | The id of the output of the build `<key>`, followed by a newline. `<key>` is the key of the index (`docs/build.md`). |
+| `keys/<key>` | The id of the output of the build `<key>` on the first line, and on the second the Ed25519 signature of `<key> <id>` in hex, when the cache was written with a secret key. `<key>` is the key of the index (`docs/build.md`). |
 | `paths/<id>.cpio` | The contents of `/vug/store/<id>` as a cpio archive in the "newc" format. |
 
 ```console
@@ -19,7 +19,14 @@ $ vug store export-cache --directory cache
 }
 ```
 
-`export-cache` writes a key for every entry of the index of the data
+```console
+$ vug store generate-key --output text > cache.key
+$ vug store export-cache --directory cache --secret-key-file cache.key
+```
+
+`generate-key` prints a secret key and its public key (64 hex characters
+each); `--secret-key-file` reads the secret key from the first line of the
+file. `export-cache` writes a key for every entry of the index of the data
 directory (`--data-dir`, default as for `build-package`) and an archive for
 every output of the index that the store holds and the cache does not.
 
@@ -27,8 +34,10 @@ every output of the index that the store holds and the cache does not.
 
 `--binary-cache URL` on a command that builds:
 
-1. A build whose key is not in the index asks `URL/keys/<key>`. An answer is
-   written to the index.
+1. With `--trusted-key PUBLIC`, a build whose key is not in the index asks
+   `URL/keys/<key>`. An answer signed by that key is written to the index;
+   any other answer is an error. Without `--trusted-key` the cache is not
+   asked for keys.
 2. An output that is needed in the store and is not there is fetched from
    `URL/paths/<id>.cpio`, unpacked, and checked: its tree hash, with its own
    path replaced by the placeholder, must be `<id>`. A status 404 means the
@@ -40,5 +49,6 @@ runs, or part of what the command returns (a package and what it needs at
 run time).
 
 Unpacking writes nothing outside the new store path, whatever the archive
-names. The check in step 2 covers the content of a path. Nothing checks that a key
-belongs to an id: a cache is trusted for `keys/`.
+names. The check in step 2 covers the content of a path, so the files need no
+trust in the cache. That a key belongs to an id is what the signature says:
+whoever holds the secret key vouches for the builds.

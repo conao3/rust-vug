@@ -153,6 +153,8 @@ pub struct Settings {
     pub jobs: u32,
     /// Base URL of a binary cache (`docs/cache.md`).
     pub binary_cache: Option<String>,
+    /// Public key that signs the key-to-id answers of the binary cache.
+    pub trusted_key: Option<String>,
 }
 
 pub struct Built {
@@ -543,14 +545,24 @@ impl<'a> Builder<'a> {
 
     /// The id a binary cache records for the build `key`.
     fn cached_key(&self, key: &str) -> Result<Option<String>, String> {
-        let Some(base) = &self.settings.binary_cache else {
+        let (Some(base), Some(trusted)) = (&self.settings.binary_cache, &self.settings.trusted_key)
+        else {
             return Ok(None);
         };
         let url = format!("{}/keys/{key}", base.trim_end_matches('/'));
-        let body = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))?;
-        Ok(body
+        let Some(text) = fetch::get(&url)
+            .map_err(|e| format!("fetch {url}: {e}"))?
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(|text| text.trim().to_owned())
+        else {
+            return Ok(None);
+        };
+        let mut lines = text.lines();
+        let id = lines.next().unwrap_or_default();
+        let signature = lines.next().unwrap_or_default();
+        if !vug::sign::verify(trusted, &format!("{key} {id}"), signature) {
+            return Err(format!("{url}: not signed by the trusted key"));
+        }
+        Ok(Some(id.to_owned())
             .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_alphanumeric())))
     }
 
@@ -1001,7 +1013,11 @@ pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[S
 
 /// Writes the binary cache of the data directory into `directory`
 /// (`docs/cache.md`). Returns the numbers of keys and of archives written.
-pub fn export_cache(data_dir: &Path, directory: &Path) -> Result<(usize, usize), String> {
+pub fn export_cache(
+    data_dir: &Path,
+    directory: &Path,
+    secret: Option<&str>,
+) -> Result<(usize, usize), String> {
     let keys_dir = directory.join("keys");
     let paths_dir = directory.join("paths");
     io("create", &keys_dir, fs::create_dir_all(&keys_dir))?;
@@ -1022,7 +1038,15 @@ pub fn export_cache(data_dir: &Path, directory: &Path) -> Result<(usize, usize),
                 continue;
             };
             let key_path = keys_dir.join(key);
-            io("write", &key_path, fs::write(&key_path, format!("{id}\n")))?;
+            let signature = match secret {
+                Some(secret) => format!("{}\n", vug::sign::sign(secret, &format!("{key} {id}"))?),
+                None => String::new(),
+            };
+            io(
+                "write",
+                &key_path,
+                fs::write(&key_path, format!("{id}\n{signature}")),
+            )?;
             keys += 1;
             let tree = data_dir.join("store").join(id);
             let archive = paths_dir.join(format!("{id}.cpio"));
