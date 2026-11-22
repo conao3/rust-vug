@@ -1299,6 +1299,8 @@ fn write_efi_parts(
             mkfs,
             "-F".to_owned(),
             "32".to_owned(),
+            "-s".to_owned(),
+            "2".to_owned(),
             "-n".to_owned(),
             "VUGESP".to_owned(),
             "-i".to_owned(),
