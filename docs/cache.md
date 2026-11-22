@@ -43,6 +43,14 @@ every output of the index that the store holds and the cache does not.
    path replaced by the placeholder, must be `<id>`. A status 404 means the
    cache does not have it, and the output is built.
 
+On a machine that runs a vug system, `/etc/vug.toml` gives the two values
+where the command line does not:
+
+```toml
+binary-cache = "http://cache.example"
+trusted-key = "…64 hex characters…"
+```
+
 An id from the index or a cache is enough while nothing needs the files: the
 output is fetched or built only when it is a dependency of a build that
 runs, or part of what the command returns (a package and what it needs at

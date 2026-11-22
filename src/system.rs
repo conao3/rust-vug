@@ -179,6 +179,10 @@ if [ "$($b id -u)" != 0 ]; then
   exit 1
 fi
 $self/activate check
+if [ -x $self/bin/install-boot ] && ! $b mountpoint -q /boot; then
+  echo "vug: /boot is not mounted; nothing was changed" >&2
+  exit 1
+fi
 old=$($b readlink /run/current-system)
 
 p=/vug/profiles

@@ -562,6 +562,10 @@ fn xdg_dir(variable: &str, home_relative: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Settings of a machine that runs a vug system: `binary-cache` and
+/// `trusted-key`, used where the command line gives none.
+const MACHINE_CONFIG: &str = "/etc/vug.toml";
+
 /// Whether this machine runs a vug system, whose store is `/vug/store`.
 fn on_vug_system() -> bool {
     Path::new("/vug/store").is_dir()
@@ -679,13 +683,24 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         );
     }
     let absolute = |dir: &Path| std::path::absolute(dir).map_err(|e| fail(e.to_string()));
+    let (mut binary_cache, mut trusted_key) = (args.binary_cache.clone(), args.trusted_key.clone());
+    if on_vug_system()
+        && let Ok(text) = std::fs::read_to_string(MACHINE_CONFIG)
+    {
+        let table = text
+            .parse::<toml::Table>()
+            .map_err(|e| fail(format!("{MACHINE_CONFIG}: {e}")))?;
+        let value = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        binary_cache = binary_cache.or_else(|| value("binary-cache"));
+        trusted_key = trusted_key.or_else(|| value("trusted-key"));
+    }
     Ok(build::Settings {
         root: absolute(&args.root)?,
         data_dir: absolute(&data_dir)?,
         cache_dir: absolute(&cache_dir)?,
         jobs: args.jobs,
-        binary_cache: args.binary_cache.clone(),
-        trusted_key: args.trusted_key.clone(),
+        binary_cache,
+        trusted_key,
     })
 }
 

@@ -200,7 +200,9 @@ Paths the record does not list are never touched.
 
 `<system>/bin/switch-to-system`, run as root on the running machine:
 
-1. Checks the link paths (above).
+1. Checks the link paths (above), and, for a system with boot entries, that
+   `/boot` is mounted. A failed check ends the switch before anything
+   changes.
 2. Finds the generation that points to this system, or adds the next number,
    and points `/vug/profiles/system` to it.
 3. Runs `activate`: `/run/current-system` is replaced in one rename, then
