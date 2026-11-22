@@ -7,3 +7,4 @@ pub mod rewrite;
 pub mod sign;
 pub mod steps;
 pub mod treehash;
+pub mod wrapper;
