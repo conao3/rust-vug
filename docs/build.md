@@ -182,7 +182,9 @@ statically against the C library bundled with the seed compiler.
 ## Dependencies and the index
 
 Each name in `dependencies.build` and `dependencies.run` is built first, at
-its current version. The build root holds every dependency together with
+its current version. What a dependency exposes (`dependencies.expose` of the
+dependency itself and of everything it needs at run time) is in the build
+root as well, and stays out of the run-time closure of the output. The build root holds every dependency together with
 what that dependency needs at run time, each at its store path, and `PATH`
 lists their `bin` directories before `/bin`.
 

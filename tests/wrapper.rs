@@ -1,21 +1,19 @@
 //! The compiler wrapper, run with a stand-in for zig that prints the
 //! arguments it receives, one per line.
 
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 fn run(directory: &std::path::Path, arguments: &[&str]) -> Vec<String> {
     let zig = directory.join("zig");
     std::fs::write(&zig, "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done\n").expect("write");
-    std::fs::set_permissions(&zig, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let wrapper = directory.join("cc");
     let text = vug::wrapper::COMPILER_WRAPPER
-        .replace("/seed/zig/zig", zig.to_str().expect("path"))
+        .replace("/seed/zig/zig", &format!("sh {}", zig.display()))
         .replace("{tool}", "cc")
         .replace("{lang}", "c");
     std::fs::write(&wrapper, text).expect("write");
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let output = Command::new(&wrapper)
+    let output = Command::new("sh")
+        .arg(&wrapper)
         .args(arguments)
         .current_dir(directory)
         .env_remove("VUG_CFLAGS")

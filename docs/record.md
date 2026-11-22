@@ -90,6 +90,7 @@ skip = []
 | `build.*` | | | Options of that kind. Unknown options are rejected. |
 | `dependencies.build` | array of strings | yes | Package names needed while building. Sorted, no duplicates. |
 | `dependencies.run` | array of strings | yes | Package names needed by the output at run time. Sorted, no duplicates. |
+| `dependencies.expose` | array of strings | no | Package names that a build against this package needs as well, without the output needing them at run time: the headers its own headers include, the pkg-config files its pkg-config file requires. Sorted, no duplicates; left out when empty. |
 | `check.enabled` | boolean | yes | Whether the test suite runs. |
 | `check.skip` | array of strings | yes | Test names to skip. Sorted, no duplicates. |
 

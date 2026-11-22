@@ -46,6 +46,9 @@ pub struct Built {
     pub fresh: bool,
     /// Ids of the output and of everything it needs at run time.
     closure: BTreeSet<String>,
+    /// Ids that a build against this output sees as well: what it and its
+    /// run-time dependencies expose.
+    exposed: BTreeSet<String>,
 }
 
 fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, String> {
@@ -532,6 +535,7 @@ impl<'a> Builder<'a> {
         let mut dep_ids = BTreeSet::new();
         let mut direct = BTreeMap::new();
         let mut run_closure = BTreeSet::new();
+        let mut exposed = BTreeSet::new();
         let mut dep_names = record.deps_build.clone();
         dep_names.extend(record.deps_run.iter().cloned());
         dep_names.sort();
@@ -539,10 +543,17 @@ impl<'a> Builder<'a> {
         for dep in &dep_names {
             let built = self.resolve(dep, None, present && record.deps_run.contains(dep))?;
             dep_ids.extend(built.closure.iter().cloned());
+            dep_ids.extend(built.exposed.iter().cloned());
             direct.insert(dep.clone(), format!("{STORE}/{}", built.id));
             if record.deps_run.contains(dep) {
                 run_closure.extend(built.closure.iter().cloned());
+                exposed.extend(built.exposed.iter().cloned());
             }
+        }
+        for dep in &record.deps_expose {
+            let built = self.resolve(dep, None, present)?;
+            exposed.extend(built.closure.iter().cloned());
+            exposed.extend(built.exposed.iter().cloned());
         }
 
         let mut hasher = blake3::Hasher::new();
@@ -586,6 +597,7 @@ impl<'a> Builder<'a> {
                 id,
                 fresh: false,
                 closure: run_closure,
+                exposed,
             });
         }
 
@@ -863,6 +875,7 @@ impl<'a> Builder<'a> {
             id,
             fresh: true,
             closure: run_closure,
+            exposed,
         })
     }
 }

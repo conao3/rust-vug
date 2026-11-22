@@ -52,6 +52,7 @@ pub(crate) struct VersionRecord {
     pub(crate) build: BuildOptions,
     pub(crate) deps_build: Vec<String>,
     pub(crate) deps_run: Vec<String>,
+    pub(crate) deps_expose: Vec<String>,
     pub(crate) check_enabled: bool,
     pub(crate) check_skip: Vec<String>,
     /// (path in the output, link target), ascending by path.
@@ -527,14 +528,22 @@ fn parse_version(
         }
     }
 
-    let (mut deps_build, mut deps_run) = (Vec::new(), Vec::new());
+    let (mut deps_build, mut deps_run, mut deps_expose) = (Vec::new(), Vec::new(), Vec::new());
     if let Some(deps) = req_table(map, "dependencies", "", &mut errors) {
-        unknown_keys(deps, &["build", "run"], "dependencies.", &mut errors);
+        unknown_keys(
+            deps,
+            &["build", "run", "expose"],
+            "dependencies.",
+            &mut errors,
+        );
         deps_build =
             req_string_array(deps, "build", "dependencies.", &mut errors).unwrap_or_default();
         deps_run = req_string_array(deps, "run", "dependencies.", &mut errors).unwrap_or_default();
         check_unique("build", "dependencies.", &deps_build, &mut errors);
         check_unique("run", "dependencies.", &deps_run, &mut errors);
+        deps_expose =
+            opt_string_array(deps, "expose", "dependencies.", &mut errors).unwrap_or_default();
+        check_unique("expose", "dependencies.", &deps_expose, &mut errors);
     }
 
     let (mut check_enabled, mut check_skip) = (true, Vec::new());
@@ -582,6 +591,7 @@ fn parse_version(
             build,
             deps_build,
             deps_run,
+            deps_expose,
             check_enabled,
             check_skip,
             links,
@@ -836,6 +846,11 @@ fn canonical_version(record: &VersionRecord) -> String {
     let mut deps_run = record.deps_run.clone();
     deps_run.sort();
     write_array(&mut out, "run", &deps_run);
+    if !record.deps_expose.is_empty() {
+        let mut deps_expose = record.deps_expose.clone();
+        deps_expose.sort();
+        write_array(&mut out, "expose", &deps_expose);
+    }
     out.push('\n');
     out.push_str("[check]\n");
     write_bool_field(&mut out, "enabled", record.check_enabled);
@@ -1275,6 +1290,7 @@ sources = [
             },
             deps_build: vec!["make".to_owned()],
             deps_run: Vec::new(),
+            deps_expose: Vec::new(),
             check_enabled: true,
             check_skip: Vec::new(),
             links: Vec::new(),
@@ -1334,6 +1350,7 @@ skip = []
             },
             deps_build: Vec::new(),
             deps_run: vec!["ca-certificates".to_owned()],
+            deps_expose: Vec::new(),
             check_enabled: false,
             check_skip: Vec::new(),
             links: Vec::new(),
