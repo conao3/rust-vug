@@ -402,7 +402,7 @@ fn autotools_install_targets_replace_install() {
 
 #[test]
 fn cmake_steps_configure_build_and_install() {
-    let steps = vug::steps::cmake_steps("/out", &["-DFOO=OFF".to_string()], true, 3);
+    let steps = vug::steps::cmake_steps("/out", ".", &["-DFOO=OFF".to_string()], true, 3);
     let joined: Vec<String> = steps.iter().map(|step| step.join(" ")).collect();
     assert_eq!(
         joined,

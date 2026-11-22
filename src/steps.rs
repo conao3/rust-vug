@@ -161,16 +161,22 @@ pub fn make_steps(
 
 /// Steps of the `cmake` build kind.
 ///
-/// 1. `["cmake", "-S", ".", "-B", "build", "-G", "Unix Makefiles",
+/// 1. `["cmake", "-S", <path>, "-B", "build", "-G", "Unix Makefiles",
 ///    "-DCMAKE_INSTALL_PREFIX=<prefix>", "-DCMAKE_INSTALL_LIBDIR=lib",
 ///    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_RPATH=<prefix>/lib",
 ///    <setup_flags>...]`
 /// 2. `["cmake", "--build", "build", "-j", "<jobs>"]`
 /// 3. only when `check`: `["ctest", "--test-dir", "build", "-j", "<jobs>"]`
 /// 4. `["cmake", "--install", "build"]`
-pub fn cmake_steps(prefix: &str, setup_flags: &[String], check: bool, jobs: u32) -> Vec<Step> {
+pub fn cmake_steps(
+    prefix: &str,
+    path: &str,
+    setup_flags: &[String],
+    check: bool,
+    jobs: u32,
+) -> Vec<Step> {
     let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
-    let mut setup = words(&["cmake", "-S", ".", "-B", "build", "-G", "Unix Makefiles"]);
+    let mut setup = words(&["cmake", "-S", path, "-B", "build", "-G", "Unix Makefiles"]);
     setup.push(format!("-DCMAKE_INSTALL_PREFIX={prefix}"));
     setup.push("-DCMAKE_INSTALL_LIBDIR=lib".to_string());
     setup.push("-DCMAKE_BUILD_TYPE=Release".to_string());

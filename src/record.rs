@@ -80,6 +80,7 @@ pub(crate) enum BuildOptions {
         install_targets: Vec<String>,
     },
     Cmake {
+        path: String,
         setup_flags: Vec<String>,
     },
     Cargo {
@@ -465,8 +466,30 @@ fn parse_version(
                 };
             }
             "cmake" => {
-                unknown_keys(build_table, &["kind", "setup-flags"], "build.", &mut errors);
+                unknown_keys(
+                    build_table,
+                    &["kind", "path", "setup-flags"],
+                    "build.",
+                    &mut errors,
+                );
+                let path = match build_table.get("path") {
+                    None => ".".to_owned(),
+                    Some(value) => match value.as_str() {
+                        Some(path)
+                            if !path.is_empty()
+                                && !path.starts_with('/')
+                                && path.split('/').all(|part| part != "..") =>
+                        {
+                            path.to_owned()
+                        }
+                        _ => {
+                            errors.push("build.path: expected a path inside the source".to_owned());
+                            ".".to_owned()
+                        }
+                    },
+                };
                 build = BuildOptions::Cmake {
+                    path,
                     setup_flags: opt_string_array(
                         build_table,
                         "setup-flags",
@@ -916,8 +939,11 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "install-targets", install_targets);
             }
         }
-        BuildOptions::Cmake { setup_flags } => {
+        BuildOptions::Cmake { path, setup_flags } => {
             write_string_field(&mut out, "kind", "cmake");
+            if path != "." {
+                write_string_field(&mut out, "path", path);
+            }
             if !setup_flags.is_empty() {
                 write_array(&mut out, "setup-flags", setup_flags);
             }

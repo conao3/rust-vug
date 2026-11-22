@@ -192,7 +192,7 @@ needs a library linked or files moved.
 
 ### Build kind `cmake`
 
-Runs `cmake -S . -B build -G "Unix Makefiles"
+Runs `cmake -S <path> -B build -G "Unix Makefiles"
 -DCMAKE_INSTALL_PREFIX=<output> -DCMAKE_INSTALL_LIBDIR=lib
 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_RPATH=<output>/lib
 <setup-flags>`, `cmake --build`, `ctest`
@@ -203,6 +203,7 @@ store paths of the dependencies the record lists.
 
 | Key | Type | Default |
 |---|---|---|
+| `build.path` | string | `"."`: the directory inside the source that holds the top `CMakeLists.txt` |
 | `build.setup-flags` | array of strings, order kept | empty |
 
 ### Build kind `meson`

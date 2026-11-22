@@ -816,8 +816,9 @@ impl<'a> Builder<'a> {
                 record.check_enabled,
                 settings.jobs,
             ),
-            BuildOptions::Cmake { setup_flags } => steps::cmake_steps(
+            BuildOptions::Cmake { path, setup_flags } => steps::cmake_steps(
                 &prefix,
+                path,
                 &expand(setup_flags)?,
                 record.check_enabled,
                 settings.jobs,
