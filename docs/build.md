@@ -93,13 +93,14 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - `-m16` also enables the 16-bit mode feature, which zig switches off.
   - `-mno-sse` also disables SSE2 and later, which zig leaves on.
   - `-Wl,-R<dir>` becomes `-Wl,-rpath,<dir>` and `-Wl,-h<name>` becomes
-    `-Wl,-soname,<name>`; `-stats`, `-lc`, and `-shared`
-    inside `-Wl,` are dropped.
+    `-Wl,-soname,<name>`; `-stats`, `-lc`, `-shared`,
+    `--allow-multiple-definition`, and `-Map` with its file inside `-Wl,`
+    are dropped.
   - `-S` together with a dependency file (`-MD`, `-MMD`) runs zig twice,
     because zig writes no assembly output for that combination.
-  - a relocatable object whose file name ends in `.so` is passed under a
-    name ending in `.o`, because zig takes any `.so` input for a shared
-    library and then fails to link.
+  - a relocatable object whose file name ends in `.so` or `.os` is passed
+    under a name ending in `.o`: zig takes any `.so` input for a shared
+    library and then fails to link, and does not know `.os`.
   - input from standard input (`-`) without `-x` is given `-x c` (`-x c++`
     for `c++`); without it zig does not search the C library headers.
   - a link whose inputs are only libraries gets an empty source file as

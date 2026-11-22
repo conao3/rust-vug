@@ -59,8 +59,13 @@ for a; do
       words=
       IFS=,
       for w in ${a#-Wl,}; do
+        if [ "${skip_word:-0}" = 1 ]; then
+          skip_word=0
+          continue
+        fi
         case "$w" in
-          -stats | -lc | -shared) ;;
+          -stats | -lc | -shared | --allow-multiple-definition | -Map=* | --Map=*) ;;
+          -Map | --Map) skip_word=1 ;;
           -h) words="$words,-soname" ;;
           -h?*) words="$words,-soname,${w#-h}" ;;
           -R) words="$words,-rpath" ;;
@@ -76,7 +81,7 @@ for a; do
     -x | -x?*) lang=1; set -- "$@" "$a" ;;
     -*) set -- "$@" "$a" ;;
     *.o | *.lo | *.a | *.c | *.cc | *.cpp | *.cxx | *.C | *.s | *.S) objects_given=1; set -- "$@" "$a" ;;
-    *.so)
+    *.so | *.os)
       if [ -f "$a" ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
         objects=/tmp/vug-cc-$$
         mkdir -p "$objects"
