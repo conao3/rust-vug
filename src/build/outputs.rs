@@ -308,7 +308,8 @@ impl Layout {
         let mut directories = BTreeMap::<PathBuf, BTreeSet<String>>::new();
         for path in paths {
             let mut owner = None;
-            if path.starts_with(".vug") {
+            let root_overlay = path.starts_with(".vug/root");
+            if path.starts_with(".vug") && !root_overlay {
                 return Err(format!(
                     "{}: .vug is reserved for output metadata",
                     path.display()
@@ -316,7 +317,8 @@ impl Layout {
             }
             let components: Vec<_> = path.iter().collect();
             for (name, pattern, parts, matched) in &mut patterns {
-                if (1..=components.len()).any(|n| matches(parts, &components[..n])) {
+                if !root_overlay && (1..=components.len()).any(|n| matches(parts, &components[..n]))
+                {
                     *matched = true;
                     if owner.is_some_and(|other| other != *name) {
                         return Err(format!(
@@ -937,7 +939,7 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, Runtime, matches};
+    use super::{Layout, Manifest, Runtime, matches};
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::OsStr;
     use std::fs;
@@ -961,6 +963,70 @@ mod tests {
         assert!(!matches_path("lib/*/lib?.so.*", "lib/sub/dir/libx.so.1"));
         assert!(matches_path("lib/[x]", "lib/[x]"));
         assert!(!matches_path("lib/[x]", "lib/x"));
+    }
+
+    #[test]
+    fn keeps_destdir_overlay_in_the_default_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        fs::create_dir(&versions).unwrap();
+        fs::write(
+            temp.path().join("package.toml"),
+            r#"name = "example"
+license = "MIT"
+
+[upstream]
+sources = ["https://example.com/"]
+"#,
+        )
+        .unwrap();
+        let version = versions.join("1.toml");
+        fs::write(
+            &version,
+            r#"
+version = "1"
+
+[source]
+url = "https://example.com/package.tar.gz"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[build]
+kind = "meson"
+
+[dependencies]
+build = []
+run = []
+
+[outputs.out]
+run = []
+
+[outputs.dev]
+paths = ["include/**"]
+run = []
+
+[check]
+enabled = false
+skip = []
+"#,
+        )
+        .unwrap();
+        let (record, _) = crate::record::load_version(&version).unwrap_or_else(|errors| {
+            panic!("{}", errors[0].message);
+        });
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(stage.join(".vug/root/etc")).unwrap();
+        fs::create_dir(stage.join("include")).unwrap();
+        fs::write(stage.join(".vug/root/etc/example.conf"), "").unwrap();
+
+        let layout = Layout::scan(&stage, &record).unwrap();
+        assert_eq!(
+            layout.files[std::path::Path::new(".vug/root/etc/example.conf")],
+            "out"
+        );
+        assert_eq!(layout.files[std::path::Path::new("include")], "dev");
+
+        fs::write(stage.join(".vug/output"), "").unwrap();
+        assert!(Layout::scan(&stage, &record).is_err());
     }
 
     #[test]
