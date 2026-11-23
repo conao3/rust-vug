@@ -103,6 +103,12 @@ struct GarbageArgs {
     /// Directory of the generation links.
     #[arg(long, default_value = "/vug/profiles")]
     profiles: PathBuf,
+    #[command(flatten)]
+    mode: GarbageModeArgs,
+}
+
+#[derive(Args)]
+struct GarbageModeArgs {
     /// List what would be removed without removing it.
     #[arg(long, overrides_with = "no_dry_run")]
     dry_run: bool,
@@ -198,6 +204,12 @@ struct BuildArgs {
     /// Parallel build jobs.
     #[arg(long, default_value_t = 1)]
     jobs: u32,
+    #[command(flatten)]
+    cache: CacheSourceArgs,
+}
+
+#[derive(Args)]
+struct CacheSourceArgs {
     /// Base URL of a binary cache to take outputs from.
     #[arg(long)]
     binary_cache: Option<String>,
@@ -230,6 +242,49 @@ enum HomeCommands {
     FormatFragment(FormatArgs),
     /// Compose a home record and its selected fragments.
     ComposeHome(ComposeHomeArgs),
+    /// Build a home output from installed or cached packages and record a generation.
+    BuildHome(BuildHomeArgs),
+    /// Delete older home generations.
+    DeleteGenerations(HomeGenerationArgs),
+    /// Remove user-store paths that no home generation needs.
+    CollectGarbage(HomeGarbageArgs),
+}
+
+#[derive(Args)]
+struct HomeDirs {
+    /// Directory holding the user store and its index.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// Directory holding the home generations and profile lock.
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct BuildHomeArgs {
+    #[command(flatten)]
+    home: ComposeHomeArgs,
+    #[command(flatten)]
+    dirs: HomeDirs,
+    #[command(flatten)]
+    cache: CacheSourceArgs,
+}
+
+#[derive(Args)]
+struct HomeGenerationArgs {
+    #[command(flatten)]
+    dirs: HomeDirs,
+    /// Number of newest generations to keep, with a minimum of one.
+    #[arg(long)]
+    keep: usize,
+}
+
+#[derive(Args)]
+struct HomeGarbageArgs {
+    #[command(flatten)]
+    dirs: HomeDirs,
+    #[command(flatten)]
+    mode: GarbageModeArgs,
 }
 
 #[derive(Args)]
@@ -290,6 +345,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "--name",
     "--package-version",
     "--data-dir",
+    "--state-dir",
     "--cache-dir",
     "--jobs",
     "--program",
@@ -408,6 +464,20 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
                 home::check_file(path, home::Kind::Fragment).map_err(|error| vec![error])
             }),
             HomeCommands::ComposeHome(args) => run_compose_home(&cli, args),
+            HomeCommands::BuildHome(args) => run_build_home(&cli, args),
+            HomeCommands::DeleteGenerations(args) => {
+                let (state, data) = args.dirs.paths().map_err(input_failure)?;
+                let removed = home::output::delete_generations(&state, &data, args.keep)
+                    .map_err(input_failure)?;
+                print_deleted_generations(&cli, &removed)
+            }
+            HomeCommands::CollectGarbage(args) => {
+                let (state, data) = args.dirs.paths().map_err(input_failure)?;
+                let (kept, removed) =
+                    home::output::collect_garbage(&state, &data, args.mode.dry_run)
+                        .map_err(input_failure)?;
+                print_garbage(&cli, kept, &removed, args.mode.dry_run)
+            }
         },
         Commands::System { command } => match command {
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
@@ -629,6 +699,23 @@ fn xdg_dir(variable: &str, home_relative: &str) -> Result<PathBuf, String> {
     }
 }
 
+fn input_failure(error: String) -> (i32, String) {
+    (version::failure_status(), error)
+}
+
+impl HomeDirs {
+    fn paths(&self) -> Result<(PathBuf, PathBuf), String> {
+        let resolve = |explicit: &Option<PathBuf>, variable, home_relative| match explicit {
+            Some(path) => Ok(path.clone()),
+            None => xdg_dir(variable, home_relative).map(|path| path.join("home")),
+        };
+        Ok((
+            resolve(&self.state_dir, "XDG_STATE_HOME", ".local/state")?,
+            resolve(&self.data_dir, "XDG_DATA_HOME", ".local/share")?,
+        ))
+    }
+}
+
 /// Settings of a machine that runs a vug system: `binary-cache` and
 /// `trusted-key`, used where the command line gives none.
 const MACHINE_CONFIG: &str = "/etc/vug.toml";
@@ -658,6 +745,10 @@ fn run_delete_generations(cli: &Cli, args: &GenerationArgs) -> Result<i32, (i32,
             return Err(fail(format!("{}: {status}", refresh.display())));
         }
     }
+    print_deleted_generations(cli, &removed)
+}
+
+fn print_deleted_generations(cli: &Cli, removed: &[u64]) -> Result<i32, (i32, String)> {
     match cli.output {
         Output::Json => print_json(&json!({ "Removed": removed })),
         Output::Text | Output::Table => {
@@ -674,12 +765,21 @@ fn run_collect_garbage(cli: &Cli, args: &GarbageArgs) -> Result<i32, (i32, Strin
         None => default_data_dir().map_err(fail)?,
     };
     let (kept, removed) =
-        gc::collect_garbage(&data_dir, &args.profiles, args.dry_run).map_err(fail)?;
+        gc::collect_garbage(&data_dir, &args.profiles, args.mode.dry_run).map_err(fail)?;
+    print_garbage(cli, kept, &removed, args.mode.dry_run)
+}
+
+fn print_garbage(
+    cli: &Cli,
+    kept: usize,
+    removed: &[String],
+    dry_run: bool,
+) -> Result<i32, (i32, String)> {
     match cli.output {
         Output::Json => print_json(&json!({
             "Kept": kept,
             "Removed": removed,
-            "DryRun": args.dry_run,
+            "DryRun": dry_run,
         })),
         Output::Text | Output::Table => write_out(
             &removed
@@ -750,17 +850,7 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         );
     }
     let absolute = |dir: &Path| std::path::absolute(dir).map_err(|e| fail(e.to_string()));
-    let (mut binary_cache, mut trusted_key) = (args.binary_cache.clone(), args.trusted_key.clone());
-    if on_vug_system()
-        && let Ok(text) = std::fs::read_to_string(MACHINE_CONFIG)
-    {
-        let table = text
-            .parse::<toml::Table>()
-            .map_err(|e| fail(format!("{MACHINE_CONFIG}: {e}")))?;
-        let value = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_owned);
-        binary_cache = binary_cache.or_else(|| value("binary-cache"));
-        trusted_key = trusted_key.or_else(|| value("trusted-key"));
-    }
+    let (binary_cache, trusted_key) = cache_source(&args.cache)?;
     Ok(build::Settings {
         root: absolute(&args.root)?,
         data_dir: absolute(&data_dir)?,
@@ -769,6 +859,51 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         binary_cache,
         trusted_key,
     })
+}
+
+fn cache_source(args: &CacheSourceArgs) -> Result<(Option<String>, Option<String>), (i32, String)> {
+    let (mut binary_cache, mut trusted_key) = (args.binary_cache.clone(), args.trusted_key.clone());
+    if on_vug_system()
+        && let Ok(text) = std::fs::read_to_string(MACHINE_CONFIG)
+    {
+        let table = text
+            .parse::<toml::Table>()
+            .map_err(|e| input_failure(format!("{MACHINE_CONFIG}: {e}")))?;
+        let value = |key: &str| table.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        binary_cache = binary_cache.or_else(|| value("binary-cache"));
+        trusted_key = trusted_key.or_else(|| value("trusted-key"));
+    }
+    Ok((binary_cache, trusted_key))
+}
+
+fn run_build_home(cli: &Cli, args: &BuildHomeArgs) -> Result<i32, (i32, String)> {
+    let (state, data_dir) = args.dirs.paths().map_err(input_failure)?;
+    let (binary_cache, trusted_key) = cache_source(&args.cache)?;
+    let settings = build::Settings {
+        root: args.home.root.clone(),
+        data_dir,
+        cache_dir: PathBuf::new(),
+        jobs: 1,
+        binary_cache,
+        trusted_key,
+    };
+    let built = home::output::build(&settings, &state, &args.home.name).map_err(input_failure)?;
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Name": args.home.name,
+            "Id": built.id,
+            "Path": built.path,
+            "Generation": built.generation,
+        })),
+        Output::Text => write_out(&format!("{}\n", built.path.display())),
+        Output::Table => write_out(&format!(
+            "Name\tGeneration\tPath\n{}\t{}\t{}\n",
+            args.home.name,
+            built.generation,
+            built.path.display()
+        )),
+    }?;
+    Ok(0)
 }
 
 fn print_system(

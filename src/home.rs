@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::naming::model;
 use crate::record::{FileCheck, RecordError, error_at};
 
+pub(crate) mod output;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     Home,
@@ -113,6 +115,7 @@ fn validate_file(file: &HomeFile) -> Result<(), String> {
     let path = Path::new(&file.path);
     for reserved in [
         Path::new(".local/state/vug"),
+        Path::new(".local/share/vug/home"),
         Path::new(".config/systemd/user"),
     ] {
         if path.starts_with(reserved) || reserved.starts_with(path) {

@@ -866,7 +866,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Replaces `{KEY:NAME}` by the value of NAME. `missing` completes the
 /// error for a NAME without a value.
-fn expand(
+pub(crate) fn expand(
     text: &str,
     key: &str,
     values: &BTreeMap<String, String>,

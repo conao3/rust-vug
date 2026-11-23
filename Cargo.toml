@@ -19,8 +19,6 @@ ed25519-dalek = { version = "3", features = ["rand_core"] }
 getrandom = "0.4"
 libc = "0.2"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "lzip"] }
-
-[dev-dependencies]
 tempfile = "3"
 
 [build-dependencies]

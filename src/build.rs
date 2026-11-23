@@ -506,6 +506,7 @@ pub struct Builder<'a> {
     seed: toml::Table,
     seed_id: String,
     in_progress: Vec<String>,
+    cache_only: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -528,7 +529,30 @@ impl<'a> Builder<'a> {
             seed,
             seed_id,
             in_progress: Vec::new(),
+            cache_only: false,
         })
+    }
+
+    pub fn cached(settings: &'a Settings) -> Result<Self, String> {
+        let mut builder = Self::new(settings)?;
+        builder.cache_only = true;
+        Ok(builder)
+    }
+
+    pub fn require_output(&self, id: &str) -> Result<(), String> {
+        let path = self.settings.data_dir.join("store").join(id);
+        let metadata = match fs::symlink_metadata(&path) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && self.substitute(id)? =>
+            {
+                fs::symlink_metadata(&path)
+            }
+            result => result,
+        };
+        if !io("read store reference", &path, metadata)?.is_dir() {
+            return Err(format!("{}: expected a store directory", path.display()));
+        }
+        Ok(())
     }
 
     /// Builds `name` (or takes it from the index or the binary cache) and
@@ -581,8 +605,10 @@ impl<'a> Builder<'a> {
         if !vug::sign::verify(trusted, &format!("{key} {id}"), signature) {
             return Err(format!("{url}: not signed by the trusted key"));
         }
-        Ok(Some(id.to_owned())
-            .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_alphanumeric())))
+        if !valid_store_id(id) {
+            return Err(format!("{url}: invalid store id {id:?}"));
+        }
+        Ok(Some(id.to_owned()))
     }
 
     /// Takes the store path `id` from the binary cache. Returns whether the
@@ -692,7 +718,7 @@ impl<'a> Builder<'a> {
             }
         }
         for dep in &record.deps_expose {
-            let built = self.resolve(dep, None, present)?;
+            let built = self.resolve(dep, None, present && !self.cache_only)?;
             exposed.extend(built.closure.iter().cloned());
             exposed.extend(built.exposed.iter().cloned());
             selected_ids.insert(dep.as_str(), built.id);
@@ -718,7 +744,7 @@ impl<'a> Builder<'a> {
         let index_path = settings.data_dir.join("index").join(name).join(&version);
         let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
             let (found_key, id) = line.trim_end().split_once(' ')?;
-            (found_key == key).then(|| id.to_owned())
+            (found_key == key && valid_store_id(id)).then(|| id.to_owned())
         });
         if known.is_none()
             && let Some(id) = self.cached_key(&key)?
@@ -745,6 +771,12 @@ impl<'a> Builder<'a> {
                 closure: run_closure,
                 exposed,
             });
+        }
+
+        if self.cache_only {
+            return Err(format!(
+                "{name} {version}: no output available from the local index or signed binary cache (build key {key})"
+            ));
         }
 
         for dep in &dep_names {
@@ -1106,6 +1138,13 @@ impl<'a> Builder<'a> {
             exposed,
         })
     }
+}
+
+pub fn valid_store_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
 }
 
 /// A `bwrap` command line up to the program: a mount namespace that shows

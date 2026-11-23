@@ -63,7 +63,7 @@ pub fn delete_generations(profiles: &Path, keep: usize) -> Result<Vec<u64>, Stri
     Ok(removed)
 }
 
-fn make_writable(path: &Path) -> std::io::Result<()> {
+pub(crate) fn make_writable(path: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
@@ -102,9 +102,17 @@ pub fn collect_garbage(
         }
         live.insert(root);
     }
+    sweep(&store, &live, dry_run)
+}
+
+pub fn sweep(
+    store: &Path,
+    live: &BTreeSet<String>,
+    dry_run: bool,
+) -> Result<(usize, Vec<String>), String> {
     let mut removed = Vec::new();
     let mut kept = 0;
-    let mut names: Vec<String> = io("read", &store, fs::read_dir(&store))?
+    let mut names: Vec<String> = io("read", store, fs::read_dir(store))?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .collect();
     names.sort();

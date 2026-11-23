@@ -246,3 +246,120 @@ fn composition_rejects_invalid_records_and_references() {
     write(root, "home-fragments/test.toml", "name = 'other'\n");
     assert_error(compose(root, "sample"), "matching the file name");
 }
+
+fn home_json(args: &[&str]) -> serde_json::Value {
+    let output = home(args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn outputs_are_reproducible_and_gc_keeps_the_current_generation() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let build = |state: &str, data: &str| {
+        home_json(&[
+            "build-home",
+            "--root",
+            root.to_str().unwrap(),
+            "--name",
+            "sample",
+            "--state-dir",
+            root.join(state).to_str().unwrap(),
+            "--data-dir",
+            root.join(data).to_str().unwrap(),
+        ])
+    };
+    let collect = |command: &str, extra: &[&str]| {
+        let state = root.join("state");
+        let data = root.join("data");
+        let mut args = vec![
+            command,
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--data-dir",
+            data.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        home_json(&args)
+    };
+
+    write(
+        root,
+        "homes/sample.toml",
+        r#"
+name = "sample"
+[environment]
+LITERAL = "$HOME"
+[[file]]
+path = ".config/example"
+content = "/vug/store/00000000000000000000000000000000"
+[[unit]]
+name = "example.service"
+enable = ["default.target"]
+secrets = ["key"]
+content = "[Service]\nType=oneshot\n"
+[[secret]]
+name = "key"
+"#,
+    );
+    let first = build("state", "data");
+    assert_eq!(first, build("state", "data"));
+    assert_eq!(first["Id"], build("other-state", "other-data")["Id"]);
+    let path = Path::new(first["Path"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(path.join("files/.config/example")).unwrap(),
+        "/vug/store/00000000000000000000000000000000"
+    );
+    assert!(
+        std::fs::metadata(path.join("files/.config/example"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+    assert_eq!(
+        std::fs::read_link(path.join("units/default.target.wants/example.service")).unwrap(),
+        Path::new("../example.service")
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("manifest/home.json")).unwrap()).unwrap();
+    assert_eq!(manifest["Secrets"], serde_json::json!(["key"]));
+    assert_eq!(
+        manifest["Units"]["example.service"]["Enable"],
+        serde_json::json!(["default.target"])
+    );
+    assert!(!root.join("state/current").exists());
+
+    std::os::unix::fs::symlink("generations/1", root.join("state/current")).unwrap();
+    write(
+        root,
+        "homes/sample.toml",
+        "name = 'sample'\n[environment]\nLITERAL = 'second'\n",
+    );
+    assert_eq!(build("state", "data")["Generation"], 2);
+    write(
+        root,
+        "homes/sample.toml",
+        "name = 'sample'\n[environment]\nLITERAL = 'third'\n",
+    );
+    assert_eq!(build("state", "data")["Generation"], 3);
+
+    assert_eq!(
+        collect("delete-generations", &["--keep", "1"])["Removed"],
+        serde_json::json!([2])
+    );
+    let dry = collect("collect-garbage", &["--dry-run"]);
+    assert_eq!(dry["Kept"], 2);
+    let stale = dry["Removed"][0].as_str().unwrap();
+    assert!(root.join("data/store").join(stale).is_dir());
+    assert_eq!(collect("collect-garbage", &[])["Removed"], dry["Removed"]);
+    assert!(!root.join("data/store").join(stale).exists());
+    assert_eq!(
+        std::fs::canonicalize(root.join("state/current")).unwrap(),
+        path
+    );
+}
