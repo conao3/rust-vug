@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,44 @@ struct Disk {
     sysfs: PathBuf,
     sequence: String,
     bytes: u64,
+}
+
+// Keep echo off before cryptsetup publishes its prompts. A console reader can
+// answer immediately, before cryptsetup disables echo on the terminal itself.
+pub(super) struct QuietTerminal {
+    fd: OwnedFd,
+    original: libc::termios,
+}
+
+impl QuietTerminal {
+    pub(super) fn new() -> Result<Self, String> {
+        let fd: OwnedFd = File::open("/dev/tty")
+            .map_err(|error| format!("open controlling terminal: {error}"))?
+            .into();
+        let mut original = std::mem::MaybeUninit::uninit();
+        if unsafe { libc::tcgetattr(fd.as_raw_fd(), original.as_mut_ptr()) } != 0 {
+            return Err(format!(
+                "read terminal settings: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let original = unsafe { original.assume_init() };
+        let mut quiet = original;
+        quiet.c_lflag &= !(libc::ECHO | libc::ECHONL);
+        if unsafe { libc::tcsetattr(fd.as_raw_fd(), libc::TCSANOW, &quiet) } != 0 {
+            return Err(format!(
+                "disable terminal echo: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(Self { fd, original })
+    }
+}
+
+impl Drop for QuietTerminal {
+    fn drop(&mut self) {
+        unsafe { libc::tcsetattr(self.fd.as_raw_fd(), libc::TCSAFLUSH, &self.original) };
+    }
 }
 
 fn read(path: &Path) -> Result<String, String> {

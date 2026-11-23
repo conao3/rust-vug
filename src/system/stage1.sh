@@ -63,9 +63,14 @@ if [ -f /etc/luks-name ]; then
     console=
     for tty in $(cat /sys/class/tty/console/active); do console=$tty; done
     [ -n "$console" ] && [ -c "/dev/$console" ] || fail "no local unlock console"
+    terminal=/dev/$console
+    terminal_settings=$(stty -g <"$terminal") || fail "reading unlock console settings"
+    stty -echo -echonl <"$terminal" || fail "disabling unlock console echo"
+    unlock_status=0
     setsid -c cryptsetup open --type luks2 --tries 1 "$device" "$mapper" \
-        <"/dev/$console" >"/dev/$console" 2>&1 ||
-        fail "unlocking $device failed"
+        <"$terminal" >"$terminal" 2>&1 || unlock_status=$?
+    stty "$terminal_settings" <"$terminal" || fail "restoring unlock console settings"
+    [ "$unlock_status" -eq 0 ] || fail "unlocking $device failed"
     device=/dev/mapper/$mapper
 fi
 mount -t ext4 -o ro "$device" /new-root || fail "mounting $device"

@@ -310,6 +310,7 @@ pub(super) fn build(
     executables.link(&format!("{util}/sbin/blkid"), "blkid")?;
     if let Some(name) = &config.luks {
         symlink("busybox", &stage.join("bin/setsid"))?;
+        symlink("busybox", &stage.join("bin/stty"))?;
         let cryptsetup = package(builder, "cryptsetup")?;
         executables.link(&format!("{cryptsetup}/sbin/cryptsetup"), "cryptsetup")?;
         write_file(&stage.join("etc/luks-name"), name.as_bytes(), 0o644)?;

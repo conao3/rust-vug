@@ -1739,6 +1739,7 @@ fn image_with(
             }
         };
         let path = ciphertext.path().as_os_str();
+        let terminal = install::QuietTerminal::new()?;
         cryptsetup(&[
             "luksFormat".as_ref(),
             "--type".as_ref(),
@@ -1752,6 +1753,7 @@ fn image_with(
             path,
             mapper.as_ref(),
         ])?;
+        drop(terminal);
         let formatted = format_root(&device, None);
         let closed = cryptsetup(&["close".as_ref(), mapper.as_ref()]);
         match (formatted, closed) {
