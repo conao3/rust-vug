@@ -221,9 +221,9 @@ The dependencies of a build are first only resolved to ids. Their files are
 put into the store (from a binary cache, `docs/cache.md`, or by building)
 when the build runs, and the seed is fetched and assembled then.
 
-A finished build is recorded in `index/<name>/<version>` as `<key> <id>`.
-A build whose key is already in the index returns the recorded ID without
-running.
+A single-output build is recorded in `index/<name>/<version>` as
+`<key> <id>`. When the key matches and the requested output is available,
+the builder returns the recorded ID.
 
 A record with neither output tables nor an explicit output selector uses the
 BLAKE3 hash of the concatenated canonical record, seed ID, build rules
@@ -241,7 +241,44 @@ ID. Same-build output edges are represented in the canonical record.
 Both formats encode the first 20 hash bytes in base32. A single-output build
 can use an explicit `package:out` selector for a single-output dependency.
 
+## Split outputs
+
+A record with `[outputs]` installs once into the usual staging prefix. Each
+path belongs to one output. A matching directory assigns its descendants
+too. An unmatched pattern or a path assigned to multiple outputs fails the
+build. The builder assigns unclaimed paths to `out` and reserves `.vug` for
+its metadata.
+
+The builder finalizes outputs in the order of their declared local runtime
+dependencies. Relative links within an output keep their original targets.
+Links to other outputs and embedded absolute staging paths use the target
+output's store path. The builder expands staging-based path variables in
+pkg-config files and relocates ELF search paths using the partition. It
+rejects ambiguous embedded paths, references outside the declared runtime
+closure, and unresolved ELF interpreters and needed libraries. Build flags
+supply space for the relocated ELF search paths. An ELF with insufficient
+space fails the build.
+
+The build root includes the selected dependencies, their runtime closures
+and their exposed dependencies. An output declared as a runtime dependency in
+any output table is available during the shared build. For each finished ELF,
+the builder removes automatically supplied search paths outside that ELF's
+output closure.
+
+The tree hash includes each output's `.vug/output` name marker and uses the
+placeholder for that output's own path. `out` also holds `.vug/record.toml`.
+Each output lives at `store/<id>`. After installing the whole set, the builder
+atomically publishes a JSON manifest at `index-outputs/<name>/<version>`.
+The manifest has `format` (currently `1`), `key`, and `outputs` fields.
+`outputs` maps each output name to its `id` and sorted list of direct
+runtime dependency IDs in `run`. The builder checks the manifest against the
+record and the resolved runtime dependencies. Concurrent publications for
+the same key must agree on the whole manifest.
+
 ## Command
+
+Pass `--name NAME:OUTPUT` to select an output with `build-package` or
+`run-package`. A bare name selects `out`.
 
 ```console
 $ vug package build-package --root . --name hello
@@ -259,7 +296,7 @@ $ vug package build-package --root . --name hello
 | `--root DIR` | Package tree holding `seed.toml` and `packages/`. |
 | `--name NAME` | Package to build. |
 | `--package-version VERSION` | Version to build. Default: the greatest version record. |
-| `--data-dir DIR` | Holds `store/`, `index/`, and `seed/`. Default: `/vug` when `/vug/store` exists, else `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
+| `--data-dir DIR` | Holds `store/`, `index/`, `index-outputs/`, and `seed/`. Default: `/vug` when `/vug/store` exists, else `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
 | `--cache-dir DIR` | Holds `sources/`. Default: `/var/cache/vug` when `/vug/store` exists, else `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
 | `--jobs N` | Parallel jobs for `make`. Default: 1. |
 | `--binary-cache URL` | A binary cache to take outputs from (`docs/cache.md`). |

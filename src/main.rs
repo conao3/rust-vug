@@ -191,7 +191,7 @@ struct BuildArgs {
     /// Repository root containing seed.toml and the packages directory.
     #[arg(long)]
     root: PathBuf,
-    /// Package name.
+    /// Name to build. Package commands accept name:output.
     #[arg(long)]
     name: String,
     /// Version to build (default: the greatest version record).

@@ -140,7 +140,8 @@ nonempty and always writes `run`. Both arrays and the output tables are
 sorted by byte order. Record validation checks local output names and cycles.
 Tree validation also resolves external selectors to the current version of
 each dependency and checks for unknown outputs and dependency cycles.
-Building a version with output tables requires staging-tree partition support.
+The builder rejects patterns that match no staged path. See
+[split outputs](build.md#split-outputs) for relocation and indexing.
 
 ### Selecting tests to skip
 

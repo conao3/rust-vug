@@ -1,5 +1,8 @@
 //! Building a package into the store (`docs/build.md`).
 
+mod elf;
+mod outputs;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::fd::AsFd;
@@ -558,8 +561,9 @@ impl<'a> Builder<'a> {
     /// Builds `name` (or takes it from the index or the binary cache) and
     /// returns it with its output and run-time closure present in the store.
     pub fn build(&mut self, name: &str, requested: Option<&str>) -> Result<Built, String> {
-        if !model::valid_name(name) {
-            return Err(format!("{name:?}: not a valid package name"));
+        let (package, output) = record::dependency_output(name);
+        if !model::valid_name(package) || !model::valid_name(output) {
+            return Err(format!("{name:?}: not a valid package or output selector"));
         }
         self.resolve(name, requested, true)
     }
@@ -691,37 +695,50 @@ impl<'a> Builder<'a> {
                 "{name}:{output}: unknown output in version {version}"
             ));
         }
-        if !record.outputs.is_empty() {
-            return Err(format!(
-                "{name}: building packages with split outputs is not supported yet"
-            ));
-        }
-
+        let split = !record.outputs.is_empty();
+        let selected_run = outputs::selected_run(&record, output);
         let mut dep_ids = BTreeSet::new();
         let mut direct = BTreeMap::new();
-        let mut selected_ids = BTreeMap::new();
+        let mut resolved = BTreeMap::new();
         let mut run_closure = BTreeSet::new();
+        let mut build_run_closure = BTreeSet::new();
         let mut exposed = BTreeSet::new();
-        let mut dep_names = record.deps_build.clone();
-        dep_names.extend(record.deps_run.iter().cloned());
-        dep_names.sort();
-        dep_names.dedup();
-        for dep in &dep_names {
-            let built = self.resolve(dep, None, present && record.deps_run.contains(dep))?;
+        let all_run: BTreeSet<_> = record
+            .deps_run
+            .iter()
+            .chain(
+                record
+                    .outputs
+                    .values()
+                    .flat_map(|output| output.run.iter().filter(|dep| !dep.starts_with(':'))),
+            )
+            .map(String::as_str)
+            .collect();
+        let dep_names: BTreeSet<_> = record
+            .deps_build
+            .iter()
+            .map(String::as_str)
+            .chain(all_run.iter().copied())
+            .collect();
+        for &dep in &dep_names {
+            let built = self.resolve(dep, None, present && selected_run.contains(dep))?;
             dep_ids.extend(built.closure.iter().cloned());
             dep_ids.extend(built.exposed.iter().cloned());
-            direct.insert(dep.clone(), format!("{STORE}/{}", built.id));
-            selected_ids.insert(dep.as_str(), built.id);
-            if record.deps_run.contains(dep) {
+            direct.insert(dep.to_owned(), format!("{STORE}/{}", built.id));
+            if all_run.contains(dep) {
+                build_run_closure.extend(built.closure.iter().cloned());
+            }
+            if selected_run.contains(dep) {
                 run_closure.extend(built.closure.iter().cloned());
                 exposed.extend(built.exposed.iter().cloned());
             }
+            resolved.insert(dep, built);
         }
         for dep in &record.deps_expose {
             let built = self.resolve(dep, None, present && !self.cache_only)?;
             exposed.extend(built.closure.iter().cloned());
             exposed.extend(built.exposed.iter().cloned());
-            selected_ids.insert(dep.as_str(), built.id);
+            resolved.entry(dep.as_str()).or_insert(built);
         }
 
         let bindings = record.uses_output_keys().then(|| {
@@ -733,7 +750,7 @@ impl<'a> Builder<'a> {
                         role,
                         package,
                         output,
-                        id: &selected_ids[dep],
+                        id: &resolved[dep].id,
                     })
                 })
                 .collect()
@@ -741,36 +758,77 @@ impl<'a> Builder<'a> {
         let key = build_key(&canonical, &self.seed_id, &dep_ids, bindings.as_ref());
 
         let store_dir = settings.data_dir.join("store");
-        let index_path = settings.data_dir.join("index").join(name).join(&version);
-        let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
-            let (found_key, id) = line.trim_end().split_once(' ')?;
-            (found_key == key && valid_store_id(id)).then(|| id.to_owned())
-        });
-        if known.is_none()
-            && let Some(id) = self.cached_key(&key)?
-        {
-            if let Some(parent) = index_path.parent() {
-                io("create", parent, fs::create_dir_all(parent))?;
-            }
-            io(
-                "write",
-                &index_path,
-                fs::write(&index_path, format!("{key} {id}\n")),
-            )?;
-            known = Some(id);
-        }
-        if let Some(id) = known
-            && (!present || store_dir.join(&id).exists() || self.substitute(&id)?)
-        {
-            run_closure.insert(id.clone());
-            return Ok(Built {
+        let index_dir = if split { "index-outputs" } else { "index" };
+        let index_path = settings.data_dir.join(index_dir).join(name).join(&version);
+        let runtime = outputs::runtime(&record, &resolved);
+        let from_manifest = |manifest: &outputs::Manifest, fresh| {
+            let id = manifest.outputs[output].id.clone();
+            let mut closure = run_closure.clone();
+            closure.insert(id.clone());
+            closure.extend(
+                runtime[output]
+                    .local
+                    .iter()
+                    .map(|local| manifest.outputs[local].id.clone()),
+            );
+            Built {
                 name: name.to_owned(),
-                version,
+                version: version.clone(),
                 id,
-                fresh: false,
-                closure: run_closure,
-                exposed,
+                fresh,
+                closure,
+                exposed: exposed.clone(),
+            }
+        };
+        if split {
+            if let Some(manifest) = outputs::Manifest::read(&index_path, &key, &runtime)? {
+                let built = from_manifest(&manifest, false);
+                if !present
+                    || built.closure.iter().all(|id| {
+                        fs::symlink_metadata(store_dir.join(id))
+                            .is_ok_and(|metadata| metadata.is_dir())
+                    })
+                {
+                    return Ok(built);
+                }
+                if self.cache_only {
+                    for id in &built.closure {
+                        self.require_output(id)?;
+                    }
+                    return Ok(built);
+                }
+            }
+        } else {
+            let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
+                let (found_key, id) = line.trim_end().split_once(' ')?;
+                (found_key == key && valid_store_id(id)).then(|| id.to_owned())
             });
+            if known.is_none()
+                && let Some(id) = self.cached_key(&key)?
+            {
+                if let Some(parent) = index_path.parent() {
+                    io("create", parent, fs::create_dir_all(parent))?;
+                }
+                io(
+                    "write",
+                    &index_path,
+                    fs::write(&index_path, format!("{key} {id}\n")),
+                )?;
+                known = Some(id);
+            }
+            if let Some(id) = known
+                && (!present || store_dir.join(&id).exists() || self.substitute(&id)?)
+            {
+                run_closure.insert(id.clone());
+                return Ok(Built {
+                    name: name.to_owned(),
+                    version,
+                    id,
+                    fresh: false,
+                    closure: run_closure,
+                    exposed,
+                });
+            }
         }
 
         if self.cache_only {
@@ -779,8 +837,17 @@ impl<'a> Builder<'a> {
             ));
         }
 
-        for dep in &dep_names {
-            self.resolve(dep, None, true)?;
+        for dep in dep_names {
+            let built = self.resolve(dep, None, true)?;
+            let expected = &resolved[dep];
+            if built.id != expected.id
+                || built.closure != expected.closure
+                || built.exposed != expected.exposed
+            {
+                return Err(format!(
+                    "{dep}: output changed while resolving dependencies"
+                ));
+            }
         }
         let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
         let archive = fetch_source(settings, &record.url, &record.sha256)?;
@@ -820,10 +887,18 @@ impl<'a> Builder<'a> {
         let strip = u32::try_from(record.strip_components)
             .map_err(|_| "source.strip-components: out of range".to_owned())?;
         let mut cflags = Vec::new();
+        let own_lib = if split { "lib/." } else { "lib" };
         let mut ldflags = vec![
             "-Wl,--undefined-version".to_owned(),
-            format!("-Wl,-rpath,{prefix}/lib"),
+            format!("-Wl,-rpath,{prefix}/{own_lib}"),
         ];
+        if split {
+            ldflags.push(format!(
+                "-Wl,-rpath,{}",
+                outputs::rpath_space(record.outputs.len())
+            ));
+        }
+        let mut auto_rpaths = BTreeSet::new();
         let mut build_rpaths = Vec::new();
         let mut pkg_config_path = Vec::new();
         let mut pkg_config = String::new();
@@ -851,8 +926,15 @@ impl<'a> Builder<'a> {
             }
             if host.join("lib").is_dir() {
                 ldflags.push(format!("-L{inside}/lib"));
-                if run_closure.contains(id) {
-                    ldflags.push(format!("-Wl,-rpath,{inside}/lib"));
+                if build_run_closure.contains(id) {
+                    let rpath = if split {
+                        let path = format!("{inside}/lib/.");
+                        auto_rpaths.insert(path.clone());
+                        path
+                    } else {
+                        format!("{inside}/lib")
+                    };
+                    ldflags.push(format!("-Wl,-rpath,{rpath}"));
                 } else {
                     build_rpaths.push(format!("-Wl,-rpath,{inside}/lib"));
                 }
@@ -1109,6 +1191,21 @@ impl<'a> Builder<'a> {
                 "{name}: {} carries its own copy of the C++ runtime; add `libcxx` to dependencies.run",
                 file.strip_prefix(&out).unwrap_or(&file).display()
             ));
+        }
+        if split {
+            let manifest = outputs::SplitBuild {
+                staging: &out,
+                work: &work,
+                store: &store_dir,
+                record: &record,
+                canonical: &canonical,
+                runtime: &runtime,
+                auto_rpaths: &auto_rpaths,
+            }
+            .install(&key)?;
+            io("remove", &work, fs::remove_dir_all(&work))?;
+            manifest.publish(&index_path, &runtime)?;
+            return Ok(from_manifest(&manifest, true));
         }
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;

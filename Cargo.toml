@@ -19,6 +19,8 @@ url = "2.5"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 getrandom = "0.4"
 libc = "0.2"
+memchr = "2"
+object = { version = "0.39", default-features = false, features = ["elf", "read_core", "std", "unaligned"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "lzip"] }
 tempfile = "3"
 
