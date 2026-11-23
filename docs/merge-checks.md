@@ -23,7 +23,7 @@ Each changed entry has a repository-relative `path` and two sides, `before` and 
 
 Check 2 is computed from the diff. For each package touched, Checks 1 (format), 3 (source origins), 4 (source hashes), 5 (patch provenance), 6 (build and tests), 7 (reverse dependencies), and 8 (reproducibility) are required, with the package name as the target. Check 1 also requires the target `.` when the diff affects a path outside `packages/` or has no recognized package. The policy can enumerate additional targets. A check result must have the same identity as the request and match one required check and target. The supported statuses are `passed`, `failed` and `incomplete`. Checks 3 and 5 may also report `requires_approval` for completed checks whose provenance needs a policy exception.
 
-The caller supplies the complete diff and authenticates the policy and check results against the candidate's identity. Git object collection, verification of check authenticity, checks 1 and 3–8, approval verification, and applying the decision are responsibilities of the caller.
+The caller collects and supplies the complete Git diff, authenticates the policy and results against the candidate identity, runs the required checks, verifies approvals, and applies the decision. To produce results for Checks 3–5, use `vug record verify-provenance`.
 
 ## Scope
 
@@ -45,3 +45,32 @@ The JSON report echoes the candidate identity and schema version. It includes `C
 | `auto_merge` | The diff is a record change and all required checks passed. |
 
 Exit status 0 means the command computed a report. Read `Decision` to determine the outcome. An unreadable input or invalid request exits 254. Text and table output show the decision alone.
+
+## Source and patch provenance
+
+```console
+vug record verify-provenance --root /path/to/repository --input file://candidate.json --policy file://policy.json
+```
+
+The command reads Git objects under `--root`. The input contains `schema_version: 1` and the same `identity` object as `decide-merge`. The caller authenticates the base and head commits, the candidate tree and the policy. The command checks their Git object types and verifies that the lowercase SHA-256 of the policy JSON bytes equals `identity.policy_digest`.
+
+The policy is a JSON object with these fields.
+
+| Field | Value |
+| --- | --- |
+| `schema_version` | `1` |
+| `nixpkgs_commit` | The full lowercase 40-digit commit ID for the nixpkgs sources and patches used by this policy. |
+| `new_package_sources` | Map of package names to source URL prefixes read from recipes at that nixpkgs commit. |
+| `approved_sources` | Map of package names to additional source URL prefixes approved by a maintainer. |
+| `redirect_sources` | Map of package names to extra destination URL prefixes for redirects of previously approved source URLs. |
+| `patch_origins` | Map of candidate patch paths to an approved pinned file. A nixpkgs pin has `kind: "nixpkgs"` and a repository-relative `path`. An upstream pin has `kind: "upstream"`, the HTTPS `repository` prefix, a `raw_root` HTTPS prefix, a full lowercase 40-digit `commit`, and a repository-relative `path`. The maintainer maps `raw_root` to the repository's endpoint for immutable files. The verifier appends `<commit>/<path>` to that prefix. |
+
+Use an empty object for a map with no entries. The policy publisher checks the fixed nixpkgs recipes and approved upstream repositories when assembling the policy.
+
+- **Check 3** verifies each affected version's source against both the candidate's declared source prefixes and the trusted set. The trusted set comes from the base package record or the fixed nixpkgs mapping for a new package, plus any explicitly approved source prefixes. HTTPS origin prefixes end in a slash. Matching compares the parsed host, effective port, and path prefix. A URL outside the candidate declarations fails. A URL declared only by the candidate requires approval.
+- **Check 4** fetches the approved source over HTTPS, computes SHA-256 from the response bytes, and compares it to the version record. Each redirect must match a trusted source prefix or an explicitly allowed redirect prefix. Downloads use public IP addresses, at most five redirects, a 30-second timeout per request including the body, and a 512 MiB limit per source. A hash mismatch or a redirect outside the approved prefixes fails. An unavailable download leaves the check incomplete.
+- **Check 5** compares candidate patch bytes with the file at a fixed nixpkgs or approved upstream commit. The associated upstream repository must cover a trusted source prefix. A patch outside the pinned origins requires approval. Different bytes at a pinned origin fail. An unavailable download leaves the check incomplete. Patch downloads use the same network restrictions, a fixed destination and an 8 MiB limit.
+
+The package diff determines the affected records. A changed version selects its referenced patches. A changed patch selects versions that reference it. A changed package record selects all its candidate versions. Check 4 runs after Check 3 passes for the package. Check 5 runs after Check 4 passes. A package without applicable inputs for a check passes that check when its prerequisites pass.
+
+Copy the JSON report's `Results` array into `decide-merge`'s `results` alongside the other required checks. Each row carries the candidate identity, package target, check number and status. `Findings` gives the affected path and reason code. Exit status 0 means the command produced a report. Invalid input, policy data or object data exits 254.

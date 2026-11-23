@@ -127,6 +127,20 @@ theorem decideMerge_incomplete_iff (kind : ChangeClass) (checks : List CheckStat
 theorem decideMerge_append_swap (kind : ChangeClass) (a b : List CheckStatus) :
     decideMerge kind (a ++ b) = decideMerge kind (b ++ a) := by
   simp [decideMerge, Bool.or_comm]
+
+def originMatches (originHost : String) (originPort : Nat) (originPath : String)
+    (host : String) (port : Nat) (path : String) : Bool :=
+  originHost == host && originPort == port && originPath.toList.isPrefixOf path.toList
+
+theorem originMatches_iff (oh h op p : String) (on n : Nat) :
+    originMatches oh on op h n p = true ↔ oh = h ∧ on = n ∧ op.toList <+: p.toList := by
+  simp [originMatches, List.isPrefixOf_iff_prefix, and_assoc]
+
+theorem originMatches_append (h op suffix : String) (port : Nat) :
+    originMatches h port op h port (op ++ suffix) = true := by
+  rw [originMatches_iff]
+  exact ⟨rfl, rfl, by simp⟩
+
 "#
 }
 
@@ -138,17 +152,17 @@ use crate::naming;
 
 const PACKAGE_CHECKS: [u8; 7] = [1, 3, 4, 5, 6, 7, 8];
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Identity {
-    base_sha: String,
-    head_sha: String,
-    tree_oid: String,
-    policy_digest: String,
+pub(crate) struct Identity {
+    pub(crate) base_sha: String,
+    pub(crate) head_sha: String,
+    pub(crate) tree_oid: String,
+    pub(crate) policy_digest: String,
 }
 
 impl Identity {
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         let oid_len = self.base_sha.len();
         if !matches!(oid_len, 40 | 64)
             || ![&self.base_sha, &self.head_sha, &self.tree_oid]
@@ -164,7 +178,7 @@ impl Identity {
     }
 }
 
-fn is_hex(value: &str, len: usize) -> bool {
+pub(crate) fn is_hex(value: &str, len: usize) -> bool {
     value.len() == len
         && value
             .bytes()
@@ -217,23 +231,49 @@ struct Target {
     target: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CheckResult {
-    identity: Identity,
-    check: u8,
-    target: String,
-    status: Status,
-    output_id: Option<String>,
+pub(crate) struct CheckResult {
+    pub(crate) identity: Identity,
+    pub(crate) check: u8,
+    pub(crate) target: String,
+    pub(crate) status: Status,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) output_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Status {
+pub(crate) enum Status {
     Passed,
     Failed,
     Incomplete,
     RequiresApproval,
+}
+
+impl Status {
+    pub(crate) fn combine(self, other: Self) -> Self {
+        match model::decide_merge(
+            model::ChangeClass::RecordChange,
+            vec![self.into(), other.into()],
+        ) {
+            model::Decision::AutoMerge => Self::Passed,
+            model::Decision::Reject => Self::Failed,
+            model::Decision::Incomplete => Self::Incomplete,
+            model::Decision::RequiresApproval => Self::RequiresApproval,
+        }
+    }
+}
+
+impl From<Status> for model::CheckStatus {
+    fn from(status: Status) -> Self {
+        match status {
+            Status::Passed => Self::Passed,
+            Status::Failed => Self::Failed,
+            Status::Incomplete => Self::Incomplete,
+            Status::RequiresApproval => Self::RequiresApproval,
+        }
+    }
 }
 
 #[derive(Serialize)]

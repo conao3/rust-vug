@@ -142,6 +142,7 @@ fn help_at_every_level() {
         vec!["version", "help"],
         vec!["version", "compare-versions", "help"],
         vec!["version", "compare-versions", "--help"],
+        vec!["record", "verify-provenance", "help"],
     ] {
         let output = vug(&args);
         assert_eq!(output.status.code(), Some(0), "{args:?}");
@@ -354,4 +355,19 @@ fn signatures_verify_only_with_the_right_key_and_message() {
     assert!(!vug::sign::verify(&other, "key id", &signature));
     assert!(!vug::sign::verify(&public, "key id", ""));
     assert!(vug::sign::sign("short", "key id").is_err());
+}
+
+#[test]
+fn policy_value_help_is_not_a_help_request() {
+    let output = vug(&[
+        "record",
+        "verify-provenance",
+        "--root",
+        ".",
+        "--input",
+        "{}",
+        "--policy",
+        "help",
+    ]);
+    assert_eq!(output.status.code(), Some(254));
 }

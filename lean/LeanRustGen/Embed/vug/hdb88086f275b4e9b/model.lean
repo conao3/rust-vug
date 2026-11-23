@@ -126,4 +126,18 @@ theorem decideMerge_incomplete_iff (kind : ChangeClass) (checks : List CheckStat
 theorem decideMerge_append_swap (kind : ChangeClass) (a b : List CheckStatus) :
     decideMerge kind (a ++ b) = decideMerge kind (b ++ a) := by
   simp [decideMerge, Bool.or_comm]
+
+def originMatches (originHost : String) (originPort : Nat) (originPath : String)
+    (host : String) (port : Nat) (path : String) : Bool :=
+  originHost == host && originPort == port && originPath.toList.isPrefixOf path.toList
+
+theorem originMatches_iff (oh h op p : String) (on n : Nat) :
+    originMatches oh on op h n p = true ↔ oh = h ∧ on = n ∧ op.toList <+: p.toList := by
+  simp [originMatches, List.isPrefixOf_iff_prefix, and_assoc]
+
+theorem originMatches_append (h op suffix : String) (port : Nat) :
+    originMatches h port op h port (op ++ suffix) = true := by
+  rw [originMatches_iff]
+  exact ⟨rfl, rfl, by simp⟩
+
 end model

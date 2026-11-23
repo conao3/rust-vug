@@ -15,6 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth"] }
 toml = "1.2.2"
 ureq = "3.5"
+url = "2.5"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 getrandom = "0.4"
 libc = "0.2"

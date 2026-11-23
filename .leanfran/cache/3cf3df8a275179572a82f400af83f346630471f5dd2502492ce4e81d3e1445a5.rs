@@ -14,6 +14,130 @@ use rt::Obj;
     unused_unsafe,
     clippy::all
 )]
+pub(crate) unsafe fn l_model_originMatches(
+    mut x_1: Obj,
+    mut x_2: Obj,
+    mut x_3: Obj,
+    mut x_4: Obj,
+    mut x_5: Obj,
+    mut x_6: Obj,
+) -> u8 {
+    let mut x_7: u8 = 0;
+    let mut x_8: u8 = 0;
+    let mut x_9: Obj = rt::lean_box(0);
+    let mut x_10: Obj = rt::lean_box(0);
+    let mut x_11: u8 = 0;
+    x_7 = rt::lean_string_dec_eq(x_1, x_4);
+    match x_7 as u32 {
+        0 => {
+            rt::lean_dec_ref(x_6);
+            rt::lean_dec_ref(x_3);
+            return x_7;
+        }
+        1 => {
+            x_8 = rt::lean_nat_dec_eq(x_2, x_5);
+            match x_8 as u32 {
+                0 => {
+                    rt::lean_dec_ref(x_6);
+                    rt::lean_dec_ref(x_3);
+                    return x_8;
+                }
+                1 => {
+                    x_9 = rt::lean_string_data(x_3);
+                    x_10 = rt::lean_string_data(x_6);
+                    x_11 = l_List_isPrefixOf___at___00model_inPackages_spec__0(x_9, x_10);
+                    rt::lean_dec(x_10);
+                    rt::lean_dec(x_9);
+                    return x_11;
+                }
+                _ => rt::lean_internal_panic_unreachable(),
+            }
+        }
+        _ => rt::lean_internal_panic_unreachable(),
+    }
+}
+
+#[allow(
+    dead_code,
+    non_snake_case,
+    unused_mut,
+    unused_assignments,
+    unused_variables,
+    unreachable_code,
+    unused_unsafe,
+    clippy::all
+)]
+pub(crate) unsafe fn l_List_isPrefixOf___at___00model_inPackages_spec__0(
+    mut x_1: Obj,
+    mut x_2: Obj,
+) -> u8 {
+    let mut x_3: u8 = 0;
+    let mut x_4: u8 = 0;
+    let mut x_5: Obj = rt::lean_box(0);
+    let mut x_6: Obj = rt::lean_box(0);
+    let mut x_7: Obj = rt::lean_box(0);
+    let mut x_8: Obj = rt::lean_box(0);
+    let mut x_9: u32 = 0;
+    let mut x_10: u32 = 0;
+    let mut x_11: u8 = 0;
+    let mut x_12: u8 = 0;
+    let mut __blk: u32 = 0;
+    'body: loop {
+        match __blk {
+            0 => match rt::lean_obj_tag(x_1) {
+                0 => {
+                    x_3 = 1u8;
+                    return x_3;
+                }
+                1 => match rt::lean_obj_tag(x_2) {
+                    0 => {
+                        x_4 = 0u8;
+                        return x_4;
+                    }
+                    1 => {
+                        x_5 = rt::lean_ctor_get(x_1, 0);
+                        x_6 = rt::lean_ctor_get(x_1, 1);
+                        x_7 = rt::lean_ctor_get(x_2, 0);
+                        x_8 = rt::lean_ctor_get(x_2, 1);
+                        x_9 = rt::lean_unbox_uint32(x_5);
+                        x_10 = rt::lean_unbox_uint32(x_7);
+                        x_11 = rt::lean_uint32_dec_eq(x_9, x_10);
+                        match x_11 as u32 {
+                            0 => {
+                                return x_11;
+                            }
+                            1 => {
+                                {
+                                    let t_0 = x_6;
+                                    let t_1 = x_8;
+                                    x_1 = t_0;
+                                    x_2 = t_1;
+                                }
+                                __blk = 0;
+                                continue 'body;
+                            }
+                            _ => rt::lean_internal_panic_unreachable(),
+                        }
+                    }
+                    _ => rt::lean_internal_panic_unreachable(),
+                },
+                _ => rt::lean_internal_panic_unreachable(),
+            },
+            _ => rt::lean_internal_panic_unreachable(),
+        }
+    }
+}
+
+#[allow(
+    dead_code,
+    non_snake_case,
+    unused_mut,
+    unused_assignments,
+    unused_variables,
+    unreachable_code,
+    unused_unsafe,
+    clippy::all
+)]
 pub(crate) unsafe fn l_model_approvalNeeded(mut x_1: Obj) -> u8 {
     let mut x_2: u8 = 0;
     let mut x_3: u8 = 0;
@@ -215,77 +339,6 @@ pub(crate) unsafe fn l_model_inPackages___closed__0() -> Obj {
     let v = l_model_inPackages___closed__0_init();
     rt::lean_mark_persistent(v);
     CELL.with(|c| *c.get_or_init(|| v))
-}
-
-#[allow(
-    dead_code,
-    non_snake_case,
-    unused_mut,
-    unused_assignments,
-    unused_variables,
-    unreachable_code,
-    unused_unsafe,
-    clippy::all
-)]
-pub(crate) unsafe fn l_List_isPrefixOf___at___00model_inPackages_spec__0(
-    mut x_1: Obj,
-    mut x_2: Obj,
-) -> u8 {
-    let mut x_3: u8 = 0;
-    let mut x_4: u8 = 0;
-    let mut x_5: Obj = rt::lean_box(0);
-    let mut x_6: Obj = rt::lean_box(0);
-    let mut x_7: Obj = rt::lean_box(0);
-    let mut x_8: Obj = rt::lean_box(0);
-    let mut x_9: u32 = 0;
-    let mut x_10: u32 = 0;
-    let mut x_11: u8 = 0;
-    let mut x_12: u8 = 0;
-    let mut __blk: u32 = 0;
-    'body: loop {
-        match __blk {
-            0 => match rt::lean_obj_tag(x_1) {
-                0 => {
-                    x_3 = 1u8;
-                    return x_3;
-                }
-                1 => match rt::lean_obj_tag(x_2) {
-                    0 => {
-                        x_4 = 0u8;
-                        return x_4;
-                    }
-                    1 => {
-                        x_5 = rt::lean_ctor_get(x_1, 0);
-                        x_6 = rt::lean_ctor_get(x_1, 1);
-                        x_7 = rt::lean_ctor_get(x_2, 0);
-                        x_8 = rt::lean_ctor_get(x_2, 1);
-                        x_9 = rt::lean_unbox_uint32(x_5);
-                        x_10 = rt::lean_unbox_uint32(x_7);
-                        x_11 = rt::lean_uint32_dec_eq(x_9, x_10);
-                        match x_11 as u32 {
-                            0 => {
-                                return x_11;
-                            }
-                            1 => {
-                                {
-                                    let t_0 = x_6;
-                                    let t_1 = x_8;
-                                    x_1 = t_0;
-                                    x_2 = t_1;
-                                }
-                                __blk = 0;
-                                continue 'body;
-                            }
-                            _ => rt::lean_internal_panic_unreachable(),
-                        }
-                    }
-                    _ => rt::lean_internal_panic_unreachable(),
-                },
-                _ => rt::lean_internal_panic_unreachable(),
-            },
-            _ => rt::lean_internal_panic_unreachable(),
-        }
-    }
 }
 
 #[allow(
@@ -750,6 +803,32 @@ impl rt::ToLean for Decision {
 impl rt::FromLean for Decision {
     unsafe fn from_lean(o: Obj) -> Self {
         Decision::from_lean_tag(rt::lean_unbox(o) as u32)
+    }
+}
+
+#[doc = "Lean: `model.originMatches : String → Nat → String → String → Nat → String → Bool` (module `LeanRustGen.Embed.vug.hdb88086f275b4e9b.model`)."]
+#[::leanfran::exported("model.originMatches")]
+pub fn origin_matches(
+    origin_host: impl AsRef<str>,
+    origin_port: rt::Nat,
+    origin_path: impl AsRef<str>,
+    host: impl AsRef<str>,
+    port: rt::Nat,
+    path: impl AsRef<str>,
+) -> bool {
+    unsafe {
+        let __a0: Obj = rt::ToLean::to_lean(origin_host.as_ref());
+        let __a1: Obj = rt::ToLean::to_lean(origin_port);
+        let __a2: Obj = rt::ToLean::to_lean(origin_path.as_ref());
+        let __a3: Obj = rt::ToLean::to_lean(host.as_ref());
+        let __a4: Obj = rt::ToLean::to_lean(port);
+        let __a5: Obj = rt::ToLean::to_lean(path.as_ref());
+        let __r: u8 = l_model_originMatches(__a0, __a1, __a2, __a3, __a4, __a5);
+        rt::lean_dec(__a0);
+        rt::lean_dec(__a1);
+        rt::lean_dec(__a3);
+        rt::lean_dec(__a4);
+        (__r) != 0
     }
 }
 

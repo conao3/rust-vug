@@ -20,21 +20,28 @@ pub enum FetchError {
 
 /// SHA-256 of a file as 64 lowercase hex characters. Reads in chunks.
 pub fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+    sha256_reader(File::open(path)?)
+}
+
+pub fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
     }
+    Ok(sha256_hex(hasher))
+}
+
+fn sha256_hex(hasher: Sha256) -> String {
     let mut hex = String::with_capacity(64);
     for b in hasher.finalize() {
         let _ = write!(hex, "{b:02x}");
     }
-    Ok(hex)
+    hex
 }
 
 /// Returns the path `cache_dir/<sha256>` holding the bytes of `url`.
@@ -86,10 +93,7 @@ pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, Fetch
             out.write_all(&buf[..n]).map_err(FetchError::Io)?;
             hasher.update(&buf[..n]);
         }
-        let mut actual = String::with_capacity(64);
-        for b in hasher.finalize() {
-            let _ = write!(actual, "{b:02x}");
-        }
+        let actual = sha256_hex(hasher);
         if actual != sha256 {
             return Err(FetchError::HashMismatch {
                 expected: sha256.to_string(),

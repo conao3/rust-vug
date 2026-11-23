@@ -3,6 +3,7 @@ mod gc;
 mod home;
 mod merge;
 mod naming;
+mod provenance;
 mod record;
 mod system;
 mod version;
@@ -235,6 +236,18 @@ enum RecordCommands {
     CheckTree(RootArgs),
     #[command(about = "Classify a candidate diff and compute a merge decision")]
     DecideMerge(MergeArgs),
+    #[command(about = "Verify source URLs, hashes and patch provenance for a candidate tree")]
+    VerifyProvenance(ProvenanceArgs),
+}
+
+#[derive(Args)]
+struct ProvenanceArgs {
+    #[arg(long, help = "Git repository containing the candidate objects")]
+    root: PathBuf,
+    #[arg(long, help = "Versioned JSON request (or file://PATH)")]
+    input: String,
+    #[arg(long, help = "Trusted JSON provenance policy (or file://PATH)")]
+    policy: String,
 }
 
 #[derive(Args)]
@@ -364,6 +377,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "--right",
     "--file",
     "--input",
+    "--policy",
     "--root",
     "--name",
     "--package-version",
@@ -479,6 +493,7 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
             RecordCommands::DecideMerge(args) => run_decide_merge(&cli, args),
+            RecordCommands::VerifyProvenance(args) => run_verify_provenance(&cli, args),
         },
         Commands::Home { command } => match command {
             HomeCommands::FormatHome(args) => run_format_with(&cli, args, |path| {
@@ -571,6 +586,21 @@ fn run_decide_merge(cli: &Cli, args: &MergeArgs) -> Result<i32, (i32, String)> {
         }
         Output::Text => write_out(&format!("{}\n", report.decision)),
         Output::Table => write_out(&format!("Decision\n{}\n", report.decision)),
+    }?;
+    Ok(0)
+}
+
+fn run_verify_provenance(cli: &Cli, args: &ProvenanceArgs) -> Result<i32, (i32, String)> {
+    let input_failure = |e| (version::failure_status(), e);
+    let input = resolve(&args.input).map_err(input_failure)?;
+    let policy = resolve(&args.policy).map_err(input_failure)?;
+    let report = provenance::verify(&args.root, &input, &policy).map_err(input_failure)?;
+    match cli.output {
+        Output::Json => print_json(
+            &serde_json::to_value(report).map_err(|e| (version::other_status(), e.to_string()))?,
+        ),
+        Output::Text => write_out(&report.summary(" ")),
+        Output::Table => write_out(&format!("Check\tTarget\tStatus\n{}", report.summary("\t"))),
     }?;
     Ok(0)
 }
