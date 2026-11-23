@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::output::{State, check_owner, io};
-use super::{manager, unit_suffix, validate_file_path};
+use super::{manager, secrets, unit_suffix, validate_file_path};
 
 const JOURNAL: &str = "activation-pending.json";
 const ACTIVE: &str = "activation-home.json";
@@ -20,18 +20,24 @@ const ACTIVE: &str = "activation-home.json";
 struct Manifest {
     files: Vec<String>,
     units: BTreeMap<String, ManifestUnit>,
+    #[serde(default)]
+    secrets: BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ManifestUnit {
     enable: BTreeSet<String>,
+    #[serde(default)]
+    secrets: BTreeSet<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct Activation {
     home: Vec<u8>,
     generation: u64,
+    #[serde(default)]
+    credential_snapshot: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -41,6 +47,8 @@ struct Pending {
     to: u64,
     #[serde(default)]
     manager: Option<manager::Changes>,
+    #[serde(default)]
+    secrets: Option<secrets::Change>,
 }
 
 fn read_state<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
@@ -93,6 +101,19 @@ pub(super) fn activation_generations(root: &Path) -> Result<BTreeSet<u64>, Strin
         .collect())
 }
 
+fn read_manifest(output: &Path) -> Result<Manifest, String> {
+    let path = output.join("manifest/home.json");
+    read_state(&path)?.ok_or_else(|| format!("{}: missing home manifest", path.display()))
+}
+
+pub(super) fn secret_names(output: &Path) -> Result<BTreeSet<String>, String> {
+    Ok(read_manifest(output)?.secrets)
+}
+
+pub(crate) fn prepare_secrets(home: &Path) -> Result<(), String> {
+    secrets::Runtime::open()?.login(home)
+}
+
 fn link_plan(
     state: &State,
     home: &Home,
@@ -108,8 +129,7 @@ fn link_plan(
         .ok_or_else(|| format!("home generation {number} does not exist"))?;
     let output = state.store.join(id);
     let manifest_path = output.join("manifest/home.json");
-    let manifest: Manifest = read_state(&manifest_path)?
-        .ok_or_else(|| format!("{}: missing home manifest", manifest_path.display()))?;
+    let mut manifest = read_manifest(&output)?;
     let mut add = |destination: PathBuf, source: PathBuf| {
         let absolute = home.path.join(&destination);
         for reserved in [&state.root, state.store.parent().unwrap()] {
@@ -140,6 +160,18 @@ fn link_plan(
         add(path.into(), source)?;
     }
     let unit_root = Path::new(".config/systemd/user");
+    if !manifest.secrets.is_empty() {
+        let gate = output.join("units").join(secrets::UNIT);
+        if gate.is_file() {
+            manifest.units.insert(
+                secrets::UNIT.to_owned(),
+                ManifestUnit {
+                    enable: BTreeSet::from(["default.target".to_owned()]),
+                    secrets: BTreeSet::new(),
+                },
+            );
+        }
+    }
     for (name, unit) in manifest.units {
         if unit_suffix(&name).is_none() {
             return Err(format!(
@@ -410,7 +442,26 @@ fn recover(
     }
     let active = active_generation(state, home)?;
     let current = state.current(generations)?;
-    if active == Some(pending.to) && current == active {
+    let committed = active == Some(pending.to)
+        && current == active
+        && match &pending.secrets {
+            Some(change) => {
+                read_state::<Activation>(&state.root.join(ACTIVE))?
+                    .and_then(|record| record.credential_snapshot)
+                    .as_ref()
+                    == Some(&change.next)
+            }
+            None => true,
+        };
+    let runtime = if pending.secrets.is_some() && manager::available(&home.path)? {
+        Some(secrets::Runtime::open()?)
+    } else {
+        None
+    };
+    if committed {
+        if let (Some(runtime), Some(change)) = (&runtime, &pending.secrets) {
+            runtime.finish(change, true)?;
+        }
         return finish(state);
     }
     if active != pending.from || (current != pending.from && current != Some(pending.to)) {
@@ -433,6 +484,10 @@ fn recover(
     if current != pending.from {
         set_current(state, pending.from)?;
     }
+    if let (Some(runtime), Some(change)) = (&runtime, &pending.secrets) {
+        runtime.finish(change, false)?;
+    }
+    drop(runtime);
     if manager::available(&home.path)?
         && let Some(changes) = &pending.manager
     {
@@ -483,7 +538,17 @@ pub(crate) fn activate(
         home.check(path, None)?;
     }
     let manager_available = manager::available(&home.path)?;
-    if current == Some(number) {
+    let output = state.store.join(&generations[&number]);
+    let names = secret_names(&output)?;
+    if !names.is_empty() && !output.join("units").join(secrets::UNIT).is_file() {
+        return Err("rebuild this home generation to enable its credentials".to_owned());
+    }
+    let old_has_secrets = current
+        .map(|current| secret_names(&state.store.join(&generations[&current])))
+        .transpose()?
+        .is_some_and(|names| !names.is_empty());
+    let prepare = manager_available && (old_has_secrets || !names.is_empty());
+    if current == Some(number) && !prepare {
         return Ok((number, !manager_available));
     }
     let unit_state = |generation: Option<u64>| {
@@ -492,12 +557,13 @@ pub(crate) fn activate(
             return Ok::<_, String>((definitions, Vec::new()));
         };
         let output = state.store.join(id);
-        let manifest_path = output.join("manifest/home.json");
-        let manifest: Manifest = read_state(&manifest_path)?
-            .ok_or_else(|| format!("{}: missing home manifest", manifest_path.display()))?;
+        let manifest = read_manifest(&output)?;
         for (name, unit) in manifest.units {
             let file = output.join("units").join(&name);
-            definitions.insert(name, (io(&file, fs::read(&file))?, unit.enable));
+            definitions.insert(
+                name,
+                (io(&file, fs::read(&file))?, unit.enable, unit.secrets),
+            );
         }
         let variables = output.join("environment/variables.json");
         Ok((definitions, io(&variables, fs::read(&variables))?))
@@ -509,7 +575,13 @@ pub(crate) fn activate(
             &old_units,
             &new_units,
             old_environment != new_environment,
+            prepare,
         )?)
+    } else {
+        None
+    };
+    let mut runtime = if prepare {
+        Some(secrets::Runtime::open()?)
     } else {
         None
     };
@@ -518,9 +590,18 @@ pub(crate) fn activate(
         from: current,
         to: number,
         manager,
+        secrets: runtime
+            .as_ref()
+            .map(|runtime| runtime.prepare(&home.path, &output, &names))
+            .transpose()?,
     };
-    write_state(&state.root, JOURNAL, &pending, false)?;
-    let apply = || {
+    if let Err(error) = write_state(&state.root, JOURNAL, &pending, false) {
+        if let (Some(runtime), Some(change)) = (&runtime, &pending.secrets) {
+            runtime.finish(change, false)?;
+        }
+        return Err(error);
+    }
+    let mut apply = || {
         if let Some(changes) = &pending.manager {
             changes.before()?;
         }
@@ -541,6 +622,9 @@ pub(crate) fn activate(
             return Err("current home generation changed during activation".to_owned());
         }
         set_current(&state, Some(number))?;
+        if let (Some(runtime), Some(change)) = (runtime.take(), &pending.secrets) {
+            runtime.publish(change)?;
+        }
         if let Some(changes) = &pending.manager {
             changes.after()?;
         }
@@ -550,17 +634,22 @@ pub(crate) fn activate(
             &Activation {
                 home: home.identity().to_vec(),
                 generation: number,
+                credential_snapshot: pending.secrets.as_ref().map(|change| change.next.clone()),
             },
             true,
         )
     };
     if let Err(error) = apply() {
+        drop(runtime);
         return match recover(&state, &home, &generations, &pending) {
             Ok(()) => Err(error),
             Err(recovery) => Err(format!(
                 "{error}; home activation recovery is pending: {recovery}"
             )),
         };
+    }
+    if let Some(change) = &pending.secrets {
+        secrets::Runtime::open()?.finish(change, true)?;
     }
     finish(&state)?;
     Ok((number, !manager_available))

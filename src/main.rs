@@ -305,6 +305,8 @@ enum HomeCommands {
     BuildHome(BuildHomeArgs),
     /// Run a program from a home output in its store namespace.
     RunProgram(RunHomeProgramArgs),
+    /// Prepare credentials for the active home in the current login.
+    PrepareSecrets,
     /// Activate a built generation in HOME.
     SwitchHome(SwitchHomeArgs),
     /// Activate the nearest earlier retained generation.
@@ -556,6 +558,12 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             HomeCommands::RunProgram(args) => {
                 home::run::run(&args.home_output, &args.program, &args.arguments)
                     .map_err(input_failure)?;
+                Ok(0)
+            }
+            HomeCommands::PrepareSecrets => {
+                let home = std::env::var_os("HOME")
+                    .ok_or_else(|| input_failure("HOME is not set".to_owned()))?;
+                home::activate::prepare_secrets(Path::new(&home)).map_err(input_failure)?;
                 Ok(0)
             }
             HomeCommands::SwitchHome(args) => run_activate_home(

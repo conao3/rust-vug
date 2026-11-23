@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+pub(super) type Units = BTreeMap<String, (Vec<u8>, BTreeSet<String>, BTreeSet<String>)>;
+
 #[derive(Default, Deserialize, Serialize)]
 pub(super) struct Changes {
     stopped: BTreeSet<String>,
@@ -13,12 +15,13 @@ pub(super) struct Changes {
 
 impl Changes {
     pub(super) fn plan(
-        old: &BTreeMap<String, (Vec<u8>, BTreeSet<String>)>,
-        new: &BTreeMap<String, (Vec<u8>, BTreeSet<String>)>,
+        old: &Units,
+        new: &Units,
         environment_changed: bool,
+        credentials_changed: bool,
     ) -> Result<Self, String> {
         let mut changes = Self::default();
-        for (name, (content, _)) in old {
+        for (name, (content, _, _)) in old {
             if !active(name)? {
                 continue;
             }
@@ -26,20 +29,22 @@ impl Changes {
                 None => {
                     changes.stopped.insert(name.clone());
                 }
-                Some((next, _))
-                    if next != content || (environment_changed && name.ends_with(".service")) =>
+                Some((next, _, secrets))
+                    if next != content
+                        || (credentials_changed && !secrets.is_empty())
+                        || (environment_changed && name.ends_with(".service")) =>
                 {
                     changes.restarted.insert(name.clone());
                 }
                 Some(_) => (),
             }
         }
-        for (name, (_, targets)) in new {
+        for (name, (_, targets, _)) in new {
             let mut enabled = false;
             for target in targets {
                 if !old
                     .get(name)
-                    .is_some_and(|(_, targets)| targets.contains(target))
+                    .is_some_and(|(_, targets, _)| targets.contains(target))
                     && active(target)?
                 {
                     enabled = true;

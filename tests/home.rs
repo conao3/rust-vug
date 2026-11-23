@@ -327,6 +327,15 @@ name = "key"
     );
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path.join("manifest/home.json")).unwrap()).unwrap();
+    let unit = std::fs::read_to_string(path.join("units/example.service")).unwrap();
+    assert!(unit.contains("Requires=vug-home-secrets.service\n"));
+    assert!(unit.contains("After=vug-home-secrets.service\n"));
+    assert!(unit.contains("LoadCredential=key:%t/vug/secrets/key\n"));
+    assert_eq!(
+        std::fs::read_link(path.join("units/default.target.wants/vug-home-secrets.service"))
+            .unwrap(),
+        Path::new("../vug-home-secrets.service")
+    );
     assert_eq!(manifest["Secrets"], serde_json::json!(["key"]));
     assert_eq!(
         manifest["Units"]["example.service"]["Enable"],

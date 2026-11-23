@@ -101,3 +101,21 @@ The launcher uses `vug home run-program` and requires bubblewrap with unprivileg
 An `ExecStart` whose executable starts with `{pkg:NAME}/` launches that file from the user generation with the same mechanism. For a command provided by the system, use its absolute path. Managed services pick up the new generation's public variables from an `EnvironmentFile`. Use an enable target appropriate to each service, timer, or socket. For a graphical session service, select the graphical session target that your desktop activates.
 
 With a running user manager, switching stops removed active units, reloads unit definitions, restarts changed active units, and starts newly enabled units whose targets are active. The prior unit configuration is restored during recovery from an interrupted switch. When there is no user manager, the command installs the files and reports `UnitsPending`. The user manager reads the unit links at its next start. Login uses the standard HOME-relative systemd user-unit directory.
+
+## User service credentials
+
+Declare logical secret names with `[[secret]]` and list the names each service consumes in its `secrets` array. The generation generates a systemd dependency on `vug-home-secrets.service` and sets `LoadCredential=` for each name. In a service, open the file with that name inside `$CREDENTIALS_DIRECTORY`. Credentials are accessible within the trust boundary of the current UID and system administrators.
+
+Provide SOPS at `/bin/sops` and encrypt the source documents with age. Keep them outside the store. Create `~/.config/vug/home/secrets/` with mode `0700`, owned by the login user. Place the age identity in `age.key` and the source map in `sources.toml` in that directory. Both files must be regular files owned by the login user with mode `0600`.
+
+```toml
+[example-key]
+document = "/home/example/private/credentials.yaml"
+field = ["services", "example"]
+```
+
+Use an absolute document path and a list of keys from the root of the document to a string value. Keys can contain ASCII letters, digits, underscores, and hyphens. SOPS writes its extracted value directly to a mode-`0600` file in a private directory under `$XDG_RUNTIME_DIR/vug/`. The user manager receives the file path. A failed SOPS invocation reports the logical name so its diagnostics cannot disclose the decrypted value.
+
+A switch with a running user manager decrypts all declared values before replacing the active generation. If a source is missing or fails to decrypt, the current generation and its running services keep their credentials. Setting the same generation again refreshes the credentials and restarts running services that use them. A rollback resolves the selected generation's logical names against the current source map and encrypted documents.
+
+At login, systemd runs the preparation service before starting services that require credentials. A failure prevents those services from starting. The private runtime snapshot lives for the current runtime directory's lifetime, including when systemd user lingering keeps the directory alive. Successful activation removes the prior snapshot. Rebuild home outputs built by older releases to add the generated credential service.

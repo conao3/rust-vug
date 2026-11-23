@@ -10,6 +10,7 @@ pub(crate) mod activate;
 mod manager;
 pub(crate) mod output;
 pub(crate) mod run;
+mod secrets;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
@@ -171,6 +172,15 @@ fn validate_unit(unit: &Unit) -> Result<(), String> {
         if unit_suffix(target) != Some("target") {
             return Err(format!("unit {:?}: invalid target {target:?}", unit.name));
         }
+    }
+    if unit.name == secrets::UNIT {
+        return Err(format!("unit {:?}: reserved name", unit.name));
+    }
+    if !unit.secrets.is_empty() && !unit.name.ends_with(".service") {
+        return Err(format!(
+            "unit {:?}: credentials require a service",
+            unit.name
+        ));
     }
     for secret in &unit.secrets {
         if !model::valid_name(secret) {

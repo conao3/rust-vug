@@ -102,7 +102,7 @@ fn local_directory(path: &Path) -> Result<(), String> {
     check_owner(path, &metadata)
 }
 
-fn lock(path: &Path) -> Result<File, String> {
+pub(super) fn lock(path: &Path) -> Result<File, String> {
     let file = io(
         path,
         OpenOptions::new()
@@ -122,7 +122,7 @@ fn lock(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn read_link(path: &Path) -> Result<Option<PathBuf>, String> {
+pub(super) fn read_link(path: &Path) -> Result<Option<PathBuf>, String> {
     match fs::read_link(path) {
         Ok(target) => Ok(Some(target)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
@@ -477,6 +477,19 @@ fn render(
         .iter()
         .map(|(name, id)| (name.clone(), format!("{STORE}/{id}")))
         .collect();
+    if !record.secret.is_empty() {
+        write(
+            &out.join("units").join(super::secrets::UNIT),
+            "[Unit]\nDescription=Prepare Vug home credentials\n[Service]\nType=oneshot\nExecStart=/bin/vug home prepare-secrets\n",
+        )?;
+        let wants = out.join("units/default.target.wants");
+        io(&wants, fs::create_dir_all(&wants))?;
+        let link = wants.join(super::secrets::UNIT);
+        io(
+            &link,
+            symlink(Path::new("..").join(super::secrets::UNIT), &link),
+        )?;
+    }
     for unit in &record.unit {
         let content = system::expand(
             &unit.content,
@@ -510,6 +523,15 @@ fn render(
         }
         if unit.name.ends_with(".service") && !record.environment.is_empty() {
             rendered.push_str("\n[Service]\nEnvironmentFile=%h/.config/vug/home/profile/environment/systemd.env\n");
+        }
+        if !unit.secrets.is_empty() {
+            let gate = super::secrets::UNIT;
+            rendered.push_str(&format!(
+                "\n[Unit]\nRequires={gate}\nAfter={gate}\n[Service]\n"
+            ));
+            for name in &unit.secrets {
+                rendered.push_str(&format!("LoadCredential={name}:%t/vug/secrets/{name}\n"));
+            }
         }
         write(&out.join("units").join(&unit.name), rendered)?;
         for target in &unit.enable {
