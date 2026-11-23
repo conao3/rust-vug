@@ -107,9 +107,9 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     are dropped.
   - `-S` together with a dependency file (`-MD`, `-MMD`) runs zig twice,
     because zig writes no assembly output for that combination.
-  - a relocatable object whose file name ends in `.so` or `.os` is passed
-    under a name ending in `.o`: zig takes any `.so` input for a shared
-    library and then fails to link, and does not know `.os`.
+  - input files ending in `.oo` and relocatable ELF objects ending in
+    `.so` or `.os` are passed through symlinks ending in `.o`, which
+    zig recognizes as object files.
   - input from standard input (`-`) without `-x` is given `-x c` (`-x c++`
     for `c++`); without it zig does not search the C library headers.
   - a link whose inputs are only libraries gets an empty source file as

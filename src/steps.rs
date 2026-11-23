@@ -4,6 +4,8 @@
 /// A build step: a program and its arguments.
 pub type Step = Vec<String>;
 
+const INSTALL_STAGE: &str = "/build/dest";
+
 pub struct Autotools {
     pub autoreconf: bool,
     /// The words that start the configure step; empty means
@@ -75,7 +77,10 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
 /// 2. `["./configure", "--prefix=<prefix>", <configure_flags>...]`
 /// 3. `["make", "-j<jobs>", <make_flags>...]`
 /// 4. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
-/// 5. `["make", "install", <make_flags>..., <install_flags>...]`
+/// 5. `["make", <install_targets>..., <make_flags>..., <install_flags>...,
+///    "DESTDIR=/build/dest"]`
+/// 6. Copy the staged prefix to the output and the remaining files to
+///    `<prefix>/.vug/root`.
 pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     let mut configure = if options.configure_command.is_empty() {
         vec!["./configure".to_string(), format!("--prefix={prefix}")]
@@ -112,7 +117,10 @@ pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     }
     install.extend(options.make_flags.iter().cloned());
     install.extend(options.install_flags.iter().cloned());
+    install.push(format!("DESTDIR={INSTALL_STAGE}"));
+    steps.push(["mkdir", "-p", INSTALL_STAGE].map(str::to_owned).to_vec());
     steps.push(install);
+    steps.push(collect_staged_install(prefix));
 
     steps
 }
@@ -350,12 +358,8 @@ pub fn cargo_steps(
 /// 3. only when `check`: `["meson", "test", "-C", "build", "--no-rebuild"]`
 /// 4. `["meson", "install", "-C", "build", "--no-rebuild", "--destdir",
 ///    "/build/dest"]`
-/// 5. `["cp", "-a", "/build/dest<prefix>/.", "<prefix>/"]`, then
-///    `["rm", "-rf", "/build/dest/vug"]`
-/// 6. `["mkdir", "-p", "<prefix>/.vug/root"]`, then
-///    `["cp", "-a", "/build/dest/.", "<prefix>/.vug/root/"]`: what the
-///    package installs outside its prefix (`/etc`, `/var`) is kept under
-///    `.vug/root` of the output
+/// 5. Copy the staged prefix to the output and the remaining files to
+///    `<prefix>/.vug/root`.
 pub fn meson_steps(
     prefix: &str,
     setup_flags: &[String],
@@ -381,6 +385,7 @@ pub fn meson_steps(
         }
         steps.push(test);
     }
+    steps.push(words(&["mkdir", "-p", INSTALL_STAGE]));
     steps.push(words(&[
         "meson",
         "install",
@@ -388,26 +393,9 @@ pub fn meson_steps(
         "build",
         "--no-rebuild",
         "--destdir",
-        "/build/dest",
+        INSTALL_STAGE,
     ]));
-    steps.push(vec![
-        "cp".to_string(),
-        "-a".to_string(),
-        format!("/build/dest{prefix}/."),
-        format!("{prefix}/"),
-    ]);
-    steps.push(words(&["rm", "-rf", "/build/dest/vug"]));
-    steps.push(vec![
-        "mkdir".to_string(),
-        "-p".to_string(),
-        format!("{prefix}/.vug/root"),
-    ]);
-    steps.push(vec![
-        "cp".to_string(),
-        "-a".to_string(),
-        "/build/dest/.".to_string(),
-        format!("{prefix}/.vug/root/"),
-    ]);
+    steps.push(collect_staged_install(prefix));
     steps
 }
 
@@ -428,6 +416,33 @@ if selected:
     sys.exit(subprocess.call(command + ["--", *selected]))
 print("No Meson tests selected")
 "#;
+
+fn collect_staged_install(prefix: &str) -> Step {
+    [
+        "sh",
+        "-ec",
+        r#"
+stage=$1
+prefix=$2
+staged_prefix=$stage$prefix
+if [ -e "$staged_prefix" ] || [ -L "$staged_prefix" ]; then
+    cp -a "$staged_prefix/." "$prefix/"
+    rm -rf "$staged_prefix"
+    parent=${staged_prefix%/*}
+    while [ "$parent" != "$stage" ] && rmdir "$parent" 2>/dev/null; do
+        parent=${parent%/*}
+    done
+fi
+mkdir -p "$prefix/.vug/root"
+cp -a "$stage/." "$prefix/.vug/root/"
+"#,
+        "sh",
+        INSTALL_STAGE,
+        prefix,
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
 
 /// Steps of the `linux` build kind.
 ///
