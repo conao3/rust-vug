@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::output::{State, check_owner, io};
-use super::{unit_suffix, validate_file_path};
+use super::{manager, unit_suffix, validate_file_path};
 
 const JOURNAL: &str = "activation-pending.json";
 const ACTIVE: &str = "activation-home.json";
@@ -39,6 +39,8 @@ struct Pending {
     home: Vec<u8>,
     from: Option<u64>,
     to: u64,
+    #[serde(default)]
+    manager: Option<manager::Changes>,
 }
 
 fn read_state<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
@@ -125,6 +127,9 @@ fn link_plan(
         }
         Ok(())
     };
+    if output.join("environment/profile.sh").is_file() {
+        add(PathBuf::from(".config/vug/home/profile"), PathBuf::new())?;
+    }
     for path in manifest.files {
         validate_file_path(&path)?;
         let source = Path::new("files").join(&path);
@@ -428,6 +433,11 @@ fn recover(
     if current != pending.from {
         set_current(state, pending.from)?;
     }
+    if manager::available(&home.path)?
+        && let Some(changes) = &pending.manager
+    {
+        changes.restore()?;
+    }
     finish(state)
 }
 
@@ -441,7 +451,7 @@ pub(crate) fn activate(
     data: &Path,
     home: &Path,
     selection: Selection,
-) -> Result<u64, String> {
+) -> Result<(u64, bool), String> {
     let home = Home::open(home)?;
     let state = State::open(state, data)?;
     let generations = state.generations()?;
@@ -472,16 +482,48 @@ pub(crate) fn activate(
     for path in new.keys().filter(|path| !old.contains_key(*path)) {
         home.check(path, None)?;
     }
+    let manager_available = manager::available(&home.path)?;
     if current == Some(number) {
-        return Ok(number);
+        return Ok((number, !manager_available));
     }
+    let unit_state = |generation: Option<u64>| {
+        let mut definitions = BTreeMap::new();
+        let Some(id) = generation.and_then(|number| generations.get(&number)) else {
+            return Ok::<_, String>((definitions, Vec::new()));
+        };
+        let output = state.store.join(id);
+        let manifest_path = output.join("manifest/home.json");
+        let manifest: Manifest = read_state(&manifest_path)?
+            .ok_or_else(|| format!("{}: missing home manifest", manifest_path.display()))?;
+        for (name, unit) in manifest.units {
+            let file = output.join("units").join(&name);
+            definitions.insert(name, (io(&file, fs::read(&file))?, unit.enable));
+        }
+        let variables = output.join("environment/variables.json");
+        Ok((definitions, io(&variables, fs::read(&variables))?))
+    };
+    let manager = if manager_available {
+        let (old_units, old_environment) = unit_state(current)?;
+        let (new_units, new_environment) = unit_state(Some(number))?;
+        Some(manager::Changes::plan(
+            &old_units,
+            &new_units,
+            old_environment != new_environment,
+        )?)
+    } else {
+        None
+    };
     let pending = Pending {
         home: home.identity().to_vec(),
         from: current,
         to: number,
+        manager,
     };
     write_state(&state.root, JOURNAL, &pending, false)?;
     let apply = || {
+        if let Some(changes) = &pending.manager {
+            changes.before()?;
+        }
         for (path, target) in &old {
             if !new.contains_key(path) {
                 home.set_link(path, target, false, false)?;
@@ -499,6 +541,9 @@ pub(crate) fn activate(
             return Err("current home generation changed during activation".to_owned());
         }
         set_current(&state, Some(number))?;
+        if let Some(changes) = &pending.manager {
+            changes.after()?;
+        }
         write_state(
             &state.root,
             ACTIVE,
@@ -518,5 +563,5 @@ pub(crate) fn activate(
         };
     }
     finish(&state)?;
-    Ok(number)
+    Ok((number, !manager_available))
 }

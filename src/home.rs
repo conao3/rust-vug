@@ -7,7 +7,9 @@ use crate::naming::model;
 use crate::record::{FileCheck, RecordError, error_at};
 
 pub(crate) mod activate;
+mod manager;
 pub(crate) mod output;
+pub(crate) mod run;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
@@ -118,6 +120,7 @@ fn validate_file_path(path: &str) -> Result<(), String> {
         Path::new(".local/state/vug"),
         Path::new(".local/share/vug/home"),
         Path::new(".config/systemd/user"),
+        Path::new(".config/vug/home"),
     ] {
         if path.starts_with(reserved) || reserved.starts_with(path) {
             return Err(format!(

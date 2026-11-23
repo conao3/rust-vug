@@ -303,6 +303,8 @@ enum HomeCommands {
     ComposeHome(ComposeHomeArgs),
     /// Build a home output from installed or cached packages and record a generation.
     BuildHome(BuildHomeArgs),
+    /// Run a program from a home output in its store namespace.
+    RunProgram(RunHomeProgramArgs),
     /// Activate a built generation in HOME.
     SwitchHome(SwitchHomeArgs),
     /// Activate the nearest earlier retained generation.
@@ -331,6 +333,16 @@ struct BuildHomeArgs {
     dirs: HomeDirs,
     #[command(flatten)]
     cache: CacheSourceArgs,
+}
+
+#[derive(Args)]
+struct RunHomeProgramArgs {
+    #[arg(long)]
+    home_output: PathBuf,
+    #[arg(long)]
+    program: PathBuf,
+    #[arg(last = true)]
+    arguments: Vec<std::ffi::OsString>,
 }
 
 #[derive(Args)]
@@ -541,6 +553,11 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             }),
             HomeCommands::ComposeHome(args) => run_compose_home(&cli, args),
             HomeCommands::BuildHome(args) => run_build_home(&cli, args),
+            HomeCommands::RunProgram(args) => {
+                home::run::run(&args.home_output, &args.program, &args.arguments)
+                    .map_err(input_failure)?;
+                Ok(0)
+            }
             HomeCommands::SwitchHome(args) => run_activate_home(
                 &cli,
                 &args.dirs,
@@ -1058,10 +1075,14 @@ fn run_activate_home(
     let home =
         std::env::var_os("HOME").ok_or_else(|| input_failure("HOME is not set".to_owned()))?;
     let (state, data) = dirs.paths().map_err(input_failure)?;
-    let number = home::activate::activate(&state, &data, Path::new(&home), selection)
-        .map_err(input_failure)?;
+    let (number, units_pending) =
+        home::activate::activate(&state, &data, Path::new(&home), selection)
+            .map_err(input_failure)?;
+    if units_pending && !matches!(cli.output, Output::Json) {
+        eprintln!("user units will be loaded on the next login");
+    }
     match cli.output {
-        Output::Json => print_json(&json!({ "Generation": number })),
+        Output::Json => print_json(&json!({ "Generation": number, "UnitsPending": units_pending })),
         Output::Text => write_out(&format!("{number}\n")),
         Output::Table => write_out(&format!("Generation\n{number}\n")),
     }?;

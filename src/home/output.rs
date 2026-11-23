@@ -390,6 +390,10 @@ fn store_references(path: &Path, references: &mut BTreeSet<String>) -> Result<()
     Ok(())
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn render(
     record: &HomeRecord,
     out: &Path,
@@ -397,7 +401,14 @@ fn render(
     packages: &BTreeMap<String, String>,
     closure: &BTreeSet<String>,
 ) -> Result<(), String> {
-    for dir in ["sw/bin", "files", "units", "environment", "manifest"] {
+    for dir in [
+        "sw/bin",
+        "commands",
+        "files",
+        "units",
+        "environment",
+        "manifest",
+    ] {
         let path = out.join(dir);
         io(&path, fs::create_dir_all(&path))?;
     }
@@ -433,6 +444,35 @@ fn render(
             write(&path, content)?;
         }
     }
+    for entry in io(out, fs::read_dir(out.join("sw/bin")))? {
+        let entry = io(out, entry)?;
+        if !io(out, entry.file_type())?.is_symlink() {
+            continue;
+        }
+        let relative = io(&entry.path(), fs::read_link(entry.path()))?;
+        let target = relative
+            .strip_prefix("../../..")
+            .map_err(|_| format!("{}: unexpected package link", entry.path().display()))?;
+        let source = store.join(target);
+        let metadata = io(&source, fs::symlink_metadata(&source))?;
+        if !metadata.is_symlink() && (!metadata.is_file() || metadata.mode() & 0o111 == 0) {
+            continue;
+        }
+        let target = Path::new(STORE).join(target);
+        let target = target.to_str().ok_or("package command path is not UTF-8")?;
+        let launcher = out.join("commands").join(entry.file_name());
+        write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nlauncher=$(/bin/readlink -f -- \"$0\") || exit 1\nexec /bin/vug home run-program --home-output \"${{launcher%/commands/*}}\" --program {} -- \"$@\"\n",
+                shell_quote(target)
+            ),
+        )?;
+        io(
+            &launcher,
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)),
+        )?;
+    }
     let package_paths = packages
         .iter()
         .map(|(name, id)| (name.clone(), format!("{STORE}/{id}")))
@@ -444,7 +484,34 @@ fn render(
             &package_paths,
             "is not a package of this home",
         )?;
-        write(&out.join("units").join(&unit.name), content)?;
+        let mut rendered = String::new();
+        for line in unit
+            .content
+            .split_inclusive('\n')
+            .zip(content.split_inclusive('\n'))
+        {
+            let (source, expanded) = line;
+            let Some((directive, command)) = source.trim_start().split_once('=') else {
+                rendered.push_str(expanded);
+                continue;
+            };
+            if directive.trim_end() != "ExecStart" || !command.trim_start().starts_with("{pkg:") {
+                rendered.push_str(expanded);
+                continue;
+            }
+            let (_, expanded) = expanded.split_once('=').ok_or("missing ExecStart value")?;
+            let expanded = expanded.trim_start_matches([' ', '\t']);
+            let end = expanded.find(char::is_whitespace).unwrap_or(expanded.len());
+            let program = &expanded[..end];
+            rendered.push_str(&format!(
+                "ExecStart=/bin/vug home run-program --home-output \"%h/.config/vug/home/profile\" --program {program} --{}",
+                &expanded[end..],
+            ));
+        }
+        if unit.name.ends_with(".service") && !record.environment.is_empty() {
+            rendered.push_str("\n[Service]\nEnvironmentFile=%h/.config/vug/home/profile/environment/systemd.env\n");
+        }
+        write(&out.join("units").join(&unit.name), rendered)?;
         for target in &unit.enable {
             let wants = out.join("units").join(format!("{target}.wants"));
             io(&wants, fs::create_dir_all(&wants))?;
@@ -453,7 +520,25 @@ fn render(
         }
     }
     write_json(&out.join("environment/variables.json"), &record.environment)?;
-    write(&out.join("environment/path"), "sw/bin\n")?;
+    write(&out.join("environment/path"), "commands\n")?;
+    let mut profile = String::from("export PATH=\"$HOME/.config/vug/home/profile/commands\"");
+    match record.environment.get("PATH") {
+        None => profile.push_str("\"${PATH:+:$PATH}\""),
+        Some(path) if !path.is_empty() => profile.push_str(&shell_quote(&format!(":{path}"))),
+        Some(_) => (),
+    }
+    profile.push('\n');
+    let mut systemd = String::new();
+    for (name, value) in &record.environment {
+        use std::fmt::Write as _;
+        if name != "PATH" {
+            writeln!(profile, "export {name}={}", shell_quote(value)).unwrap();
+        }
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(systemd, "{name}=\"{escaped}\"").unwrap();
+    }
+    write(&out.join("environment/profile.sh"), profile)?;
+    write(&out.join("environment/systemd.env"), systemd)?;
 
     write_json(
         &out.join("manifest/home.json"),

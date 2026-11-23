@@ -33,7 +33,7 @@ A fragment uses the same fields except `fragments`, which belongs to the home re
 - `fragments` lists selected fragment names.
 - `packages` lists package names.
 - `environment` maps ASCII identifiers matching `[A-Za-z_][A-Za-z0-9_]*` to literal strings. Values are preserved as written, including shell syntax, and must be free of NUL bytes.
-- Each `[[file]]` sets a HOME-relative `path` and either literal `content` or a `package` and `source` pair. The pair selects a relative path inside a package output. Both paths must have nonempty components other than `.` or `..` and must be free of NUL bytes. Home file paths must stay clear of `.local/state/vug`, `.local/share/vug/home`, and `.config/systemd/user`, including their parents and descendants.
+- Each `[[file]]` sets a HOME-relative `path` and either literal `content` or a `package` and `source` pair. The pair selects a relative path inside a package output. Both paths must have nonempty components other than `.` or `..` and must be free of NUL bytes. Home file paths must stay clear of `.local/state/vug`, `.local/share/vug/home`, `.config/systemd/user`, and `.config/vug/home`, including their parents and descendants.
 - Each `[[unit]]` sets a systemd unit `name` and its public `content` as a NUL-free string. Optional `enable` and `secrets` list target unit names and logical secret names, respectively. The example preserves the `{pkg:hello}` reference in the unit text.
 - Each `[[secret]]` declares a logical `name`. The record carries the name alone.
 
@@ -63,10 +63,11 @@ $ vug home collect-garbage
 | `sw/` | Relative links to selected package outputs, with shared directories merged. Two different outputs providing the same leaf path cause an error. |
 | `files/` | Literal content or copies of regular files within the selected package outputs, under their HOME-relative destinations. |
 | `units/` | Unit files and relative `<target>.wants/` links. Unit text expands `{pkg:NAME}` to the package's canonical `/vug/store/<id>` path. |
-| `environment/` | Literal variables in `variables.json` and the profile-relative PATH prefix `sw/bin` in `path`. |
+| `commands/` | Launchers for the programs exported by selected packages in `sw/bin`. |
+| `environment/` | Literal variables, a shell profile, and a systemd environment file. |
 | `manifest/home.json` | Home name, package names mapped to store IDs, the transitive closure of store IDs, file destinations, unit targets, and logical secret names. |
 
-The output ID covers the public output tree, including the manifest. The build publishes its own directories and files with read-only permissions. Relative package links resolve in the local user store. Packages with embedded `/vug/store` references need the user store to be mounted at that path for execution, as with `vug package run-package`. Building a generation leaves activation, login integration, and secret preparation to the commands that consume it.
+The output ID covers the public output tree, including the manifest. The build publishes its own directories and files with read-only permissions. Relative package links resolve in the local user store. The launchers mount the home package closure at its canonical paths for the duration of the command. Build a new generation to generate the launchers and user service environment files.
 
 The home commands share a dedicated user data directory (default `${XDG_DATA_HOME:-$HOME/.local/share}/vug/home`) and state directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/vug/home`). Use `--data-dir` and `--state-dir` to select a dedicated pair. Both directories must be owned by the caller and writable only by their owner. The state directory's `store` link points to the actual user store. The numbered links under `generations/` point into that same store. A build that produces the newest generation's output again returns the same number. The build's default JSON output gives its `Name`, `Id`, `Path` in the user store, and `Generation`.
 
@@ -81,6 +82,22 @@ $ vug home rollback-home
 
 `switch-home` selects a generation that `build-home` has created. `rollback-home` selects the nearest earlier retained generation. Both take the same `--state-dir` and `--data-dir` options as `build-home` and report the activated `Generation`. Run them as the owner of HOME. The profile records the resolved path of that HOME directory and the last completed generation. Subsequent switches check both records against HOME and `current`.
 
-Files, unit files, and target wants links are installed under HOME as symlinks through the profile's `current` link. Both commands check existing and prospective destinations before changing any home links. A hand-placed file or symlink at a new destination, a changed or missing managed link, or a symlink in a destination's parent path causes an error. Move conflicting files aside or restore the expected managed link before retrying. Activation preserves existing directories and application data. It creates directories as needed and leaves those directories in place when their managed links are removed. Login integration, systemd user-manager operations, and secret preparation are separate from switching generations.
+Files, unit files, and target wants links are installed under HOME as symlinks through the profile's `current` link. Both commands check existing and prospective destinations before changing any home links. A hand-placed file or symlink at a new destination, a changed or missing managed link, or a symlink in a destination's parent path causes an error. Move conflicting files aside or restore the expected managed link before retrying. Activation preserves existing directories and application data. It creates directories as needed and leaves those directories in place when their managed links are removed.
 
 Activation records a pending switch under the profile lock before changing links, then replaces `current` by renaming a symlink into place. Destinations common to both generations follow `current`. If activation fails or is interrupted before the completed generation is recorded, recovery restores the prior set of links and `current`. Each activation command checks for and recovers an unfinished switch before applying its request. If recovery encounters a path that was changed by hand, it preserves that path and retains the pending record for a later retry. Generation deletion retains both generations in a pending switch, and user-store garbage collection runs under the same lock.
+
+## Login and user services
+
+With the `home-login` service included in a Vug system, source its profile fragment from `/etc/profile`:
+
+```sh
+. /etc/profile.d/vug-home.sh
+```
+
+The fragment runs in a non-root login shell. It loads the active generation's public variables and prepends its `commands/` directory to the login PATH. It uses the public profile link under `~/.config/vug/home/`. Start a fresh login shell after switching to load the new variables.
+
+The launcher uses `vug home run-program` and requires bubblewrap with unprivileged user namespaces enabled. Each launch keeps the system's store visible and mounts the selected user closure at `/vug/store/<id>` for that process. When an ID appears in both stores, the launcher verifies the content and uses the system's copy. The system store and the user store are mounted read-only inside the command.
+
+An `ExecStart` whose executable starts with `{pkg:NAME}/` launches that file from the user generation with the same mechanism. For a command provided by the system, use its absolute path. Managed services pick up the new generation's public variables from an `EnvironmentFile`. Use an enable target appropriate to each service, timer, or socket. For a graphical session service, select the graphical session target that your desktop activates.
+
+With a running user manager, switching stops removed active units, reloads unit definitions, restarts changed active units, and starts newly enabled units whose targets are active. The prior unit configuration is restored during recovery from an interrupted switch. When there is no user manager, the command installs the files and reports `UnitsPending`. The user manager reads the unit links at its next start. Login uses the standard HOME-relative systemd user-unit directory.
