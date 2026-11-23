@@ -1,5 +1,6 @@
 mod build;
 mod gc;
+mod home;
 mod naming;
 mod record;
 mod system;
@@ -47,6 +48,11 @@ enum Commands {
     Record {
         #[command(subcommand)]
         command: RecordCommands,
+    },
+    /// User environment records.
+    Home {
+        #[command(subcommand)]
+        command: HomeCommands,
     },
     /// Systems.
     System {
@@ -216,6 +222,26 @@ enum RecordCommands {
     CheckTree(RootArgs),
 }
 
+#[derive(Subcommand)]
+enum HomeCommands {
+    /// Print the canonical form of a home record.
+    FormatHome(FormatArgs),
+    /// Print the canonical form of a home fragment.
+    FormatFragment(FormatArgs),
+    /// Compose a home record and its selected fragments.
+    ComposeHome(ComposeHomeArgs),
+}
+
+#[derive(Args)]
+struct ComposeHomeArgs {
+    /// Repository root containing homes and home-fragments.
+    #[arg(long)]
+    root: PathBuf,
+    /// Home record name.
+    #[arg(long)]
+    name: String,
+}
+
 #[derive(Args)]
 struct CompareArgs {
     /// Left-hand version string (or file://PATH).
@@ -374,6 +400,15 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
         },
+        Commands::Home { command } => match command {
+            HomeCommands::FormatHome(args) => run_format_with(&cli, args, |path| {
+                home::check_file(path, home::Kind::Home).map_err(|error| vec![error])
+            }),
+            HomeCommands::FormatFragment(args) => run_format_with(&cli, args, |path| {
+                home::check_file(path, home::Kind::Fragment).map_err(|error| vec![error])
+            }),
+            HomeCommands::ComposeHome(args) => run_compose_home(&cli, args),
+        },
         Commands::System { command } => match command {
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
             SystemCommands::BuildImage(args) => run_build_image(&cli, args),
@@ -432,10 +467,20 @@ fn dir_name(path: &Path) -> Option<String> {
 }
 
 fn run_format(cli: &Cli, args: &FormatArgs) -> Result<i32, (i32, String)> {
+    run_format_with(cli, args, |path| {
+        record::check_file(path, dir_name(path).as_deref())
+    })
+}
+
+fn run_format_with(
+    cli: &Cli,
+    args: &FormatArgs,
+    check_file: impl FnOnce(&Path) -> Result<record::FileCheck, Vec<record::RecordError>>,
+) -> Result<i32, (i32, String)> {
     if cli.debug {
         eprintln!("file={:?} write={:?}", args.file, args.write);
     }
-    let check = match record::check_file(&args.file, dir_name(&args.file).as_deref()) {
+    let check = match check_file(&args.file) {
         Ok(c) => c,
         Err(errors) => {
             print_errors(&errors, cli.output)?;
@@ -457,6 +502,28 @@ fn run_format(cli: &Cli, args: &FormatArgs) -> Result<i32, (i32, String)> {
         })),
         Output::Text => write_out(&check.canonical),
         Output::Table => write_out(&format!("Changed\n{}\n{}", check.changed, check.canonical)),
+    }?;
+    Ok(0)
+}
+
+fn run_compose_home(cli: &Cli, args: &ComposeHomeArgs) -> Result<i32, (i32, String)> {
+    if cli.debug {
+        eprintln!("root={:?} name={:?}", args.root, args.name);
+    }
+    let record = match home::load(&args.root, &args.name) {
+        Ok(record) => record,
+        Err(error) => {
+            print_errors(&[error], cli.output)?;
+            return Ok(version::failure_status());
+        }
+    };
+    let canonical = record
+        .canonical()
+        .map_err(|e| (version::other_status(), e.to_string()))?;
+    match cli.output {
+        Output::Json => print_json(&json!({ "Record": canonical })),
+        Output::Text => write_out(&canonical),
+        Output::Table => write_out(&format!("Record\n{canonical}")),
     }?;
     Ok(0)
 }

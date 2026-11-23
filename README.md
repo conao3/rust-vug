@@ -14,6 +14,7 @@ machine. It has not been started on real hardware.
 | [docs/record.md](docs/record.md) | Package records, the build kinds, the canonical form |
 | [docs/build.md](docs/build.md) | Store paths, the seed, the compiler wrappers, the C++ runtime, how a build finds its dependencies |
 | [docs/system.md](docs/system.md) | System and service records, the layout of a machine, switching and rolling back |
+| [docs/home.md](docs/home.md) | User environment records, reusable fragments, and composition |
 | [docs/cache.md](docs/cache.md) | Binary caches, signatures, garbage collection |
 
 ```console

@@ -1225,7 +1225,7 @@ pub(crate) fn load_version(path: &Path) -> Result<(VersionRecord, String), Vec<R
     }
 }
 
-fn error_at(path: &Path, message: String) -> RecordError {
+pub(crate) fn error_at(path: &Path, message: String) -> RecordError {
     RecordError {
         path: path.display().to_string(),
         message,
