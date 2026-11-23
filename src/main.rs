@@ -1,6 +1,7 @@
 mod build;
 mod gc;
 mod home;
+mod merge;
 mod naming;
 mod record;
 mod system;
@@ -232,6 +233,14 @@ enum RecordCommands {
     CheckRecord(FileArgs),
     /// Check every record under DIR/packages.
     CheckTree(RootArgs),
+    #[command(about = "Classify a candidate diff and compute a merge decision")]
+    DecideMerge(MergeArgs),
+}
+
+#[derive(Args)]
+struct MergeArgs {
+    #[arg(long, help = "Versioned JSON request (or file://PATH)")]
+    input: String,
 }
 
 #[derive(Subcommand)]
@@ -354,6 +363,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "--left",
     "--right",
     "--file",
+    "--input",
     "--root",
     "--name",
     "--package-version",
@@ -468,6 +478,7 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             RecordCommands::FormatRecord(args) => run_format(&cli, args),
             RecordCommands::CheckRecord(args) => run_check_record(&cli, args),
             RecordCommands::CheckTree(args) => run_check_tree(&cli, args),
+            RecordCommands::DecideMerge(args) => run_decide_merge(&cli, args),
         },
         Commands::Home { command } => match command {
             HomeCommands::FormatHome(args) => run_format_with(&cli, args, |path| {
@@ -545,6 +556,21 @@ fn run_compare(cli: &Cli, args: &CompareArgs) -> Result<i32, (i32, String)> {
         Output::Json => print_json(&json!({ "Ordering": name })),
         Output::Text => write_out(&format!("{name}\n")),
         Output::Table => write_out(&format!("Ordering\n{name}\n")),
+    }?;
+    Ok(0)
+}
+
+fn run_decide_merge(cli: &Cli, args: &MergeArgs) -> Result<i32, (i32, String)> {
+    let input = resolve(&args.input).map_err(|e| (version::failure_status(), e))?;
+    let report = merge::evaluate(&input).map_err(|e| (version::failure_status(), e))?;
+    match cli.output {
+        Output::Json => {
+            let value = serde_json::to_value(&report)
+                .map_err(|e| (version::other_status(), e.to_string()))?;
+            print_json(&value)
+        }
+        Output::Text => write_out(&format!("{}\n", report.decision)),
+        Output::Table => write_out(&format!("Decision\n{}\n", report.decision)),
     }?;
     Ok(0)
 }
