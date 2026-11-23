@@ -118,7 +118,11 @@ for a; do
     *.o | *.lo | *.a | *.c | *.cc | *.cpp | *.cxx | *.C | *.s | *.S) objects_given=1; set -- "$@" "$a" ;;
     *.h | *.hh | *.hpp | *.i | *.ii | *.m | *.ld | *.lds | *.map | *.sym | *.def | *.txt | *.d) set -- "$@" "$a" ;;
     *)
-      if [ "$is_output" = 0 ] && [ -f "$a" ] && [ "$(dd if="$a" bs=1 count=4 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ] && [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; then
+      if [ "$is_output" = 0 ] && [ -f "$a" ] && {
+        [ "${a%.oo}" != "$a" ] ||
+        { [ "$(dd if="$a" bs=1 count=4 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ] &&
+          [ "$(dd if="$a" bs=1 skip=16 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" = 1 ]; }
+      }; then
         objects=/tmp/vug-cc-$$
         mkdir -p "$objects"
         n=$((${n:-0} + 1))

@@ -196,10 +196,27 @@ fn objects_with_unknown_names_get_a_known_one() {
     object.resize(16, 0);
     object.push(1);
     object.resize(64, 0);
-    std::fs::write(directory.path().join("x.oo"), &object).expect("write");
-    std::fs::write(directory.path().join("out.oo"), &object).expect("write");
+    std::fs::write(directory.path().join("x.os"), &object).expect("write");
+    let got = run(directory.path(), &["x.os", "-o", "out"]);
+    assert!(got[5].ends_with("/1.o"), "{got:?}");
+    assert_eq!(got[6..8], ["-o", "out"]);
+}
+
+#[test]
+fn oo_input_is_aliased_and_the_output_name_is_kept() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    std::fs::write(directory.path().join("x.oo"), b"BC\xc0\xde").expect("write");
+    std::fs::write(directory.path().join("out.oo"), b"BC\xc0\xde").expect("write");
     let got = run(directory.path(), &["x.oo", "-o", "out.oo"]);
     assert!(got[5].ends_with("/1.o"), "{got:?}");
+    assert_eq!(
+        std::fs::read_link(&got[5]).expect("read object alias"),
+        directory
+            .path()
+            .join("x.oo")
+            .canonicalize()
+            .expect("input path")
+    );
     assert_eq!(got[6..8], ["-o", "out.oo"]);
 }
 

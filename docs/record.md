@@ -178,7 +178,10 @@ configure-flags = [
 Runs `autoreconf -fi` when `build.autoreconf` is true, then
 `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
 `make check` (when `check.enabled`),
-`make <install-targets> <make-flags> <install-flags>`.
+and `make <install-targets> <make-flags> <install-flags> DESTDIR=/build/dest`.
+The install targets must honor `DESTDIR`. Files staged under the configured
+prefix go into the output. Files staged outside the prefix keep their paths
+relative to the staged root under the output's `.vug/root/`.
 
 | Key | Type | Default |
 |---|---|---|

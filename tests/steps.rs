@@ -51,14 +51,16 @@ fn autotools_with_check() {
     };
     let steps = autotools_steps("/out", &options);
     assert_eq!(
-        steps,
-        vec![
+        steps[..5],
+        [
             step(&["./configure", "--prefix=/out", "--disable-nls"]),
             step(&["make", "-j4", "V=1"]),
             step(&["make", "-j4", "check", "V=1"]),
-            step(&["make", "install", "V=1", "DESTDIR="]),
+            step(&["mkdir", "-p", "/build/dest"]),
+            step(&["make", "install", "V=1", "DESTDIR=", "DESTDIR=/build/dest"]),
         ]
     );
+    assert_eq!(steps.len(), 6);
 }
 
 #[test]
@@ -123,14 +125,15 @@ fn autotools_without_check() {
     };
     let steps = autotools_steps("/out", &options);
     assert_eq!(
-        steps,
-        vec![
+        steps[..4],
+        [
             step(&["./configure", "--prefix=/out", "--disable-nls"]),
             step(&["make", "-j4", "V=1"]),
-            step(&["make", "install", "V=1", "DESTDIR="]),
+            step(&["mkdir", "-p", "/build/dest"]),
+            step(&["make", "install", "V=1", "DESTDIR=", "DESTDIR=/build/dest"]),
         ]
     );
-    assert_eq!(steps.len(), 3);
+    assert_eq!(steps.len(), 5);
     assert!(!steps.iter().flatten().any(|w| w == "check"));
 }
 
@@ -149,11 +152,12 @@ fn autotools_minimal() {
     };
     let steps = autotools_steps("/out", &options);
     assert_eq!(
-        steps,
-        vec![
+        steps[..4],
+        [
             step(&["./configure", "--prefix=/out"]),
             step(&["make", "-j1"]),
-            step(&["make", "install"]),
+            step(&["mkdir", "-p", "/build/dest"]),
+            step(&["make", "install", "DESTDIR=/build/dest"]),
         ]
     );
 }
@@ -175,14 +179,70 @@ fn autotools_autoreconf_precedes_custom_configure() {
         },
     );
     assert_eq!(
-        steps,
-        vec![
+        steps[..5],
+        [
             step(&["autoreconf", "-fi"]),
             step(&["sh", "./configure", "--disable-nls"]),
             step(&["make", "-j1"]),
-            step(&["make", "install"]),
+            step(&["mkdir", "-p", "/build/dest"]),
+            step(&["make", "install", "DESTDIR=/build/dest"]),
         ]
     );
+}
+
+#[test]
+fn autotools_collects_the_staged_install() {
+    let options = Autotools {
+        autoreconf: false,
+        configure_command: vec![],
+        configure_flags: vec![],
+        make_flags: vec![],
+        install_flags: vec![],
+        install_targets: vec![],
+        check: false,
+        check_skip: vec![],
+        jobs: 1,
+    };
+    for has_prefix in [true, false] {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let prefix = dir.path().join("vug/store/pkg");
+        let prefix = prefix.to_str().expect("UTF-8 prefix");
+        let stage = dir.path().join("stage");
+        let staged_prefix = stage.join(prefix.trim_start_matches('/'));
+        std::fs::create_dir_all(prefix).expect("create output");
+        if has_prefix {
+            std::fs::create_dir_all(staged_prefix.join("bin")).expect("stage bin");
+            std::fs::write(staged_prefix.join("bin/tool"), b"tool").expect("stage tool");
+        }
+        std::fs::create_dir_all(stage.join("etc")).expect("stage etc");
+        std::fs::write(stage.join("etc/tool.conf"), b"config").expect("stage config");
+
+        let steps = autotools_steps(prefix, &options);
+        let collect = &steps[4];
+        assert_eq!(&collect[4..], ["/build/dest", prefix]);
+        let output = std::process::Command::new(&collect[0])
+            .args(&collect[1..4])
+            .arg(&stage)
+            .arg(prefix)
+            .output()
+            .expect("collect staged files");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::path::Path::new(prefix).join("bin/tool").is_file(),
+            has_prefix
+        );
+        assert_eq!(
+            std::fs::read(format!("{prefix}/.vug/root/etc/tool.conf")).expect("read config"),
+            b"config"
+        );
+        assert_eq!(
+            std::fs::read_dir(format!("{prefix}/.vug/root"))
+                .expect("read staged root")
+                .count(),
+            1
+        );
+        assert!(!staged_prefix.exists());
+    }
 }
 
 #[test]
@@ -426,9 +486,10 @@ fn make_kind() {
 
 #[test]
 fn meson_kind() {
+    let steps = vug::steps::meson_steps("/out", &owned(&["-Dtests=disabled"]), true, &[], 3);
     assert_eq!(
-        vug::steps::meson_steps("/out", &owned(&["-Dtests=disabled"]), true, &[], 3),
-        vec![
+        steps[..5],
+        [
             step(&[
                 "meson",
                 "setup",
@@ -440,6 +501,7 @@ fn meson_kind() {
             ]),
             step(&["meson", "compile", "-C", "build", "-j", "3"]),
             step(&["meson", "test", "-C", "build", "--no-rebuild"]),
+            step(&["mkdir", "-p", "/build/dest"]),
             step(&[
                 "meson",
                 "install",
@@ -449,13 +511,10 @@ fn meson_kind() {
                 "--destdir",
                 "/build/dest"
             ]),
-            step(&["cp", "-a", "/build/dest/out/.", "/out/"]),
-            step(&["rm", "-rf", "/build/dest/vug"]),
-            step(&["mkdir", "-p", "/out/.vug/root"]),
-            step(&["cp", "-a", "/build/dest/.", "/out/.vug/root/"]),
         ]
     );
-    assert_eq!(vug::steps::meson_steps("/out", &[], false, &[], 1).len(), 7);
+    assert_eq!(&steps[5][4..], ["/build/dest", "/out"]);
+    assert_eq!(vug::steps::meson_steps("/out", &[], false, &[], 1).len(), 5);
 }
 
 #[test]
@@ -482,11 +541,12 @@ fn autotools_install_targets_replace_install() {
     };
     let steps = autotools_steps("/out", &options);
     assert_eq!(
-        steps.last().expect("install step"),
-        &vec![
-            "make".to_string(),
-            "install-nokeys".to_string(),
-            "sysconfdir=/out/etc".to_string()
+        steps[3],
+        [
+            "make",
+            "install-nokeys",
+            "sysconfdir=/out/etc",
+            "DESTDIR=/build/dest"
         ]
     );
 }

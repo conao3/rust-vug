@@ -28,7 +28,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "8";
+const BUILD_RULES: &str = "9";
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 struct OutputBinding<'a> {
