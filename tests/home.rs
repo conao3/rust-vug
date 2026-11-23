@@ -363,3 +363,281 @@ name = "key"
         path
     );
 }
+
+struct HomeProfile {
+    _dir: TempDir,
+    home: std::path::PathBuf,
+    repo: std::path::PathBuf,
+    state: std::path::PathBuf,
+}
+
+impl HomeProfile {
+    fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        let repo = dir.path().join("repo");
+        let state = home.join(".local/state/vug/home");
+        std::fs::create_dir(&home).unwrap();
+        Self {
+            _dir: dir,
+            home,
+            repo,
+            state,
+        }
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vug"));
+        command
+            .env("HOME", &self.home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .arg("home")
+            .args(args);
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> serde_json::Value {
+        let output = self.command(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn error(&self, args: &[&str], message: &str) {
+        let output = self.command(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(254));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{stderr}");
+    }
+
+    fn build(&self, files: &[(&str, &str)], unit: bool) -> u64 {
+        let mut text = "name = 'example'\n".to_owned();
+        for (path, contents) in files {
+            text.push_str(&format!(
+                "[[file]]\npath = '{path}'\ncontent = '{contents}'\n"
+            ));
+        }
+        if unit {
+            text.push_str(
+                "[[unit]]\nname = 'example.service'\nenable = ['default.target']\ncontent = '[Service]'\n",
+            );
+        }
+        write(&self.repo, "homes/example.toml", &text);
+        self.run(&[
+            "build-home",
+            "--root",
+            self.repo.to_str().unwrap(),
+            "--name",
+            "example",
+        ])["Generation"]
+            .as_u64()
+            .unwrap()
+    }
+
+    fn read(&self, path: &str) -> String {
+        std::fs::read_to_string(self.home.join(path)).unwrap()
+    }
+
+    fn assert_current(&self, number: u64) {
+        assert_eq!(
+            std::fs::read_link(self.state.join("current")).unwrap(),
+            Path::new("generations").join(number.to_string())
+        );
+    }
+}
+
+#[test]
+fn switching_and_rollback_apply_files_and_unit_links() {
+    let profile = HomeProfile::new();
+    assert_eq!(
+        profile.build(&[("config/common", "first"), ("old", "old")], true),
+        1
+    );
+    assert_eq!(
+        profile.build(&[("config/common", "second"), ("new", "new")], false),
+        2
+    );
+    write(&profile.home, "config/local", "keep");
+    profile.error(&["rollback-home"], "no active home generation");
+
+    assert_eq!(
+        profile.run(&["switch-home", "--generation", "1"])["Generation"],
+        1
+    );
+    profile.assert_current(1);
+    let common = profile.home.join("config/common");
+    let link = std::fs::read_link(&common).unwrap();
+    let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::symlink_metadata(&common).unwrap());
+    assert_eq!(link, profile.state.join("current/files/config/common"));
+    assert_eq!(profile.read("config/common"), "first");
+    assert_eq!(profile.read("old"), "old");
+    let unit = ".config/systemd/user/example.service";
+    let wants = ".config/systemd/user/default.target.wants/example.service";
+    assert_eq!(profile.read(unit), "[Service]");
+    assert_eq!(profile.read(wants), "[Service]");
+
+    assert_eq!(
+        profile.run(&["switch-home", "--generation", "2"])["Generation"],
+        2
+    );
+    profile.assert_current(2);
+    assert_eq!(profile.read("config/common"), "second");
+    assert_eq!(std::fs::read_link(&common).unwrap(), link);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&std::fs::symlink_metadata(&common).unwrap()),
+        inode
+    );
+    for removed in ["old", unit, wants] {
+        assert!(!profile.home.join(removed).is_symlink());
+    }
+    assert_eq!(profile.read("new"), "new");
+
+    assert_eq!(profile.run(&["rollback-home"])["Generation"], 1);
+    profile.assert_current(1);
+    assert_eq!(profile.read("config/common"), "first");
+    assert_eq!(profile.read("config/local"), "keep");
+    assert_eq!(profile.read(wants), "[Service]");
+    assert!(!profile.home.join("new").is_symlink());
+    assert!(!profile.state.join("activation-pending.json").exists());
+    profile.run(&["switch-home", "--generation", "1"]);
+    profile.error(&["rollback-home"], "no earlier retained home generation");
+}
+
+#[test]
+fn preflight_preserves_unmanaged_entries_and_replaced_links() {
+    use std::os::unix::fs::symlink;
+    let profile = HomeProfile::new();
+    profile.build(&[("active", "first")], false);
+    profile.build(
+        &[("aaa", "new"), ("active", "second"), ("nested/item", "new")],
+        false,
+    );
+    let command = ["switch-home", "--generation", "2"];
+    profile.run(&["switch-home", "--generation", "1"]);
+    write(&profile.home, "nested/item", "manual");
+    profile.error(&command, "home path collision");
+    profile.assert_current(1);
+    assert_eq!(profile.read("nested/item"), "manual");
+    assert!(!profile.home.join("aaa").is_symlink());
+    assert!(!profile.state.join("activation-pending.json").exists());
+
+    let nested = profile.home.join("nested");
+    std::fs::rename(&nested, profile.repo.join("outside")).unwrap();
+    symlink(profile.repo.join("outside"), &nested).unwrap();
+    profile.error(&command, "home path collision");
+    assert_eq!(
+        std::fs::read_to_string(profile.repo.join("outside/item")).unwrap(),
+        "manual"
+    );
+    std::fs::remove_file(&nested).unwrap();
+    std::fs::create_dir(&nested).unwrap();
+    symlink(profile.repo.join("outside/item"), nested.join("item")).unwrap();
+    profile.error(&command, "home path collision");
+    std::fs::remove_file(nested.join("item")).unwrap();
+
+    let active = profile.home.join("active");
+    std::fs::remove_file(&active).unwrap();
+    let altered = profile.state.join("current/files/./active");
+    symlink(&altered, &active).unwrap();
+    profile.error(&command, "home path collision");
+    assert_eq!(
+        std::fs::read_link(active).unwrap().as_os_str(),
+        altered.as_os_str()
+    );
+    assert_eq!(profile.read("active"), "first");
+    profile.assert_current(1);
+    assert!(!profile.home.join("aaa").is_symlink());
+    let current = profile.state.join("current");
+    std::fs::remove_file(&current).unwrap();
+    symlink("generations/2", &current).unwrap();
+    profile.error(&command, "differs from the last recorded activation");
+}
+
+#[test]
+fn interrupted_switch_keeps_generation_roots_and_retries_recovery() {
+    use std::os::unix::fs::symlink;
+    let profile = HomeProfile::new();
+    profile.build(&[("old", "first")], false);
+    profile.build(&[("new", "second")], false);
+    profile.build(&[("latest", "third")], false);
+    profile.run(&["switch-home", "--generation", "1"]);
+
+    let pending = profile.state.join("activation-pending.json");
+    let active: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(profile.state.join("activation-home.json")).unwrap())
+            .unwrap();
+    std::fs::write(
+        &pending,
+        serde_json::to_vec(&serde_json::json!({"home": active["home"], "from": 1, "to": 2}))
+            .unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_file(profile.home.join("old")).unwrap();
+    let current = profile.state.join("current");
+    std::fs::remove_file(&current).unwrap();
+    symlink("generations/2", &current).unwrap();
+    write(&profile.home, "new", "changed by hand after interruption");
+    let retry = ["switch-home", "--generation", "1"];
+    profile.error(&retry, "could not recover unfinished home activation");
+    assert_eq!(profile.read("new"), "changed by hand after interruption");
+    assert!(pending.is_file());
+
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(profile.state.join("lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let mut gc = profile
+        .command(&["collect-garbage"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(gc.try_wait().unwrap().is_none());
+    lock.unlock().unwrap();
+    let gc = gc.wait_with_output().unwrap();
+    assert!(gc.status.success(), "{gc:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&gc.stdout).unwrap()["Kept"],
+        3
+    );
+    assert_eq!(
+        profile.run(&["delete-generations", "--keep", "1"])["Removed"],
+        serde_json::json!([])
+    );
+
+    std::fs::remove_file(profile.home.join("new")).unwrap();
+    symlink(
+        profile.state.join("current/files/new"),
+        profile.home.join("new"),
+    )
+    .unwrap();
+    profile.run(&retry);
+    profile.assert_current(1);
+    assert_eq!(profile.read("old"), "first");
+    assert!(!profile.home.join("new").is_symlink());
+    assert!(!pending.exists());
+    assert_eq!(
+        profile.run(&["delete-generations", "--keep", "1"])["Removed"],
+        serde_json::json!([2])
+    );
+    assert_eq!(profile.run(&["collect-garbage"])["Kept"], 2);
+    profile.run(&["switch-home", "--generation", "3"]);
+    assert_eq!(profile.read("latest"), "third");
+    std::fs::write(
+        &pending,
+        serde_json::to_vec(&serde_json::json!({"home": active["home"], "from": 1, "to": 3}))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        profile.run(&["switch-home", "--generation", "3"])["Generation"],
+        3
+    );
+    assert_eq!(profile.read("latest"), "third");
+    assert!(!pending.exists());
+}

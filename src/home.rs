@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::naming::model;
 use crate::record::{FileCheck, RecordError, error_at};
 
+pub(crate) mod activate;
 pub(crate) mod output;
 
 #[derive(Clone, Copy)]
@@ -105,14 +106,14 @@ fn unit_suffix(name: &str) -> Option<&str> {
     Some(suffix)
 }
 
-fn validate_file(file: &HomeFile) -> Result<(), String> {
-    if !valid_relative_path(&file.path) {
+fn validate_file_path(path: &str) -> Result<(), String> {
+    if !valid_relative_path(path) {
         return Err(format!(
             "file.path: {:?}: expected a normalized relative path",
-            file.path
+            path
         ));
     }
-    let path = Path::new(&file.path);
+    let path = Path::new(path);
     for reserved in [
         Path::new(".local/state/vug"),
         Path::new(".local/share/vug/home"),
@@ -121,10 +122,15 @@ fn validate_file(file: &HomeFile) -> Result<(), String> {
         if path.starts_with(reserved) || reserved.starts_with(path) {
             return Err(format!(
                 "file.path: {:?}: overlaps reserved path {:?}",
-                file.path, reserved
+                path, reserved
             ));
         }
     }
+    Ok(())
+}
+
+fn validate_file(file: &HomeFile) -> Result<(), String> {
+    validate_file_path(&file.path)?;
     match (&file.content, &file.package, &file.source) {
         (Some(_), None, None) => Ok(()),
         (None, Some(package), Some(source))

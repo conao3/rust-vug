@@ -71,3 +71,16 @@ The output ID covers the public output tree, including the manifest. The build p
 The home commands share a dedicated user data directory (default `${XDG_DATA_HOME:-$HOME/.local/share}/vug/home`) and state directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/vug/home`). Use `--data-dir` and `--state-dir` to select a dedicated pair. Both directories must be owned by the caller and writable only by their owner. The state directory's `store` link points to the actual user store. The numbered links under `generations/` point into that same store. A build that produces the newest generation's output again returns the same number. The build's default JSON output gives its `Name`, `Id`, `Path` in the user store, and `Generation`.
 
 `delete-generations` keeps the newest `--keep` links (at least one) and the generation named by the state's `current` link, when present. `collect-garbage` retains every remaining generation and its closure. Both commands use the same locks as `build-home`. Run cleanup against the same state and data directories used for the build.
+
+## Activating a generation
+
+```console
+$ vug home switch-home --generation 2
+$ vug home rollback-home
+```
+
+`switch-home` selects a generation that `build-home` has created. `rollback-home` selects the nearest earlier retained generation. Both take the same `--state-dir` and `--data-dir` options as `build-home` and report the activated `Generation`. Run them as the owner of HOME. The profile records the resolved path of that HOME directory and the last completed generation. Subsequent switches check both records against HOME and `current`.
+
+Files, unit files, and target wants links are installed under HOME as symlinks through the profile's `current` link. Both commands check existing and prospective destinations before changing any home links. A hand-placed file or symlink at a new destination, a changed or missing managed link, or a symlink in a destination's parent path causes an error. Move conflicting files aside or restore the expected managed link before retrying. Activation preserves existing directories and application data. It creates directories as needed and leaves those directories in place when their managed links are removed. Login integration, systemd user-manager operations, and secret preparation are separate from switching generations.
+
+Activation records a pending switch under the profile lock before changing links, then replaces `current` by renaming a symlink into place. Destinations common to both generations follow `current`. If activation fails or is interrupted before the completed generation is recorded, recovery restores the prior set of links and `current`. Each activation command checks for and recovers an unfinished switch before applying its request. If recovery encounters a path that was changed by hand, it preserves that path and retains the pending record for a later retry. Generation deletion retains both generations in a pending switch, and user-store garbage collection runs under the same lock.

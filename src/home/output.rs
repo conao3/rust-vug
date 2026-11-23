@@ -42,14 +42,14 @@ struct ManifestUnit<'a> {
     secrets: &'a BTreeSet<String>,
 }
 
-struct State {
-    root: PathBuf,
-    store: PathBuf,
+pub(super) struct State {
+    pub(super) root: PathBuf,
+    pub(super) store: PathBuf,
     _state_lock: File,
     _data_lock: File,
 }
 
-fn io<T>(path: &Path, result: std::io::Result<T>) -> Result<T, String> {
+pub(super) fn io<T>(path: &Path, result: std::io::Result<T>) -> Result<T, String> {
     result.map_err(|error| format!("{}: {error}", path.display()))
 }
 
@@ -79,7 +79,7 @@ fn owned_directory(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn check_owner(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
+pub(super) fn check_owner(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
     if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
         return Err(format!(
             "{}: expected a path owned by the current user and writable only by its owner",
@@ -131,7 +131,7 @@ fn read_link(path: &Path) -> Result<Option<PathBuf>, String> {
 }
 
 impl State {
-    fn open(state: &Path, data: &Path) -> Result<Self, String> {
+    pub(super) fn open(state: &Path, data: &Path) -> Result<Self, String> {
         let root = owned_directory(state)?;
         let data = owned_directory(data)?;
         if root.starts_with(&data) || data.starts_with(&root) {
@@ -172,7 +172,7 @@ impl State {
         })
     }
 
-    fn generations(&self) -> Result<BTreeMap<u64, String>, String> {
+    pub(super) fn generations(&self) -> Result<BTreeMap<u64, String>, String> {
         let dir = self.root.join("generations");
         let mut generations = BTreeMap::new();
         for entry in io(&dir, fs::read_dir(&dir))? {
@@ -197,14 +197,22 @@ impl State {
         Ok(generations)
     }
 
-    fn current(&self, generations: &BTreeMap<u64, String>) -> Result<Option<u64>, String> {
+    pub(super) fn current(
+        &self,
+        generations: &BTreeMap<u64, String>,
+    ) -> Result<Option<u64>, String> {
         let path = self.root.join("current");
         let Some(target) = read_link(&path)? else {
             return Ok(None);
         };
         generations
             .keys()
-            .find(|number| target == Path::new("generations").join(number.to_string()))
+            .find(|number| {
+                target.as_os_str()
+                    == Path::new("generations")
+                        .join(number.to_string())
+                        .as_os_str()
+            })
             .copied()
             .map(Some)
             .ok_or_else(|| format!("{}: invalid current generation", path.display()))
@@ -542,12 +550,13 @@ pub(crate) fn delete_generations(
     let state = State::open(state, data)?;
     let generations = state.generations()?;
     let current = state.current(&generations)?;
+    let activated = super::activate::activation_generations(&state.root)?;
     let mut removed = Vec::new();
     for &number in generations
         .keys()
         .take(generations.len().saturating_sub(keep.max(1)))
     {
-        if Some(number) != current {
+        if Some(number) != current && !activated.contains(&number) {
             let link = state.root.join("generations").join(number.to_string());
             io(&link, fs::remove_file(&link))?;
             removed.push(number);

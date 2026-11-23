@@ -244,6 +244,10 @@ enum HomeCommands {
     ComposeHome(ComposeHomeArgs),
     /// Build a home output from installed or cached packages and record a generation.
     BuildHome(BuildHomeArgs),
+    /// Activate a built generation in HOME.
+    SwitchHome(SwitchHomeArgs),
+    /// Activate the nearest earlier retained generation.
+    RollbackHome(HomeDirs),
     /// Delete older home generations.
     DeleteGenerations(HomeGenerationArgs),
     /// Remove user-store paths that no home generation needs.
@@ -268,6 +272,15 @@ struct BuildHomeArgs {
     dirs: HomeDirs,
     #[command(flatten)]
     cache: CacheSourceArgs,
+}
+
+#[derive(Args)]
+struct SwitchHomeArgs {
+    #[command(flatten)]
+    dirs: HomeDirs,
+    /// Number of the built generation to activate.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    generation: u64,
 }
 
 #[derive(Args)]
@@ -465,6 +478,14 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             }),
             HomeCommands::ComposeHome(args) => run_compose_home(&cli, args),
             HomeCommands::BuildHome(args) => run_build_home(&cli, args),
+            HomeCommands::SwitchHome(args) => run_activate_home(
+                &cli,
+                &args.dirs,
+                home::activate::Selection::Generation(args.generation),
+            ),
+            HomeCommands::RollbackHome(dirs) => {
+                run_activate_home(&cli, dirs, home::activate::Selection::Previous)
+            }
             HomeCommands::DeleteGenerations(args) => {
                 let (state, data) = args.dirs.paths().map_err(input_failure)?;
                 let removed = home::output::delete_generations(&state, &data, args.keep)
@@ -902,6 +923,24 @@ fn run_build_home(cli: &Cli, args: &BuildHomeArgs) -> Result<i32, (i32, String)>
             built.generation,
             built.path.display()
         )),
+    }?;
+    Ok(0)
+}
+
+fn run_activate_home(
+    cli: &Cli,
+    dirs: &HomeDirs,
+    selection: home::activate::Selection,
+) -> Result<i32, (i32, String)> {
+    let home =
+        std::env::var_os("HOME").ok_or_else(|| input_failure("HOME is not set".to_owned()))?;
+    let (state, data) = dirs.paths().map_err(input_failure)?;
+    let number = home::activate::activate(&state, &data, Path::new(&home), selection)
+        .map_err(input_failure)?;
+    match cli.output {
+        Output::Json => print_json(&json!({ "Generation": number })),
+        Output::Text => write_out(&format!("{number}\n")),
+        Output::Table => write_out(&format!("Generation\n{number}\n")),
     }?;
     Ok(0)
 }
