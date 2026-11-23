@@ -782,7 +782,14 @@ impl<'a> Builder<'a> {
                 })
                 .collect()
         });
-        let key = build_key(&canonical, &self.seed_id, &dep_ids, bindings.as_ref());
+        let python_key;
+        let key_record = if matches!(record.build, BuildOptions::Python { .. }) {
+            python_key = format!("python-build-rules=v1\n{canonical}");
+            &python_key
+        } else {
+            &canonical
+        };
+        let key = build_key(key_record, &self.seed_id, &dep_ids, bindings.as_ref());
 
         let store_dir = settings.data_dir.join("store");
         let index_dir = if split { "index-outputs" } else { "index" };
@@ -1140,6 +1147,55 @@ impl<'a> Builder<'a> {
                     "cp".to_owned(),
                     "Cargo.lock".to_owned(),
                     "/build/Cargo.lock".to_owned(),
+                ]]
+            }
+            BuildOptions::Python {
+                imports,
+                native_imports,
+                pytest,
+            } => {
+                let python = direct
+                    .get("python")
+                    .filter(|_| all_run.contains("python"))
+                    .ok_or("build.kind python requires python in dependencies.run")?;
+                let mut runtime = Vec::new();
+                for dep in &all_run {
+                    let built = &resolved[dep];
+                    if !runtime.contains(&built.id) {
+                        runtime.push(built.id.clone());
+                    }
+                }
+                for id in &build_run_closure {
+                    if !runtime.contains(id) {
+                        runtime.push(id.clone());
+                    }
+                }
+                vec![vec![
+                    "env".to_owned(),
+                    "CC=cc".to_owned(),
+                    "CXX=c++".to_owned(),
+                    "LDSHARED=cc -shared".to_owned(),
+                    format!("{python}/bin/python3"),
+                    "-sB".to_owned(),
+                    "-c".to_owned(),
+                    include_str!("build/python.py").to_owned(),
+                    prefix.clone(),
+                    runtime
+                        .iter()
+                        .map(|id| format!("{STORE}/{id}"))
+                        .collect::<Vec<_>>()
+                        .join(":"),
+                    if record.check_enabled {
+                        imports.join(",")
+                    } else {
+                        String::new()
+                    },
+                    if record.check_enabled {
+                        native_imports.join(",")
+                    } else {
+                        String::new()
+                    },
+                    (record.check_enabled && *pytest).to_string(),
                 ]]
             }
             BuildOptions::Commands { commands } => commands

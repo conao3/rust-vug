@@ -132,6 +132,11 @@ pub(crate) enum BuildOptions {
         path: String,
         flags: Vec<String>,
     },
+    Python {
+        imports: Vec<String>,
+        native_imports: Vec<String>,
+        pytest: bool,
+    },
     Commands {
         commands: Vec<Vec<String>>,
     },
@@ -648,6 +653,36 @@ fn parse_version(
                         .unwrap_or_default(),
                 };
             }
+            "python" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "imports", "native-imports", "pytest"],
+                    "build.",
+                    &mut errors,
+                );
+                let mut modules = |key| {
+                    let values = opt_string_array(build_table, key, "build.", &mut errors)
+                        .unwrap_or_default();
+                    check_unique(key, "build.", &values, &mut errors);
+                    for value in &values {
+                        if !value.split('.').all(|part| {
+                            part.as_bytes()
+                                .first()
+                                .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+                                && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                        }) {
+                            errors.push(format!("build.{key}: invalid module name {value:?}"));
+                        }
+                    }
+                    values
+                };
+                build = BuildOptions::Python {
+                    imports: modules("imports"),
+                    native_imports: modules("native-imports"),
+                    pytest: build_table.contains_key("pytest")
+                        && req_bool(build_table, "pytest", "build.", &mut errors).unwrap_or(false),
+                };
+            }
             "commands" => {
                 unknown_keys(build_table, &["kind", "commands"], "build.", &mut errors);
                 let mut commands = Vec::new();
@@ -684,7 +719,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", or \"prebuilt\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", \"prebuilt\", or \"python\""
                         .to_owned(),
                 );
             }
@@ -1152,6 +1187,22 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !flags.is_empty() {
                 write_array(&mut out, "flags", flags);
+            }
+        }
+        BuildOptions::Python {
+            imports,
+            native_imports,
+            pytest,
+        } => {
+            write_string_field(&mut out, "kind", "python");
+            if !imports.is_empty() {
+                write_array(&mut out, "imports", imports);
+            }
+            if !native_imports.is_empty() {
+                write_array(&mut out, "native-imports", native_imports);
+            }
+            if *pytest {
+                write_bool_field(&mut out, "pytest", true);
             }
         }
         BuildOptions::Commands { commands } => {

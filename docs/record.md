@@ -248,6 +248,31 @@ linker is `cc`, and programs link against the C library of the build
 | `build.path` | string | `"."`: the directory of the package inside the source |
 | `build.flags` | array of strings, order kept | empty |
 
+### Build kind `python`
+
+`kind = "python"` builds a wheel from the patched source tree using
+`python -m build --wheel --no-isolation` in the networkless build sandbox.
+Sources with only `setup.py` use the frontend's setuptools compatibility
+backend. Declare `python` in `dependencies.run` and `python-build`,
+`python-installer`, and the backend in `dependencies.build`. The frontend
+checks the declared backend and its dynamic build requirements. Declare
+import dependencies and native runtime libraries in `dependencies.run`.
+The build checks the installed wheel's active distribution requirements
+against the runtime closure.
+
+The build validates the wheel tag and archive paths and installs with
+`installer` under `lib/pythonX.Y/site-packages`. Shared objects there
+must load with the selected Python and runtime libraries. Wheel scripts
+use the selected Python and a fixed `PYTHONPATH`, with the package's own
+modules first, followed by direct and transitive runtime dependencies.
+
+With `check.enabled = true`, `build.imports` lists modules to import
+and `build.native-imports` lists modules that must load as native
+extensions. These checks run in a new Python process with the installed
+modules and runtime closure. Set `build.pytest = true` and declare
+`pytest` and its plugins in `dependencies.build` to run the source
+suite against the installed wheel. Each field is optional.
+
 ### Build kind `commands`
 
 Runs the listed commands in order in the unpacked source. Each command is an
