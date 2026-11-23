@@ -136,6 +136,10 @@ fn linker_words_that_zig_rejects() {
         translated(&["a.c", "-o", "a", "-Wl,--allow-multiple-definition"]),
         ["a.c", "-o", "a"]
     );
+    assert_eq!(
+        translated(&["a.c", "-shared", "-Wl,--default-symver,-soname,liba.so.1"]),
+        ["a.c", "-shared", "-Wl,-soname,liba.so.1"]
+    );
 }
 
 #[test]

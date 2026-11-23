@@ -91,7 +91,7 @@ for a; do
           -fini | --fini) take=fini ;;
           -init=* | --init=*) init_fn=${w#*=} ;;
           -fini=* | --fini=*) fini_fn=${w#*=} ;;
-          -stats | -lc | -shared | --allow-multiple-definition | -Map=* | --Map=*) ;;
+          -stats | -lc | -shared | --allow-multiple-definition | --default-symver | -Map=* | --Map=*) ;;
           -Map | --Map) skip_word=1 ;;
           -retain-symbols-file | --retain-symbols-file) want_retain=1 ;;
           -retain-symbols-file=* | --retain-symbols-file=*) retain_file=${w#*=} ;;
