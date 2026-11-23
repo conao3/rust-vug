@@ -6,7 +6,7 @@
 //! and group 0, every time stamp is 0, and inode numbers count up from 1.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -111,18 +111,26 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
-/// Unpacks a newc archive into the existing directory `dest`. Owners and
-/// times are not restored. Nothing is written outside `dest`: an entry
-/// whose name is absolute or has a `..` component, whose parent is not a
-/// directory that an earlier entry made, or whose name an earlier entry
-/// already has, is an error.
-pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
-    let mut at = 0;
+const NAME_LIMIT: usize = 4096;
+
+fn skip(input: &mut impl Read, count: usize) -> io::Result<()> {
+    if io::copy(&mut input.by_ref().take(count as u64), &mut io::sink())? != count as u64 {
+        return Err(invalid("truncated archive"));
+    }
+    Ok(())
+}
+
+/// Unpacks a newc archive read from `input` into the existing directory
+/// `dest`. Owners and times are not restored. Nothing is written outside
+/// `dest`: an entry whose name is absolute or has a `..` component, whose
+/// parent is not a directory that an earlier entry made, or whose name an
+/// earlier entry already has, is an error. File contents go from `input` to
+/// the file without being held in memory.
+pub fn read_newc(input: &mut impl Read, dest: &Path) -> io::Result<()> {
     let mut directories = Vec::new();
     loop {
-        let header = data
-            .get(at..at + 110)
-            .ok_or_else(|| invalid("truncated header"))?;
+        let mut header = [0u8; 110];
+        input.read_exact(&mut header)?;
         if &header[..6] != b"070701" {
             return Err(invalid("not a newc archive"));
         }
@@ -135,19 +143,17 @@ pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
         let mode = field(1)? as u32;
         let size = field(6)?;
         let name_size = field(11)?;
-        let name_start = at + 110;
-        let name = data
-            .get(name_start..name_start + name_size.max(1) - 1)
-            .ok_or_else(|| invalid("truncated name"))?;
-        let data_start = (name_start + name_size).next_multiple_of(4);
-        let content = data
-            .get(data_start..data_start + size)
-            .ok_or_else(|| invalid("truncated content"))?;
-        at = (data_start + size).next_multiple_of(4);
+        if name_size > NAME_LIMIT {
+            return Err(invalid("entry name is too long"));
+        }
+        let mut name = vec![0u8; name_size];
+        input.read_exact(&mut name)?;
+        name.pop();
+        skip(input, (4 - (110 + name_size) % 4) % 4)?;
         if name == b"TRAILER!!!" {
             break;
         }
-        let relative = Path::new(std::ffi::OsStr::from_bytes(name));
+        let relative = Path::new(std::ffi::OsStr::from_bytes(&name));
         if relative
             .components()
             .any(|part| !matches!(part, std::path::Component::Normal(_)))
@@ -166,16 +172,28 @@ pub fn read_newc(data: &[u8], dest: &Path) -> io::Result<()> {
         }
         match mode & 0o170000 {
             S_IFDIR => {
+                skip(input, size)?;
                 fs::create_dir(&path)?;
                 directories.push((path, mode & 0o7777));
             }
-            S_IFLNK => std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(content), &path)?,
+            S_IFLNK => {
+                if size > NAME_LIMIT {
+                    return Err(invalid("link target is too long"));
+                }
+                let mut target = vec![0u8; size];
+                input.read_exact(&mut target)?;
+                std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&target), &path)?;
+            }
             S_IFREG => {
-                fs::write(&path, content)?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o777))?;
+                let mut file = fs::File::create(&path)?;
+                if io::copy(&mut input.by_ref().take(size as u64), &mut file)? != size as u64 {
+                    return Err(invalid("truncated content"));
+                }
+                file.set_permissions(fs::Permissions::from_mode(mode & 0o777))?;
             }
             _ => return Err(invalid("unsupported file type")),
         }
+        skip(input, (4 - size % 4) % 4)?;
     }
     for (path, mode) in directories.into_iter().rev() {
         fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o700))?;

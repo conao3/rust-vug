@@ -24,6 +24,7 @@ memchr = "2"
 object = { version = "0.39", default-features = false, features = ["elf", "read_core", "std", "unaligned"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "lzip"] }
 tempfile = "3"
+zstd = "0.13"
 
 [build-dependencies]
 leanfran-build = "=0.6.0"

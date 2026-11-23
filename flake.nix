@@ -51,7 +51,11 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+              pkgs.pkg-config
+            ];
+            buildInputs = [ pkgs.zstd ];
             nativeCheckInputs = [ pkgs.gitMinimal ];
             postInstall = ''
               wrapProgram $out/bin/vug \
@@ -69,6 +73,8 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";
+            nativeBuildInputs = [ pkgs.pkgsStatic.buildPackages.pkg-config ];
+            buildInputs = [ pkgs.pkgsStatic.zstd ];
             doCheck = false;
             meta.license = pkgs.lib.licenses.asl20;
           };

@@ -112,13 +112,16 @@ fn index_files(index: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+/// The zstd level of the archives under `paths/`.
+const ARCHIVE_LEVEL: i32 = 3;
+
 fn write_archive(
     store: &Path,
     paths: &Path,
     id: &str,
     written: &mut usize,
 ) -> Result<bool, String> {
-    let archive = paths.join(format!("{id}.cpio"));
+    let archive = paths.join(format!("{id}.cpio.zst"));
     if archive.is_file() {
         return Ok(true);
     }
@@ -127,12 +130,17 @@ fn write_archive(
         return Ok(false);
     }
     let mut temp = cache_file(paths)?;
-    let mut out = std::io::BufWriter::new(temp.as_file_mut());
+    let mut out = io(
+        "compress archive",
+        &archive,
+        zstd::Encoder::new(std::io::BufWriter::new(temp.as_file_mut()), ARCHIVE_LEVEL),
+    )?;
     io(
         "write archive",
         &archive,
         vug::cpio::write_newc(&tree, &mut out),
     )?;
+    let mut out = io("compress archive", &archive, out.finish())?;
     io("flush archive", &archive, out.flush())?;
     drop(out);
     match temp.persist_noclobber(&archive) {
@@ -163,7 +171,7 @@ fn cache_file(dir: &Path) -> Result<tempfile::NamedTempFile, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, Settings, export_cache, fs, model};
+    use super::{ARCHIVE_LEVEL, Manifest, Settings, export_cache, fs, model};
     use crate::build::{Builder, build_key, install_output, outputs, placeholder_path};
     use crate::record;
     use std::collections::{BTreeMap, BTreeSet};
@@ -350,9 +358,13 @@ paths = ["include/**"]
         let tree = root.join("wrong-tree");
         fs::create_dir_all(&tree).unwrap();
         fs::write(tree.join("file"), "unexpected content").unwrap();
-        let mut archive = Vec::new();
+        let mut archive = zstd::Encoder::new(Vec::new(), ARCHIVE_LEVEL).unwrap();
         vug::cpio::write_newc(&tree, &mut archive).unwrap();
-        fs::write(cache.join("paths").join(format!("{id}.cpio")), archive).unwrap();
+        fs::write(
+            cache.join("paths").join(format!("{id}.cpio.zst")),
+            archive.finish().unwrap(),
+        )
+        .unwrap();
         let error = builder.build("split", None).err().unwrap();
         assert!(error.contains("the content hashes to"), "{error}");
         assert!(!settings.data_dir.join("index-outputs/split/1").exists());

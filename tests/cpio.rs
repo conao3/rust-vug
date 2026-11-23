@@ -97,7 +97,7 @@ fn read_restores_what_write_wrote() {
     vug::cpio::write_newc(root, &mut archive).expect("write archive");
 
     let dest = tempfile::tempdir().expect("temporary directory");
-    vug::cpio::read_newc(&archive, dest.path()).expect("read archive");
+    vug::cpio::read_newc(&mut archive.as_slice(), dest.path()).expect("read archive");
     assert_eq!(
         vug::treehash::hash_tree(root).expect("hash"),
         vug::treehash::hash_tree(dest.path()).expect("hash")
@@ -116,7 +116,7 @@ fn read_rejects_names_that_leave_the_root() {
         .expect("entry name");
     archive[at..at + 2].copy_from_slice(b"..");
     let dest = tempfile::tempdir().expect("temporary directory");
-    assert!(vug::cpio::read_newc(&archive, dest.path()).is_err());
+    assert!(vug::cpio::read_newc(&mut archive.as_slice(), dest.path()).is_err());
 }
 
 fn header(mode: u32, name: &str, data: &[u8]) -> Vec<u8> {
@@ -156,7 +156,7 @@ fn read_does_not_write_through_a_link() {
         archive.extend(second);
         archive.extend(header(0, "TRAILER!!!", b""));
         let dest = tempfile::tempdir().expect("temporary directory");
-        assert!(vug::cpio::read_newc(&archive, dest.path()).is_err());
+        assert!(vug::cpio::read_newc(&mut archive.as_slice(), dest.path()).is_err());
         assert_eq!(std::fs::read_dir(outside.path()).expect("read").count(), 0);
     }
 }

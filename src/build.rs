@@ -642,7 +642,7 @@ impl<'a> Builder<'a> {
         let Some(base) = &settings.binary_cache else {
             return Ok(false);
         };
-        let url = format!("{}/paths/{id}.cpio", base.trim_end_matches('/'));
+        let url = format!("{}/paths/{id}.cpio.zst", base.trim_end_matches('/'));
         let Some(archive) = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))? else {
             return Ok(false);
         };
@@ -656,7 +656,9 @@ impl<'a> Builder<'a> {
         )?;
         let out = work.path().join(id);
         io("create", &out, fs::create_dir(&out))?;
-        io("unpack", &out, vug::cpio::read_newc(&archive, &out))?;
+        let mut tree =
+            zstd::Decoder::new(archive.as_slice()).map_err(|error| format!("{url}: {error}"))?;
+        vug::cpio::read_newc(&mut tree, &out).map_err(|error| format!("{url}: {error}"))?;
         let path = format!("{STORE}/{id}");
         let placeholder = placeholder_path();
         io(

@@ -9,7 +9,7 @@ outputs instead of building them.
 |---|---|
 | `keys/<key>` | For a single-output build, the store ID on the first line and the hex Ed25519 signature of `<key> <id>` on the second, when signed. |
 | `output-keys/<key>` | For a split build, a line of canonical JSON containing `format` (currently 1), `key`, and `outputs`. Each output name maps to an `id` and a sorted `run` list of direct runtime dependency IDs. When signed, the second line contains the hex Ed25519 signature of the JSON bytes excluding the newline. |
-| `paths/<id>.cpio` | The contents of `/vug/store/<id>` as a cpio archive in the "newc" format. |
+| `paths/<id>.cpio.zst` | The contents of `/vug/store/<id>` as a cpio archive in the "newc" format, compressed with zstd. |
 
 The key is the build key from the corresponding local index. See
 [Building packages](build.md).
