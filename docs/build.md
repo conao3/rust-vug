@@ -97,7 +97,8 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - `--target=...` and `-mtune=generic` are dropped.
   - `-isystem <dir>` becomes `-I<dir>`: zig searches its own C library and
     kernel headers before every `-isystem` directory, so a package could not
-    put its own copy of such a header first.
+    put its own copy of such a header first. The same translation applies
+    to directories in `VUG_CFLAGS`, after the package's own directories.
   - `-march=x86-64` becomes `-march=x86_64` (and `-v2` to `-v4` likewise).
   - `-m16` also enables the 16-bit mode feature, which zig switches off.
   - `-mno-sse` also disables SSE2 and later, which zig leaves on.
@@ -105,6 +106,12 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
     `-Wl,-soname,<name>`; `-stats`, `-lc`, `-shared`,
     `--allow-multiple-definition`, and `-Map` with its file inside `-Wl,`
     are dropped.
+  - `-Wl,-retain-symbols-file` becomes a linker version script that lists
+    the file's symbols as global and marks the other symbols local, as
+    the seed's lld does.
+  - Linker lines printed by `-v` omit Zig's temporary cache inputs and
+    internal links. They describe the packaged C++ runtime with `-L` and
+    `-l` flags so Libtool and CMake can reuse those dependencies.
   - `-S` together with a dependency file (`-MD`, `-MMD`) runs zig twice,
     because zig writes no assembly output for that combination.
   - input files ending in `.oo` and relocatable ELF objects ending in
@@ -124,8 +131,6 @@ The seed is assembled once per content of `seed.toml` and bound read-only at
   - preprocessed output of standard input (`-E -`) names the input
     `<stdin>` in its line markers, as other compilers do; zig names a
     temporary file.
-  - any other input that is a relocatable object but has a file name zig
-    does not know (`.oo`) is passed under a name ending in `.o` as well.
   - `-fsyntax-only` becomes a compile into a temporary object, and with it
     `-x c-header` and `-x c++-header` become `-x c` and `-x c++`: zig fails
     on `-fsyntax-only` after the check itself has passed.
@@ -166,7 +171,7 @@ call, and `VUG_LDFLAGS` on calls that link (no `-c`, `-E`, `-S`, `-M`, or
 |---|---|
 | `bin/` | Added to `PATH`. |
 | `lib/ld-musl-*.so.1` (a C library with its dynamic loader) | Programs are linked dynamically with that loader: `-fPIC` when compiling, `-dynamic -Wl,--dynamic-linker=<loader>` when linking. Nothing else of this dependency is added. |
-| `include/` | `-isystem <path>/include`: a system header directory, so a warning inside a header of a dependency is not reported (and is no error under `-Werror`). The compiler searches its own C library and kernel headers first. |
+| `include/` | `-isystem <path>/include` in `VUG_CFLAGS`, translated by the wrappers to `-I<path>/include`. The compiler searches the package's own directories, then its dependencies, then the seed headers. |
 | `lib/` | `-L<path>/lib`, and `-Wl,-rpath,<path>/lib` when the dependency is needed at run time (it is in `dependencies.run`, or a run-time dependency of one that is). |
 | `lib/pkgconfig/`, `share/pkgconfig/` | Added to `PKG_CONFIG_PATH`. |
 | `bin/pkgconf` | `PKG_CONFIG` is set to it. |
@@ -199,10 +204,12 @@ path and the wrappers change as follows:
 - `c++` passes `-nostdlib++` and `-I$VUG_LIBCXX/include/c++/v1` (the
   second not when the call has `-nostdinc++`), and at a link names
   `libc++.so.1`, `libc++abi.so.1` and `libunwind.so.1` of that package by
-  path, with its `lib` as a run path. A call that has `-nostdlib` or
-  `-nostdlib++` itself gets no libraries.
-- `cc` and `c++` drop `-lc++`, `-lstdc++` and `-lc++abi`, and `cc` names
-  the same three libraries in their place.
+  path, with its `lib` as a run path. For shared links with `-nostdlib`,
+  it still adds the packaged C++ runtime and records `libc++.so.1` as a
+  direct dependency. An explicit `-nostdlib++` suppresses automatic
+  C++ runtime linking.
+- `cc` and `c++` translate explicit `-lc++`, `-lstdc++`, `-lc++abi` and
+  `-lunwind` to those packaged libraries.
 
 After the install step the build fails when a file of the output is an
 ELF object holding a statically linked C++ runtime, unless the record sets
