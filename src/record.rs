@@ -132,6 +132,10 @@ pub(crate) enum BuildOptions {
         path: String,
         flags: Vec<String>,
     },
+    Go {
+        targets: Vec<(String, String)>,
+        vendor: Option<(String, String)>,
+    },
     Perl {
         driver: PerlDriver,
         modules: Vec<String>,
@@ -672,6 +676,90 @@ fn parse_version(
                         .unwrap_or_default(),
                 };
             }
+            "go" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "targets", "vendor"],
+                    "build.",
+                    &mut errors,
+                );
+                let mut targets = Vec::new();
+                let mut bins = std::collections::BTreeSet::new();
+                if let Some(items) = build_table.get("targets").and_then(toml::Value::as_array) {
+                    for item in items {
+                        let Some(item) = item.as_table() else {
+                            errors.push(
+                                "build.targets: expected tables with path and bin".to_owned(),
+                            );
+                            continue;
+                        };
+                        unknown_keys(item, &["path", "bin"], "build.targets.", &mut errors);
+                        let path = req_string(item, "path", "build.targets.", &mut errors)
+                            .unwrap_or_default();
+                        let bin = req_string(item, "bin", "build.targets.", &mut errors)
+                            .unwrap_or_default();
+                        if path != "."
+                            && (!path.starts_with("./")
+                                || !path[2..].split('/').all(|part| {
+                                    !part.is_empty()
+                                        && part != "."
+                                        && part != ".."
+                                        && part.bytes().all(|b| {
+                                            b.is_ascii_alphanumeric() || b"._-".contains(&b)
+                                        })
+                                }))
+                        {
+                            errors.push(
+                                "build.targets.path: expected . or a ./ path inside the module"
+                                    .to_owned(),
+                            );
+                        }
+                        if bin.is_empty()
+                            || bin == "."
+                            || bin == ".."
+                            || !bin
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                            || !bins.insert(bin.clone())
+                        {
+                            errors.push(
+                                "build.targets.bin: expected a unique executable basename"
+                                    .to_owned(),
+                            );
+                        }
+                        targets.push((path, bin));
+                    }
+                }
+                if targets.is_empty() {
+                    errors.push("build.targets: expected at least one Go main package".to_owned());
+                }
+                let vendor = if build_table.contains_key("vendor") {
+                    req_table(build_table, "vendor", "build.", &mut errors).map(|vendor| {
+                        unknown_keys(vendor, &["url", "sha256"], "build.vendor.", &mut errors);
+                        let url = req_string(vendor, "url", "build.vendor.", &mut errors)
+                            .unwrap_or_default();
+                        let sha256 = req_string(vendor, "sha256", "build.vendor.", &mut errors)
+                            .unwrap_or_default();
+                        if !url.starts_with("https://") {
+                            errors.push("build.vendor.url: expected an HTTPS URL".to_owned());
+                        }
+                        if sha256.len() != 64
+                            || !sha256
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        {
+                            errors.push(
+                                "build.vendor.sha256: expected 64 lowercase hex characters"
+                                    .to_owned(),
+                            );
+                        }
+                        (url, sha256)
+                    })
+                } else {
+                    None
+                };
+                build = BuildOptions::Go { targets, vendor };
+            }
             "perl" => {
                 unknown_keys(
                     build_table,
@@ -770,7 +858,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", \"perl\", \"prebuilt\", or \"python\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"perl\", \"prebuilt\", or \"python\""
                         .to_owned(),
                 );
             }
@@ -1238,6 +1326,25 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !flags.is_empty() {
                 write_array(&mut out, "flags", flags);
+            }
+        }
+        BuildOptions::Go { targets, vendor } => {
+            write_string_field(&mut out, "kind", "go");
+            out.push_str("targets = [\n");
+            for (path, bin) in targets {
+                out.push_str("  { path = ");
+                write_escaped(&mut out, path);
+                out.push_str(", bin = ");
+                write_escaped(&mut out, bin);
+                out.push_str(" },\n");
+            }
+            out.push_str("]\n");
+            if let Some((url, sha256)) = vendor {
+                out.push_str("vendor = { url = ");
+                write_escaped(&mut out, url);
+                out.push_str(", sha256 = ");
+                write_escaped(&mut out, sha256);
+                out.push_str(" }\n");
             }
         }
         BuildOptions::Perl { driver, modules } => {

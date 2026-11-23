@@ -248,6 +248,30 @@ linker is `cc`, and programs link against the C library of the build
 | `build.path` | string | `"."`: the directory of the package inside the source |
 | `build.flags` | array of strings, order kept | empty |
 
+### Build kind `go`
+
+Use `dependencies.build = ["go"]` and declare the main packages and installed executable names.
+
+```toml
+[build]
+kind = "go"
+targets = [
+  { path = ".", bin = "example" },
+  { path = "./cmd/helper", bin = "helper" },
+]
+```
+
+Builds use the root Go module, disable cgo, and install executables in `bin/`.
+Go uses vendor mode with network module lookups, workspace discovery, and toolchain downloads disabled.
+The source can include its own `vendor/` tree. If needed, set
+`vendor = { url = "https://example.org/vendor.tar.gz", sha256 = "<64 lowercase hex characters>" }`
+as an inline `vendor` field in `[build]`. The archive must contain `vendor/modules.txt`
+at that exact path. vug verifies its SHA-256 before starting the sandbox.
+Modules with no external dependencies can omit the vendor tree.
+
+Set `check.enabled = true` to run `go test ./...` under the same constraints.
+Use an empty `check.skip` list. List runtime tools and data separately in `dependencies.run`.
+
 ### Build kind `perl`
 
 Build a pinned CPAN source archive with the `perl` interpreter from

@@ -788,6 +788,10 @@ impl<'a> Builder<'a> {
                 kind_key = format!("python-build-rules=v1\n{canonical}");
                 &kind_key
             }
+            BuildOptions::Go { .. } => {
+                kind_key = format!("go-build-rules=v1\n{canonical}");
+                &kind_key
+            }
             BuildOptions::Perl { .. } => {
                 kind_key = format!("perl-build-rules=v1\n{canonical}");
                 &kind_key
@@ -910,6 +914,13 @@ impl<'a> Builder<'a> {
         }
         let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
         let archive = fetch_source(settings, &record.url, &record.sha256)?;
+        let vendor_archive = match &record.build {
+            BuildOptions::Go {
+                vendor: Some((url, sha256)),
+                ..
+            } => Some(fetch_source(settings, url, sha256)?),
+            _ => None,
+        };
         let work = settings
             .data_dir
             .join("tmp")
@@ -1154,6 +1165,20 @@ impl<'a> Builder<'a> {
                     "/build/Cargo.lock".to_owned(),
                 ]]
             }
+            BuildOptions::Go { targets, .. } => {
+                let go = direct
+                    .get("go")
+                    .filter(|_| record.deps_build.iter().any(|dep| dep == "go"))
+                    .ok_or("build.kind go requires go in dependencies.build")?;
+                steps::go_steps(
+                    &prefix,
+                    &format!("{go}/lib/go"),
+                    targets,
+                    vendor_archive.is_some(),
+                    record.check_enabled,
+                    settings.jobs,
+                )
+            }
             BuildOptions::Perl { driver, modules } => {
                 let perl = direct
                     .get("perl")
@@ -1293,6 +1318,9 @@ impl<'a> Builder<'a> {
             bind(&archive, &archive_dest, false),
             bind(&out, &prefix, true),
         ];
+        if let Some(vendor) = &vendor_archive {
+            binds.push(bind(vendor, "/vendor.tar.gz", false));
+        }
         if !record.patches.is_empty() {
             binds.push(bind(&package_dir.join("patches"), "/patches", false));
         }
