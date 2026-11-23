@@ -129,7 +129,7 @@ fn fetch_digest<D: Digest>(
     Ok(target)
 }
 
-/// The body of a GET to `url`, or `None` when the status is 404.
+/// The body of a GET to `url`, or `None` when the status is 401 or 404.
 pub fn get(url: &str) -> Result<Option<Vec<u8>>, String> {
     let Some(mut reader) = get_reader(url)? else {
         return Ok(None);
@@ -139,16 +139,16 @@ pub fn get(url: &str) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(body))
 }
 
-/// Opens a GET response body without buffering it, or returns None on 404.
+/// Opens a GET response body without buffering it, or returns None on 401 or 404.
 pub fn get_reader(url: &str) -> Result<Option<impl Read>, String> {
     let res = match ureq::get(url).call() {
         Ok(res) => res,
-        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        Err(ureq::Error::StatusCode(401 | 404)) => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
     match res.status().as_u16() {
         200 => {}
-        404 => return Ok(None),
+        401 | 404 => return Ok(None),
         status => return Err(format!("status {status}")),
     }
     Ok(Some(

@@ -97,6 +97,7 @@ pub struct Settings {
     pub trusted_key: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Built {
     pub name: String,
     pub version: String,
@@ -514,6 +515,44 @@ pub struct Builder<'a> {
     seed_id: String,
     in_progress: Vec<String>,
     cache_only: bool,
+    cache_inventory: Option<CacheInventory>,
+    build_from_source: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct CacheInventory {
+    objects: BTreeSet<String>,
+    missing: bool,
+    resolved: BTreeMap<(String, Option<String>), Option<Built>>,
+}
+
+pub fn list_cache(settings: &Settings) -> Result<BTreeSet<String>, String> {
+    let mut builder = Builder::cached(settings)?;
+    builder.cache_inventory = Some(CacheInventory::default());
+    let packages = settings.root.join("packages");
+    for shard in io("read", &packages, fs::read_dir(&packages))? {
+        let shard = io("read entry", &packages, shard)?.path();
+        if !shard.is_dir() {
+            continue;
+        }
+        for entry in io("read", &shard, fs::read_dir(&shard))? {
+            let package = io("read entry", &shard, entry)?.path();
+            let Some(name) = package.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !model::valid_name(name) || !package.join("package.toml").is_file() {
+                continue;
+            }
+            let inventory = builder.cache_inventory.as_mut().unwrap();
+            inventory.missing = false;
+            if let Err(error) = builder.resolve(name, None, Need::Id)
+                && !builder.cache_inventory.as_ref().unwrap().missing
+            {
+                return Err(error);
+            }
+        }
+    }
+    Ok(builder.cache_inventory.take().unwrap().objects)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -544,6 +583,8 @@ impl<'a> Builder<'a> {
             seed_id,
             in_progress: Vec::new(),
             cache_only: false,
+            cache_inventory: None,
+            build_from_source: BTreeSet::new(),
         })
     }
 
@@ -551,6 +592,16 @@ impl<'a> Builder<'a> {
         let mut builder = Self::new(settings)?;
         builder.cache_only = true;
         Ok(builder)
+    }
+
+    pub fn build_from_source(&mut self, names: &[String]) -> Result<(), String> {
+        for name in names {
+            if !model::valid_name(name) {
+                return Err(format!("{name:?}: invalid package name"));
+            }
+            self.build_from_source.insert(name.clone());
+        }
+        Ok(())
     }
 
     pub fn require_output(&self, id: &str) -> Result<(), String> {
@@ -604,9 +655,33 @@ impl<'a> Builder<'a> {
                 self.in_progress.join(" -> ")
             ));
         }
+        let lookup = self
+            .cache_inventory
+            .is_some()
+            .then(|| (spec.to_owned(), requested.map(str::to_owned)));
+        if let Some(lookup) = &lookup
+            && let Some(inventory) = &mut self.cache_inventory
+            && let Some(built) = inventory.resolved.get(lookup)
+        {
+            return match built {
+                Some(built) => Ok(built.clone()),
+                None => {
+                    inventory.missing = true;
+                    Err(format!("{spec}: no signed cache entry"))
+                }
+            };
+        }
         self.in_progress.push(name.to_owned());
         let result = self.build_inner(name, output, requested, need);
         self.in_progress.pop();
+        if let Some(lookup) = lookup
+            && let Some(inventory) = &mut self.cache_inventory
+            && (result.is_ok() || inventory.missing)
+        {
+            inventory
+                .resolved
+                .insert(lookup, result.as_ref().ok().cloned());
+        }
         result
     }
 
@@ -617,12 +692,10 @@ impl<'a> Builder<'a> {
             return Ok(None);
         };
         let url = format!("{}/keys/{key}", base.trim_end_matches('/'));
-        let Some(text) = fetch::get(&url)
-            .map_err(|e| format!("fetch {url}: {e}"))?
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-        else {
+        let Some(bytes) = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))? else {
             return Ok(None);
         };
+        let text = std::str::from_utf8(&bytes).map_err(|e| format!("{url}: {e}"))?;
         let mut lines = text.lines();
         let id = lines.next().unwrap_or_default();
         let signature = lines.next().unwrap_or_default();
@@ -834,14 +907,28 @@ impl<'a> Builder<'a> {
         };
         let mut expected_manifest = None;
         if split {
-            let local = outputs::Manifest::read(&index_path, &key, &runtime)?;
+            let local = if self.cache_inventory.is_none() {
+                outputs::Manifest::read(&index_path, &key, &runtime)?
+            } else {
+                None
+            };
             let from_cache = local.is_none();
             let manifest = match local {
                 Some(manifest) => Some(manifest),
+                None if self.build_from_source.contains(name) => None,
                 None => cache::fetch_manifest(settings, &key, &runtime)?,
             };
             if let Some(manifest) = manifest {
                 let built = from_manifest(&manifest, false);
+                if let Some(inventory) = &mut self.cache_inventory {
+                    inventory.objects.insert(format!("output-keys/{key}"));
+                    inventory.objects.extend(
+                        manifest
+                            .outputs
+                            .values()
+                            .map(|entry| format!("paths/{}.cpio.zst", entry.id)),
+                    );
+                }
                 if need == Need::Id {
                     return Ok(built);
                 }
@@ -870,12 +957,28 @@ impl<'a> Builder<'a> {
                     return Ok(built);
                 }
             }
+        } else if self.cache_inventory.is_some() {
+            if let Some(id) = self.cached_key(&key)? {
+                let inventory = self.cache_inventory.as_mut().unwrap();
+                inventory.objects.insert(format!("keys/{key}"));
+                inventory.objects.insert(format!("paths/{id}.cpio.zst"));
+                run_closure.insert(id.clone());
+                return Ok(Built {
+                    name: name.to_owned(),
+                    version,
+                    id,
+                    fresh: false,
+                    closure: run_closure,
+                    exposed,
+                });
+            }
         } else {
             let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
                 let (found_key, id) = line.trim_end().split_once(' ')?;
                 (found_key == key && valid_store_id(id)).then(|| id.to_owned())
             });
             if known.is_none()
+                && !self.build_from_source.contains(name)
                 && let Some(id) = self.cached_key(&key)?
             {
                 if let Some(parent) = index_path.parent() {
@@ -904,6 +1007,9 @@ impl<'a> Builder<'a> {
         }
 
         if self.cache_only {
+            if let Some(inventory) = &mut self.cache_inventory {
+                inventory.missing = true;
+            }
             return Err(format!(
                 "{name} {version}: no output available from the local index or signed binary cache (build key {key})"
             ));

@@ -126,10 +126,25 @@ struct GarbageModeArgs {
 enum StoreCommands {
     /// Write the outputs and build keys of the store as a binary cache.
     ExportCache(CacheArgs),
+    /// List signed cache objects reachable from the current package records.
+    ListCache(CacheInventoryArgs),
     /// Remove the store paths that no generation needs.
     CollectGarbage(GarbageArgs),
     /// Make a key pair for signing a binary cache.
     GenerateKey,
+}
+
+#[derive(Args)]
+struct CacheInventoryArgs {
+    /// Repository root containing seed.toml and the packages directory.
+    #[arg(long)]
+    root: PathBuf,
+    /// URL of a signed cache.
+    #[arg(long)]
+    binary_cache: String,
+    /// Public key used to verify cache metadata.
+    #[arg(long)]
+    trusted_key: String,
 }
 
 #[derive(Args)]
@@ -225,6 +240,9 @@ struct BuildArgs {
     /// Parallel build jobs.
     #[arg(long, default_value_t = 1)]
     jobs: u32,
+    /// Package to build locally when its output is absent from the local index (repeatable).
+    #[arg(long)]
+    build_from_source: Vec<String>,
     #[command(flatten)]
     cache: CacheSourceArgs,
 }
@@ -562,6 +580,7 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
         },
         Commands::Store { command } => match command {
             StoreCommands::ExportCache(args) => run_export_cache(&cli, args),
+            StoreCommands::ListCache(args) => run_list_cache(&cli, args),
             StoreCommands::CollectGarbage(args) => run_collect_garbage(&cli, args),
             StoreCommands::GenerateKey => {
                 let (secret, public) =
@@ -889,6 +908,28 @@ fn print_garbage(
     Ok(0)
 }
 
+fn run_list_cache(cli: &Cli, args: &CacheInventoryArgs) -> Result<i32, (i32, String)> {
+    let settings = build::Settings {
+        root: args.root.clone(),
+        data_dir: PathBuf::new(),
+        cache_dir: PathBuf::new(),
+        jobs: 1,
+        binary_cache: Some(args.binary_cache.clone()),
+        trusted_key: Some(args.trusted_key.clone()),
+    };
+    let objects = build::list_cache(&settings).map_err(input_failure)?;
+    match cli.output {
+        Output::Json => print_json(&json!(objects)),
+        Output::Text | Output::Table => write_out(
+            &objects
+                .iter()
+                .map(|object| format!("{object}\n"))
+                .collect::<String>(),
+        ),
+    }?;
+    Ok(0)
+}
+
 fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {
     let fail = |e: String| (version::failure_status(), e);
     let data_dir = match &args.data_dir {
@@ -927,7 +968,10 @@ fn build_package(
     let fail = |e: String| (version::failure_status(), e);
     let settings = settings_of(cli, args)?;
     let built = build::Builder::new(&settings)
-        .and_then(|mut builder| builder.build(&args.name, args.package_version.as_deref()))
+        .and_then(|mut builder| {
+            builder.build_from_source(&args.build_from_source)?;
+            builder.build(&args.name, args.package_version.as_deref())
+        })
         .map_err(fail)?;
     Ok((settings, built))
 }

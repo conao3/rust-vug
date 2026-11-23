@@ -53,7 +53,7 @@ IDs to compute build keys before fetching archives. Each downloaded tree
 must hash to its store ID after normalizing self-references. A restored
 split tree must also have the expected output name in `.vug/output`.
 
-HTTP 404 on a lookup means the cache has no entry. When a required archive
+HTTP 401 or 404 on a lookup means the cache has no entry. When a required archive
 is missing, a command that builds can rebuild from the record. A rebuilt
 split manifest must agree with the known manifest, including the IDs of
 all outputs. A cache-only command reports a missing required archive.
@@ -63,3 +63,23 @@ Archive downloads stream through the zstd decoder into the temporary
 extraction directory. To migrate a cache containing uncompressed
 `paths/<id>.cpio` archives, re-export it from the store before switching
 consumers to this format.
+
+## Inventory and source builds
+
+```console
+$ vug --output json store list-cache --root . --binary-cache URL --trusted-key PUBLIC
+```
+
+This command lists object names reachable from the current version of each
+package in the repository. It resolves records and verifies signed cache
+metadata without downloading archives, preparing the seed, or writing to
+the store. A missing key also excludes packages whose build keys need the
+missing output. A split manifest retains every output it names. Packages
+referenced by system records use the same keys as packages built on their
+own. A composed system generation is assembled locally from its package
+outputs and has no key in the binary cache.
+
+Pass `--build-from-source NAME` to `package build-package` for each package
+that must be built in an independent store even when a matching remote
+cache entry exists. vug still uses the cache for other packages and can
+reuse local outputs built earlier in the same store.

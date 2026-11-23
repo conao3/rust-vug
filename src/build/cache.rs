@@ -57,7 +57,9 @@ pub fn export_cache(
                 version.display()
             ));
         }
-        write_archive(&store, &paths_dir, id, &mut paths)?;
+        if !write_archive(&store, &paths_dir, id, &mut paths)? {
+            continue;
+        }
         let mut answer = format!("{id}\n");
         if let Some(secret) = secret {
             answer.push_str(&vug::sign::sign(secret, &format!("{key} {id}"))?);
@@ -172,12 +174,16 @@ fn cache_file(dir: &Path) -> Result<tempfile::NamedTempFile, String> {
 #[cfg(test)]
 mod tests {
     use super::{ARCHIVE_LEVEL, Manifest, Settings, export_cache, fs, model};
-    use crate::build::{Builder, build_key, install_output, outputs, placeholder_path};
+    use crate::build::{Builder, build_key, install_output, list_cache, outputs, placeholder_path};
     use crate::record;
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::thread::{self, JoinHandle};
 
     #[test]
@@ -259,8 +265,23 @@ paths = ["include/**"]
         settings.trusted_key = Some(public);
         settings.data_dir = root.join("consumer");
 
+        let reachable = list_cache(&settings).unwrap();
+        assert_eq!(
+            reachable,
+            BTreeSet::from([
+                format!("keys/{legacy_key}"),
+                format!("output-keys/{key}"),
+                format!("paths/{legacy}.cpio.zst"),
+                format!("paths/{out}.cpio.zst"),
+                format!("paths/{lib}.cpio.zst"),
+                format!("paths/{dev}.cpio.zst"),
+            ])
+        );
+        assert!(!settings.data_dir.exists());
+        assert_eq!(server.requests.load(Ordering::Relaxed), 2);
         let mut builder = Builder::new(&settings).unwrap();
         let built = builder.build("split", None).unwrap();
+        assert_eq!(server.requests.load(Ordering::Relaxed), 5);
         assert!(!built.fresh);
         assert_eq!(built.closure(), &BTreeSet::from([out.clone(), lib.clone()]));
         let store = settings.data_dir.join("store");
@@ -271,6 +292,7 @@ paths = ["include/**"]
         assert!(store.join(lib).join("lib/shared").is_file());
         assert!(!store.join(dev).exists());
         assert_eq!(builder.build("legacy", None).unwrap().id, legacy);
+        assert_eq!(server.requests.load(Ordering::Relaxed), 7);
         assert_eq!(
             Manifest::read(
                 &settings.data_dir.join("index-outputs/split/1"),
@@ -404,12 +426,15 @@ paths = ["include/**"]
     struct FileServer {
         addr: SocketAddr,
         thread: Option<JoinHandle<()>>,
+        requests: Arc<AtomicUsize>,
     }
 
     impl FileServer {
         fn start(root: PathBuf) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
             let thread = thread::spawn(move || {
                 for stream in listener.incoming() {
                     let mut stream = stream.unwrap();
@@ -418,6 +443,7 @@ paths = ["include/**"]
                     if reader.read_line(&mut request).unwrap() == 0 {
                         break;
                     }
+                    observed.fetch_add(1, Ordering::Relaxed);
                     let path = request.split_ascii_whitespace().nth(1).unwrap();
                     loop {
                         let mut header = String::new();
@@ -441,6 +467,7 @@ paths = ["include/**"]
             Self {
                 addr,
                 thread: Some(thread),
+                requests,
             }
         }
     }
