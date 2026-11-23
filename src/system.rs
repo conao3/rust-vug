@@ -1,5 +1,6 @@
 //! Building a system from a system record (`docs/system.md`).
 
+mod disk;
 mod firmware;
 mod initrd;
 
@@ -192,6 +193,12 @@ while IFS= read -r path; do
   fi
 done < "$self/manifest/closure"
 $self/activate check
+if [ -f "$self/boot/layout" ] || [ -f /vug/disk/layout ]; then
+  if ! $b cmp -s "$self/boot/layout" /vug/disk/layout; then
+    echo "vug: the requested disk layout differs from the installed layout" >&2
+    exit 1
+  fi
+fi
 if [ -x $self/bin/install-boot ] && ! $b mountpoint -q /boot; then
   echo "vug: /boot is not mounted; nothing was changed" >&2
   exit 1
@@ -314,7 +321,12 @@ for g in $($b ls $p | $b sed -n 's/^system-\([0-9][0-9]*\)$/\1/p' | $b sort -rn)
   fi
   if [ "$g" = "$default" ]; then chosen=$index; fi
   echo "/vug generation $g" >> $body
-  $b cat $s/boot/entry >> $body
+  if [ -f "$s/boot/layout" ]; then
+    root_uuid=$($b cat /vug/disk/root-partuuid)
+    $b sed "s/@VUG_ROOT@/$root_uuid/" "$s/boot/entry" >> $body
+  else
+    $b cat "$s/boot/entry" >> $body
+  fi
 done
 {
   echo "timeout: 3"
@@ -390,6 +402,7 @@ pub struct SystemRecord {
     init: String,
     sh: Option<String>,
     boot: Option<Boot>,
+    disk: Option<disk::Layout>,
     firmware: Vec<String>,
     parts: Fragment,
 }
@@ -413,6 +426,7 @@ pub struct BuiltSystem {
     pub closure: BTreeSet<String>,
     /// Whether the system has boot entries for an EFI loader.
     pub efi: bool,
+    disk: Option<disk::Layout>,
 }
 
 fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, String> {
@@ -813,6 +827,8 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         "boot",
         "service",
         "firmware-packages",
+        "disk",
+        "filesystem",
     ];
     allowed.extend(FRAGMENT_KEYS);
     unknown_keys(&table, &allowed, "")?;
@@ -829,6 +845,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         None => None,
         Some(_) => Some(string(&table, "sh", "")?),
     };
+    let disk = disk::Layout::load(&table)?;
     let firmware = firmware::packages(&table)?;
     let boot = match table.get("boot") {
         None => None,
@@ -840,7 +857,11 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
                 None => Vec::new(),
                 Some(_) => strings(entry, "arguments", "boot.")?,
             };
+            if disk.is_some() && (initrd.is_none() || entry.contains_key("root")) {
+                return Err("disk: requires boot.initrd and derives boot.root".into());
+            }
             let root = match entry.get("root") {
+                None if disk.is_some() => "PARTUUID=@VUG_ROOT@".to_owned(),
                 None if initrd.is_some() => format!("PARTUUID={ROOT_UUID}"),
                 None => format!("PARTLABEL={ROOT_NAME}"),
                 Some(_) => string(entry, "root", "boot.")?,
@@ -852,7 +873,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
             {
                 return Err("boot: an argument is empty or has white space".to_owned());
             }
-            if initrd.is_some() && !initrd::valid_root(&root) {
+            if initrd.is_some() && disk.is_none() && !initrd::valid_root(&root) {
                 return Err("boot.root: initrd requires PARTUUID=<uuid>".to_owned());
             }
             if initrd.is_some()
@@ -889,6 +910,16 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         merge(&mut parts, part).map_err(context)?;
         texts.push((format!("services/{service}.toml"), text));
     }
+    if disk.is_some()
+        && (boot.is_none()
+            || services.contains_key("esp")
+            || parts
+                .files
+                .iter()
+                .any(|file| matches!(file.path.as_str(), "fstab" | "systemd/system/boot.mount")))
+    {
+        return Err("disk: requires EFI boot and owns fstab and the ESP mount".into());
+    }
     validate(&parts)?;
     Ok(SystemRecord {
         texts,
@@ -896,6 +927,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         init,
         sh,
         boot,
+        disk,
         firmware,
         parts,
     })
@@ -1106,6 +1138,13 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         format!("{STORE}/{}/boot/bzImage", kernel.id),
         &out.join("kernel"),
     )?;
+    if let Some(layout) = &record.disk {
+        write_file(
+            &out.join("boot/layout"),
+            layout.partition_spec().as_bytes(),
+            0o644,
+        )?;
+    }
     if let Some(boot) = &record.boot {
         let loader = pkg(&boot.loader, &paths)?;
         if !valid_image_path(&loader) {
@@ -1313,6 +1352,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         kernel: kernel_image,
         closure,
         efi: record.boot.is_some(),
+        disk: record.disk,
     })
 }
 
@@ -1338,7 +1378,7 @@ fn size_in_bytes(size: &str) -> Result<u64, String> {
     digits
         .parse::<u64>()
         .ok()
-        .and_then(|n| n.checked_shl(shift))
+        .and_then(|n| n.checked_mul(1 << shift))
         .filter(|n| *n > 0)
         .ok_or_else(error)
 }
@@ -1373,6 +1413,7 @@ fn write_efi_parts(
     work: &Path,
     image: &Path,
     root_bytes: u64,
+    layout: Option<&disk::Layout>,
 ) -> Result<(), String> {
     let mut builder = Builder::new(settings)?;
     let tool = |builder: &mut Builder, package: &str, program: &str| {
@@ -1384,12 +1425,62 @@ fn write_efi_parts(
     let mkfs = tool(&mut builder, "dosfstools", "sbin/mkfs.fat")?;
     let mcopy = tool(&mut builder, "mtools", "bin/mcopy")?;
     let image_name = image.display().to_string();
+    let new_uuid = || {
+        fs::read_to_string("/proc/sys/kernel/random/uuid")
+            .map(|uuid| uuid.trim().to_owned())
+            .map_err(|error| format!("generate PARTUUID: {error}"))
+    };
+    let (esp_bytes, esp_name, root_name, disk_uuid, esp_uuid, root_uuid) = match layout {
+        Some(layout) => (
+            layout.esp_bytes,
+            layout.esp_name.as_str(),
+            layout.root_name.as_str(),
+            new_uuid()?,
+            new_uuid()?,
+            new_uuid()?,
+        ),
+        None => (
+            ESP_BYTES,
+            ESP_NAME,
+            ROOT_NAME,
+            IMAGE_UUID.into(),
+            ESP_UUID.into(),
+            ROOT_UUID.into(),
+        ),
+    };
+    if let Some(layout) = layout {
+        let root = work.join("root");
+        write_file(
+            &root.join("vug/disk/layout"),
+            layout.partition_spec().as_bytes(),
+            0o644,
+        )?;
+        write_file(
+            &root.join("vug/disk/root-partuuid"),
+            root_uuid.as_bytes(),
+            0o644,
+        )?;
+        write_file(
+            &root.join("vug/disk/esp-partuuid"),
+            esp_uuid.as_bytes(),
+            0o644,
+        )?;
+        write_file(
+            &root.join("etc/fstab"),
+            format!(
+                "PARTUUID={root_uuid} / ext4 defaults 0 0\nPARTUUID={esp_uuid} /boot vfat {} 0 0\n",
+                layout.esp_options
+            )
+            .as_bytes(),
+            0o644,
+        )?;
+    }
     let table = format!(
-        "label: gpt\nlabel-id: {IMAGE_UUID}\nfirst-lba: 2048\n\
-         start=2048, size={}, type=U, uuid={ESP_UUID}, name={ESP_NAME}\n\
-         start={}, size={}, type=L, uuid={ROOT_UUID}, name={ROOT_NAME}\n",
-        ESP_BYTES / 512,
-        (MIB + ESP_BYTES) / 512,
+        "label: gpt\nlabel-id: {disk_uuid}\nfirst-lba: 2048\n\
+         start=2048, size={}, type=U, uuid={esp_uuid}, name={esp_name}\n\
+         start={}, size={}, type=L, uuid={root_uuid}, name={root_name}\n",
+        esp_bytes / 512,
+        (MIB + esp_bytes) / 512,
         root_bytes / 512,
     );
     run_tool(
@@ -1410,7 +1501,7 @@ fn write_efi_parts(
             "-F".to_owned(),
             "32".to_owned(),
             "-s".to_owned(),
-            "2".to_owned(),
+            if layout.is_some() { "1" } else { "2" }.to_owned(),
             "-n".to_owned(),
             "VUGESP".to_owned(),
             "-i".to_owned(),
@@ -1419,7 +1510,7 @@ fn write_efi_parts(
             "--offset".to_owned(),
             (MIB / 512).to_string(),
             image_name.clone(),
-            (ESP_BYTES / 1024).to_string(),
+            (esp_bytes / 1024).to_string(),
         ],
         None,
     )?;
@@ -1462,7 +1553,7 @@ fn write_efi_parts(
         &esp.join("limine.conf"),
         format!(
             "timeout: 3\ndefault_entry: 1\n/vug generation 1\n{}",
-            io("read", &entry, fs::read_to_string(&entry))?
+            io("read", &entry, fs::read_to_string(&entry))?.replace("@VUG_ROOT@", &root_uuid)
         )
         .as_bytes(),
         0o644,
@@ -1523,16 +1614,19 @@ pub fn build_image(
     let mut options = format!("root_owner=0:0,hash_seed={IMAGE_UUID}");
     if system.efi {
         io("create", &root, fs::create_dir_all(root.join("boot")))?;
+        let layout = system.disk.as_ref();
+        let esp_bytes = layout.map_or(ESP_BYTES, |layout| layout.esp_bytes);
         let root_bytes = size_in_bytes(size)?;
+        let root_offset = MIB + esp_bytes;
+        let image_bytes = root_offset
+            .checked_add(root_bytes)
+            .and_then(|size| size.checked_add(MIB))
+            .ok_or("disk image size overflows")?;
         let disk = io("create", image, fs::File::create(image))?;
-        io(
-            "resize",
-            image,
-            disk.set_len(MIB + ESP_BYTES + root_bytes + MIB),
-        )?;
+        io("resize", image, disk.set_len(image_bytes))?;
         drop(disk);
-        write_efi_parts(settings, &system, &work, image, root_bytes)?;
-        options.push_str(&format!(",offset={}", MIB + ESP_BYTES));
+        write_efi_parts(settings, &system, &work, image, root_bytes, layout)?;
+        options.push_str(&format!(",offset={root_offset}"));
     }
     let status = build::store_command(settings, true)?
         .env("E2FSPROGS_FAKE_TIME", "315532800")

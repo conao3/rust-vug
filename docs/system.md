@@ -278,6 +278,40 @@ run where `--profiles` (default `/vug/profiles`) holds no generation. The
 index keeps the ids of removed outputs, so a later build takes them from a
 binary cache instead of building.
 
+## Declaring a GPT layout
+
+EFI systems with `[boot.initrd]` can declare the ESP and root filesystem in the system record:
+
+```toml
+[disk]
+table = "gpt"
+
+[[disk.partition]]
+name = "esp"
+type = "esp"
+size-mib = 1024
+
+[[disk.partition]]
+name = "root"
+type = "linux-filesystem"
+grow = true
+
+[[filesystem]]
+partition = "root"
+mount = "/"
+type = "ext4"
+
+[[filesystem]]
+partition = "esp"
+mount = "/boot"
+type = "vfat"
+options = ["umask=0077"]
+```
+
+The ESP comes first and is at least 64 MiB. The root takes the size requested by `build-image --size`. The generated image assigns fresh GPT IDs and saves the layout and PARTUUIDs in `/vug/disk`. The root PARTUUID goes in each Limine entry and the root and ESP PARTUUIDs go in `/etc/fstab`. Partition names are GPT labels.
+
+This layout supplies the root boot argument and the ESP mount. Omit `boot.root`, `service.esp`, and separate fstab or boot mount definitions for these systems. The system switch checks the requested layout against the installed layout before changing generations. It reuses the installed root PARTUUID for the next boot menu and leaves the partition table in place.
+
 ## Commands
 
 ```console
@@ -298,7 +332,7 @@ $ qemu-system-x86_64 -enable-kvm -m 1024 -nographic \
 | Command | Result |
 |---|---|
 | `build-system` | The system in the store. |
-| `build-image --image FILE [--size SIZE]` | For a system with `[boot]`: also a GPT disk image with an EFI system partition of 256 MiB (the loader, the kernel, and the entry of generation 1) and a root partition of `SIZE`, made with `sfdisk`, `mkfs.fat`, `mcopy`, and `mke2fs` of the packages `util-linux`, `dosfstools`, `mtools`, and `e2fsprogs`. Written to a disk, it boots a machine with EFI firmware. Otherwise: also an ext4 image (default size `4g`) whose root holds the store paths listed in `manifest/closure`, generation 1 pointing to the system, the data directory indexes at `/vug/index` and `/vug/index-outputs` when present, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
+| `build-image --image FILE [--size SIZE]` | For a system with `[boot]`: also a GPT disk image with an EFI system partition of 256 MiB by default (the loader, the kernel, and the entry of generation 1) and a root partition of `SIZE`, made with `sfdisk`, `mkfs.fat`, `mcopy`, and `mke2fs` of the packages `util-linux`, `dosfstools`, `mtools`, and `e2fsprogs`. Written to a disk, it boots a machine with EFI firmware. Otherwise: also an ext4 image (default size `4g`) whose root holds the store paths listed in `manifest/closure`, generation 1 pointing to the system, the data directory indexes at `/vug/index` and `/vug/index-outputs` when present, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
 | `switch-system` | The system in the store, then its `bin/switch-to-system` runs. For a machine that runs a vug system. |
 | `export-system --archive FILE [--base SYSTEM]` | Also a cpio archive ("newc") of the store paths of the system, without those of the system `SYSTEM` (an id or a store path in the same store). |
 
