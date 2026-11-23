@@ -879,7 +879,9 @@ fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {
         Some(file) => Some(
             std::fs::read_to_string(file)
                 .map_err(|e| fail(format!("read {}: {e}", file.display())))?
-                .trim()
+                .lines()
+                .next()
+                .unwrap_or_default()
                 .to_owned(),
         ),
     };

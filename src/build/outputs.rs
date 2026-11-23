@@ -94,7 +94,7 @@ fn order(record: &VersionRecord) -> Vec<&str> {
 #[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
     format: u32,
-    key: String,
+    pub(super) key: String,
     pub(super) outputs: BTreeMap<String, Entry>,
 }
 
@@ -137,39 +137,74 @@ impl Manifest {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             result => io("read", path, result)?,
         };
-        let manifest: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if manifest.format != 1 || !valid_store_id(&manifest.key) {
-            return Err(format!(
-                "{}: invalid output manifest format or key",
-                path.display()
-            ));
-        }
+        let source = path.display().to_string();
+        let manifest = Self::parse(&bytes, &source)?;
         if manifest.key != key {
             return Ok(None);
         }
-        let ids: BTreeMap<_, _> = manifest
+        manifest.validate(key, runtime, &source)?;
+        Ok(Some(manifest))
+    }
+
+    pub(super) fn parse(bytes: &[u8], source: &str) -> Result<Self, String> {
+        let manifest: Self =
+            serde_json::from_slice(bytes).map_err(|error| format!("{source}: {error}"))?;
+        let ids: BTreeSet<_> = manifest.outputs.values().map(|entry| &entry.id).collect();
+        if manifest.format != 1
+            || !valid_store_id(&manifest.key)
+            || !manifest.outputs.contains_key("out")
+            || ids.len() != manifest.outputs.len()
+            || manifest.outputs.iter().any(|(name, entry)| {
+                !crate::naming::model::valid_name(name)
+                    || !valid_store_id(&entry.id)
+                    || !entry.run.iter().all(|id| valid_store_id(id))
+            })
+            || bytes != manifest.bytes()?
+        {
+            return Err(format!("{source}: invalid or noncanonical output manifest"));
+        }
+        Ok(manifest)
+    }
+
+    pub(super) fn validate(
+        &self,
+        key: &str,
+        runtime: &BTreeMap<String, Runtime>,
+        source: &str,
+    ) -> Result<(), String> {
+        let ids: BTreeMap<_, _> = self
             .outputs
             .iter()
             .map(|(name, entry)| (name.clone(), entry.id.clone()))
             .collect();
-        if !ids.keys().eq(runtime.keys())
-            || !ids.values().all(|id| valid_store_id(id))
-            || manifest != Self::new(key, &ids, runtime)
-            || bytes != manifest.bytes()?
-        {
+        if !ids.keys().eq(runtime.keys()) || *self != Self::new(key, &ids, runtime) {
             return Err(format!(
-                "{}: output manifest disagrees with the record",
-                path.display()
+                "{source}: output manifest disagrees with the record"
             ));
         }
-        Ok(Some(manifest))
+        Ok(())
     }
 
-    fn bytes(&self) -> Result<Vec<u8>, String> {
-        let mut bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        bytes.push(b'\n');
-        Ok(bytes)
+    pub(super) fn bytes(&self) -> Result<Vec<u8>, String> {
+        let mut json = serde_json::to_vec(self).map_err(|error| error.to_string())?;
+        json.push(b'\n');
+        Ok(json)
+    }
+
+    pub(super) fn check_tree(&self, name: &str, store: &Path) -> Result<(), String> {
+        let tree = store.join(&self.outputs[name].id);
+        let meta = tree.join(".vug");
+        let path = meta.join("output");
+        if !io("read output metadata", &meta, fs::symlink_metadata(&meta))?.is_dir()
+            || !io("read output metadata", &path, fs::symlink_metadata(&path))?.is_file()
+            || io("read output name", &path, fs::read_to_string(&path))? != format!("{name}\n")
+        {
+            return Err(format!(
+                "{}: expected metadata for output {name:?}",
+                tree.display()
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn publish(

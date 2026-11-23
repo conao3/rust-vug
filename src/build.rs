@@ -1,7 +1,10 @@
 //! Building a package into the store (`docs/build.md`).
 
+mod cache;
 mod elf;
 mod outputs;
+
+pub use cache::export_cache;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -512,6 +515,13 @@ pub struct Builder<'a> {
     cache_only: bool,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Need {
+    Id,
+    Runtime,
+    Build,
+}
+
 impl<'a> Builder<'a> {
     /// The busybox of the seed, as a file on the host: the one of the
     /// running system when it is the same file, else the fetched one.
@@ -543,11 +553,21 @@ impl<'a> Builder<'a> {
     }
 
     pub fn require_output(&self, id: &str) -> Result<(), String> {
+        if self.ensure_output(id)? {
+            return Ok(());
+        }
+        Err(format!(
+            "{STORE}/{id}: output missing from the store and binary cache"
+        ))
+    }
+
+    fn ensure_output(&self, id: &str) -> Result<bool, String> {
         let path = self.settings.data_dir.join("store").join(id);
         let metadata = match fs::symlink_metadata(&path) {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound && self.substitute(id)? =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !self.substitute(id)? {
+                    return Ok(false);
+                }
                 fs::symlink_metadata(&path)
             }
             result => result,
@@ -555,7 +575,7 @@ impl<'a> Builder<'a> {
         if !io("read store reference", &path, metadata)?.is_dir() {
             return Err(format!("{}: expected a store directory", path.display()));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Builds `name` (or takes it from the index or the binary cache) and
@@ -565,17 +585,16 @@ impl<'a> Builder<'a> {
         if !model::valid_name(package) || !model::valid_name(output) {
             return Err(format!("{name:?}: not a valid package or output selector"));
         }
-        self.resolve(name, requested, true)
+        self.resolve(name, requested, Need::Runtime)
     }
 
-    /// Finds the id of `name`. With `present` the output and its run-time
-    /// closure are also put into the store; without it an id that the index
-    /// or the binary cache knows is returned as it is.
+    /// Resolves the selector, materializing its runtime closure or its
+    /// runtime closure and exposed build dependencies as requested.
     fn resolve(
         &mut self,
         spec: &str,
         requested: Option<&str>,
-        present: bool,
+        need: Need,
     ) -> Result<Built, String> {
         let (name, output) = record::dependency_output(spec);
         if self.in_progress.iter().any(|n| n == name) {
@@ -585,7 +604,7 @@ impl<'a> Builder<'a> {
             ));
         }
         self.in_progress.push(name.to_owned());
-        let result = self.build_inner(name, output, requested, present);
+        let result = self.build_inner(name, output, requested, need);
         self.in_progress.pop();
         result
     }
@@ -627,15 +646,15 @@ impl<'a> Builder<'a> {
             return Ok(false);
         };
         eprintln!("substituting {STORE}/{id}");
-        let work = settings
-            .data_dir
-            .join("tmp")
-            .join(format!("{}-substitute", std::process::id()));
-        if work.exists() {
-            io("remove", &work, fs::remove_dir_all(&work))?;
-        }
-        let out = work.join(id);
-        io("create", &out, fs::create_dir_all(&out))?;
+        let tmp = settings.data_dir.join("tmp");
+        io("create", &tmp, fs::create_dir_all(&tmp))?;
+        let work = io(
+            "create temporary directory",
+            &tmp,
+            tempfile::tempdir_in(&tmp),
+        )?;
+        let out = work.path().join(id);
+        io("create", &out, fs::create_dir(&out))?;
         io("unpack", &out, vug::cpio::read_newc(&archive, &out))?;
         let path = format!("{STORE}/{id}");
         let placeholder = placeholder_path();
@@ -662,7 +681,6 @@ impl<'a> Builder<'a> {
         {
             return Err(format!("rename {}: {error}", final_path.display()));
         }
-        io("remove", &work, fs::remove_dir_all(&work))?;
         Ok(true)
     }
 
@@ -671,7 +689,7 @@ impl<'a> Builder<'a> {
         name: &str,
         output: &str,
         requested: Option<&str>,
-        present: bool,
+        need: Need,
     ) -> Result<Built, String> {
         let settings = self.settings;
         let package_dir = settings.root.join(model::package_dir(name));
@@ -721,7 +739,15 @@ impl<'a> Builder<'a> {
             .chain(all_run.iter().copied())
             .collect();
         for &dep in &dep_names {
-            let built = self.resolve(dep, None, present && selected_run.contains(dep))?;
+            let built = self.resolve(
+                dep,
+                None,
+                if selected_run.contains(dep) {
+                    need
+                } else {
+                    Need::Id
+                },
+            )?;
             dep_ids.extend(built.closure.iter().cloned());
             dep_ids.extend(built.exposed.iter().cloned());
             direct.insert(dep.to_owned(), format!("{STORE}/{}", built.id));
@@ -735,7 +761,8 @@ impl<'a> Builder<'a> {
             resolved.insert(dep, built);
         }
         for dep in &record.deps_expose {
-            let built = self.resolve(dep, None, present && !self.cache_only)?;
+            let built =
+                self.resolve(dep, None, if need == Need::Build { need } else { Need::Id })?;
             exposed.extend(built.closure.iter().cloned());
             exposed.extend(built.exposed.iter().cloned());
             resolved.entry(dep.as_str()).or_insert(built);
@@ -780,20 +807,40 @@ impl<'a> Builder<'a> {
                 exposed: exposed.clone(),
             }
         };
+        let mut expected_manifest = None;
         if split {
-            if let Some(manifest) = outputs::Manifest::read(&index_path, &key, &runtime)? {
+            let local = outputs::Manifest::read(&index_path, &key, &runtime)?;
+            let from_cache = local.is_none();
+            let manifest = match local {
+                Some(manifest) => Some(manifest),
+                None => cache::fetch_manifest(settings, &key, &runtime)?,
+            };
+            if let Some(manifest) = manifest {
                 let built = from_manifest(&manifest, false);
-                if !present
-                    || built.closure.iter().all(|id| {
-                        fs::symlink_metadata(store_dir.join(id))
-                            .is_ok_and(|metadata| metadata.is_dir())
-                    })
-                {
+                if need == Need::Id {
                     return Ok(built);
                 }
-                if self.cache_only {
-                    for id in &built.closure {
-                        self.require_output(id)?;
+                let mut missing = None;
+                for name in
+                    std::iter::once(output).chain(runtime[output].local.iter().map(String::as_str))
+                {
+                    let id = &manifest.outputs[name].id;
+                    if !self.ensure_output(id)? {
+                        missing = Some(id);
+                        break;
+                    }
+                    manifest.check_tree(name, &store_dir)?;
+                }
+                if let Some(id) = missing {
+                    if self.cache_only {
+                        return Err(format!(
+                            "{STORE}/{id}: output missing from the store and binary cache"
+                        ));
+                    }
+                    expected_manifest = Some(manifest);
+                } else {
+                    if from_cache {
+                        manifest.publish(&index_path, &runtime)?;
                     }
                     return Ok(built);
                 }
@@ -817,7 +864,7 @@ impl<'a> Builder<'a> {
                 known = Some(id);
             }
             if let Some(id) = known
-                && (!present || store_dir.join(&id).exists() || self.substitute(&id)?)
+                && (need == Need::Id || self.ensure_output(&id)?)
             {
                 run_closure.insert(id.clone());
                 return Ok(Built {
@@ -838,7 +885,7 @@ impl<'a> Builder<'a> {
         }
 
         for dep in dep_names {
-            let built = self.resolve(dep, None, true)?;
+            let built = self.resolve(dep, None, Need::Build)?;
             let expected = &resolved[dep];
             if built.id != expected.id
                 || built.closure != expected.closure
@@ -1204,6 +1251,11 @@ impl<'a> Builder<'a> {
             }
             .install(&key)?;
             io("remove", &work, fs::remove_dir_all(&work))?;
+            if expected_manifest.is_some_and(|expected| expected != manifest) {
+                return Err(format!(
+                    "{name} {version}: rebuilt outputs disagree with the manifest for build key {key}"
+                ));
+            }
             manifest.publish(&index_path, &runtime)?;
             return Ok(from_manifest(&manifest, true));
         }
@@ -1286,59 +1338,6 @@ pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[S
         .arg(format!("{STORE}/{id}/{program}"))
         .args(arguments);
     format!("bwrap: {}", command.exec())
-}
-
-/// Writes the binary cache of the data directory into `directory`
-/// (`docs/cache.md`). Returns the numbers of keys and of archives written.
-pub fn export_cache(
-    data_dir: &Path,
-    directory: &Path,
-    secret: Option<&str>,
-) -> Result<(usize, usize), String> {
-    let keys_dir = directory.join("keys");
-    let paths_dir = directory.join("paths");
-    io("create", &keys_dir, fs::create_dir_all(&keys_dir))?;
-    io("create", &paths_dir, fs::create_dir_all(&paths_dir))?;
-    let index = data_dir.join("index");
-    let (mut keys, mut paths) = (0, 0);
-    let list = |dir: &Path| -> Result<Vec<PathBuf>, String> {
-        let mut entries: Vec<PathBuf> = io("read", dir, fs::read_dir(dir))?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .collect();
-        entries.sort();
-        Ok(entries)
-    };
-    for package in list(&index)? {
-        for version in list(&package)? {
-            let line = io("read", &version, fs::read_to_string(&version))?;
-            let Some((key, id)) = line.trim_end().split_once(' ') else {
-                continue;
-            };
-            let key_path = keys_dir.join(key);
-            let signature = match secret {
-                Some(secret) => format!("{}\n", vug::sign::sign(secret, &format!("{key} {id}"))?),
-                None => String::new(),
-            };
-            io(
-                "write",
-                &key_path,
-                fs::write(&key_path, format!("{id}\n{signature}")),
-            )?;
-            keys += 1;
-            let tree = data_dir.join("store").join(id);
-            let archive = paths_dir.join(format!("{id}.cpio"));
-            if tree.exists() && !archive.exists() {
-                let partial = paths_dir.join(format!("{id}.cpio.partial"));
-                let mut out =
-                    std::io::BufWriter::new(io("create", &partial, fs::File::create(&partial))?);
-                io("write", &partial, vug::cpio::write_newc(&tree, &mut out))?;
-                drop(out);
-                io("rename", &archive, fs::rename(&partial, &archive))?;
-                paths += 1;
-            }
-        }
-    }
-    Ok((keys, paths))
 }
 
 #[cfg(test)]
