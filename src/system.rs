@@ -1,5 +1,7 @@
 //! Building a system from a system record (`docs/system.md`).
 
+mod initrd;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -300,6 +302,15 @@ for g in $($b ls $p | $b sed -n 's/^system-\([0-9][0-9]*\)$/\1/p' | $b sort -rn)
     $b mv -f $esp/vug/$id.bzImage.tmp $esp/vug/$id.bzImage
   fi
   keep="$keep $id.bzImage"
+  if [ -f "$s/boot/initrd.gz" ]; then
+    archive=$($b cat "$s/boot/initrd-name")
+    $b mkdir -p "$esp/vug-initrd"
+    if [ ! -f "$esp/vug-initrd/$archive" ]; then
+      $b cp "$s/boot/initrd.gz" "$esp/vug-initrd/$archive.tmp"
+      $b mv -f "$esp/vug-initrd/$archive.tmp" "$esp/vug-initrd/$archive"
+    fi
+    keep="$keep $archive"
+  fi
   if [ "$g" = "$default" ]; then chosen=$index; fi
   echo "/vug generation $g" >> $body
   $b cat $s/boot/entry >> $body
@@ -311,10 +322,11 @@ done
 } > $esp/limine.conf.tmp
 $b mv -f $esp/limine.conf.tmp $esp/limine.conf
 $b rm -f $body
-for f in $($b ls $esp/vug); do
+for f in "$esp/vug/"* "$esp/vug-initrd/"*; do
+  if [ ! -f "$f" ]; then continue; fi
   case " $keep " in
-    *" $f "*) ;;
-    *) $b rm -f $esp/vug/$f ;;
+    *" ${f##*/} "*) ;;
+    *) $b rm -f "$f" ;;
   esac
 done
 $b sync
@@ -385,6 +397,7 @@ struct Boot {
     loader: String,
     /// What the kernel takes as `root=`.
     root: String,
+    initrd: Option<initrd::Config>,
     arguments: Vec<String>,
 }
 
@@ -810,12 +823,14 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         None => None,
         Some(value) => {
             let entry = value.as_table().ok_or("boot: expected a table")?;
-            unknown_keys(entry, &["loader", "root", "arguments"], "boot.")?;
+            unknown_keys(entry, &["loader", "root", "arguments", "initrd"], "boot.")?;
+            let initrd = entry.get("initrd").map(initrd::Config::load).transpose()?;
             let arguments = match entry.get("arguments") {
                 None => Vec::new(),
                 Some(_) => strings(entry, "arguments", "boot.")?,
             };
             let root = match entry.get("root") {
+                None if initrd.is_some() => format!("PARTUUID={ROOT_UUID}"),
                 None => format!("PARTLABEL={ROOT_NAME}"),
                 Some(_) => string(entry, "root", "boot.")?,
             };
@@ -826,9 +841,22 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
             {
                 return Err("boot: an argument is empty or has white space".to_owned());
             }
+            if initrd.is_some() && !initrd::valid_root(&root) {
+                return Err("boot.root: initrd requires PARTUUID=<uuid>".to_owned());
+            }
+            if initrd.is_some()
+                && arguments.iter().any(|arg| {
+                    ["root=", "init=", "rdinit="]
+                        .iter()
+                        .any(|key| arg.starts_with(key))
+                })
+            {
+                return Err("boot.arguments: initrd reserves root=, init= and rdinit=".to_owned());
+            }
             Some(Boot {
                 loader: string(entry, "loader", "boot.")?,
                 root,
+                initrd,
                 arguments,
             })
         }
@@ -1068,10 +1096,25 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
             cmdline.push(' ');
             cmdline.push_str(argument);
         }
+        let module = if let Some(config) = &boot.initrd {
+            let archive = initrd::build(
+                settings,
+                &mut builder,
+                config,
+                &kernel.id,
+                &busybox,
+                &work,
+                &out,
+            )?;
+            write_file(&out.join("boot/initrd-name"), archive.as_bytes(), 0o644)?;
+            format!("    module_path: boot():/vug-initrd/{archive}\n")
+        } else {
+            String::new()
+        };
         write_file(
             &out.join("boot/entry"),
             format!(
-                "    protocol: linux\n    path: boot():/vug/{}.bzImage\n    cmdline: {cmdline}\n",
+                "    protocol: linux\n    path: boot():/vug/{}.bzImage\n{module}    cmdline: {cmdline}\n",
                 kernel.id
             )
             .as_bytes(),
@@ -1372,6 +1415,15 @@ fn write_efi_parts(
         &io("read", &kernel, fs::read(&kernel))?,
         0o644,
     )?;
+    let initrd = store.join("boot/initrd.gz");
+    if initrd.is_file() {
+        let name = store.join("boot/initrd-name");
+        let name = io("read", &name, fs::read_to_string(&name))?;
+        let directory = esp.join("vug-initrd");
+        io("create", &directory, fs::create_dir_all(&directory))?;
+        let destination = directory.join(name);
+        io("copy", &destination, fs::copy(&initrd, &destination))?;
+    }
     let entry = store.join("boot/entry");
     write_file(
         &esp.join("limine.conf"),

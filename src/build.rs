@@ -1,7 +1,7 @@
 //! Building a package into the store (`docs/build.md`).
 
 mod cache;
-mod elf;
+pub(crate) mod elf;
 mod outputs;
 
 pub use cache::export_cache;

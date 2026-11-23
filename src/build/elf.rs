@@ -5,14 +5,14 @@ use object::read::elf::{Dyn, FileHeader, ProgramHeader};
 use object::{Endianness, StringTable};
 
 #[derive(Default)]
-pub(super) struct Dynamic {
-    pub(super) needed: Vec<Range<usize>>,
-    pub(super) search_paths: Vec<Range<usize>>,
-    pub(super) runpath: Option<Range<usize>>,
-    pub(super) interpreter: Option<Range<usize>>,
+pub(crate) struct Dynamic {
+    pub(crate) needed: Vec<Range<usize>>,
+    pub(crate) search_paths: Vec<Range<usize>>,
+    pub(crate) runpath: Option<Range<usize>>,
+    pub(crate) interpreter: Option<Range<usize>>,
 }
 
-pub(super) fn dynamic(data: &[u8]) -> Result<Option<Dynamic>, String> {
+pub(crate) fn dynamic(data: &[u8]) -> Result<Option<Dynamic>, String> {
     if !data.starts_with(&elf::ELFMAG) {
         return Ok(None);
     }

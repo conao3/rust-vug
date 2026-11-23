@@ -77,8 +77,11 @@ user = "root"
 | `setuid.package`, `setuid.program` | string | per entry | A selected package output and the path within it to a program that runs as root. |
 | `service.<name>` | table of strings | no | Adds the service record `<name>`, with these values for its parameters. |
 | `boot.loader` | string | with `[boot]` | The EFI program of a limine boot loader, usually `{pkg:limine}/share/limine/BOOTX64.EFI`. |
-| `boot.root` | string | no (default `PARTLABEL=vug-root`) | What the kernel takes as `root=`. |
+| `boot.root` | string | no | Root selector. The default is `PARTLABEL=vug-root` for direct boot and the image root partition’s GPT PARTUUID with initrd. An explicit initrd selector must be `PARTUUID=<uuid>`. |
 | `boot.arguments` | array of strings | no | Further kernel arguments. |
+| `boot.initrd` | table | no | Build a plain ext4 root initrd for the selected kernel. |
+| `boot.initrd.available-modules` | array of strings | no | Include these modules and their dependencies for udev coldplug. |
+| `boot.initrd.force-modules` | array of strings | no | Include these modules and their dependencies, then load the listed modules in order before coldplug. |
 
 `user.password` goes into a store path that every user of the machine can
 read, and a package tree is usually public: it is the place for `""` (no
@@ -142,6 +145,7 @@ says.
 | `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
 | `kernel` | A link to the kernel image. |
 | `boot/entry`, `boot/loader`, `bin/install-boot` | With `[boot]`: the boot entry of this system (kernel, `root=`, `init=` of this system, and the arguments), a link to the loader, and the script that writes the boot entries. |
+| `boot/initrd.gz` | With `[boot.initrd]`: a reproducible gzip-compressed newc archive. |
 | `sw/bin`, `sw/lib`, `sw/share` | Links to the entries in `bin`, `sbin`, `lib`, and `share` of the outputs selected in `packages`. Matching directories merge recursively. Other name conflicts go to the later entry. `sw/sbin` links to `bin`, and `sw/bin/sh` links to the `sh` program of the record. |
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
@@ -155,6 +159,24 @@ When the kernel output contains `lib/modules`, the system exposes its
 module tree at `/lib/modules`. Boot selects the module tree together with
 the kernel. Switching between systems with modular kernels keeps the running
 kernel's module tree available until the next boot.
+
+### Boot with an initrd
+
+The archive contains the selected kernel modules and their depmod indexes, the
+seed BusyBox, kmod, systemd-udevd and its driver rule, and blkid with the loader
+and libraries they use. Kernel `root=` and the generation's `init=` are passed
+through the Limine entry. Set additional arguments in `boot.arguments`, which
+reserves `root=`, `init=`, and `rdinit=` in this mode.
+
+The first init mounts proc, sysfs, devtmpfs, and a temporary runtime directory.
+It starts udev, loads the forced modules and triggers coldplug. It allows 30
+seconds for a block partition whose PARTUUID matches the entry, reports
+duplicate matches or a timeout on the console, and mounts the selected ext4
+partition. It checks the selected generation's init, stops early udev, and moves
+the mounts into the real root before `switch_root`.
+
+When installing the boot menu, the kernel and initrd are copied before the menu
+is replaced. Boot files referenced by retained generations remain on the ESP.
 
 ## The root file system
 
