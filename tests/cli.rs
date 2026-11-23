@@ -254,6 +254,30 @@ fn system_record_needs_init() {
 }
 
 #[test]
+fn system_rejects_invalid_output_selectors() {
+    let error = system_error(&SYSTEM_HEAD.replace("packages = []", "packages = [\"demo:\"]"));
+    assert!(
+        error.contains("not a valid package or output selector"),
+        "{error}"
+    );
+
+    let error = system_error_with(
+        &format!("{SYSTEM_HEAD}[service.demo]\n"),
+        &[("demo", "name = \"demo\"\npackages = [\":dev\"]\n")],
+    );
+    assert!(
+        error.contains("not a valid package or output selector"),
+        "{error}"
+    );
+
+    let error = system_error(&format!(
+        "{}[[setuid]]\npackage = \"demo\"\nprogram = \"bin/demo\"\n",
+        SYSTEM_HEAD.replace("packages = []", "packages = [\"demo:dev\"]")
+    ));
+    assert!(error.contains("is not a package of this system"), "{error}");
+}
+
+#[test]
 fn service_record_errors() {
     let getty = "name = \"getty\"\n[parameter.user]\n[parameter.tty]\ndefault = \"ttyS0\"\n[[file]]\npath = \"/etc/getty-{param:tty}\"\ncontent = \"{param:user}\"\n";
     let clash = "name = \"clash\"\n[[file]]\npath = \"/etc/getty-ttyS0\"\ncontent = \"other\"\n";

@@ -59,10 +59,10 @@ user = "root"
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Must equal the file name without `.toml`. |
-| `kernel` | string | yes | A package whose output holds `boot/bzImage` (build kind `linux`). |
+| `kernel` | string | yes | The package output that holds `boot/bzImage` (build kind `linux`). |
 | `init` | string | yes | The command the system starts as process 1, split at white space. |
 | `sh` | string | no | The program `/bin/sh` runs. Without it `/bin/sh` exists only when a listed package has a program `sh`. |
-| `packages` | array of strings | yes | Packages whose programs appear in `/bin`. |
+| `packages` | array of strings | yes | Package outputs to merge into the system. |
 | `file.path` | string | yes | A path below `/etc`. No listed path equals or lies inside another. |
 | `file.kind` | `"link"` or `"seed"` | no (default `"link"`) | How the file is managed, see below. |
 | `file.mode` | string of octal digits | no (default `"644"`) | Permission bits. A link file takes `"644"` or `"755"`. |
@@ -74,7 +74,7 @@ user = "root"
 | `user.groups` | array of strings | no | Further groups of the record. |
 | `user.home`, `user.shell` | string | per user | Home directory (`"/"` for none) and login shell. |
 | `user.password` | string | no (default `"!"`, no login by password) | The password field of the first `shadow` entry of the user. |
-| `setuid.package`, `setuid.program` | string | per entry | A program of a package of the system that runs as root. |
+| `setuid.package`, `setuid.program` | string | per entry | A selected package output and the path within it to a program that runs as root. |
 | `service.<name>` | table of strings | no | Adds the service record `<name>`, with these values for its parameters. |
 | `boot.loader` | string | with `[boot]` | The EFI program of a limine boot loader, usually `{pkg:limine}/share/limine/BOOTX64.EFI`. |
 | `boot.root` | string | no (default `PARTLABEL=vug-root`) | What the kernel takes as `root=`. |
@@ -85,8 +85,11 @@ read, and a package tree is usually public: it is the place for `""` (no
 password) or `"!"`, not for the hash of a real password. A password set on
 the machine with `passwd` lives only in `/etc/shadow`.
 
-`{pkg:NAME}` in `init`, `sh`, `boot.loader`, `file.content`, and `file.target` is replaced by the store path of
-the package `NAME` of the system. Unknown keys are errors.
+`kernel`, `packages`, and `setuid.package` accept selectors of the form `NAME:OUTPUT`.
+A bare `NAME` selects `NAME:out`. A selector in `setuid.package` must appear in the merged package list.
+
+`{pkg:NAME}` and `{pkg:NAME:OUTPUT}` in `init`, `sh`, `boot.loader`, `file.content`, and `file.target`
+expand to the selected store path. A reference must select an output in the merged package list.
 
 ## Service records
 
@@ -139,10 +142,10 @@ says.
 | `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
 | `kernel` | A link to the kernel image. |
 | `boot/entry`, `boot/loader`, `bin/install-boot` | With `[boot]`: the boot entry of this system (kernel, `root=`, `init=` of this system, and the arguments), a link to the loader, and the script that writes the boot entries. |
-| `sw/bin`, `sw/lib`, `sw/share` | One link per entry of the `bin` and `sbin`, `lib`, and `share` directories of the listed packages. A directory that two packages have is merged entry by entry, at every depth; for anything else of the same name, the package listed later wins. `sw/sbin` is a link to `bin`, and `sw/bin/sh` a link to the `sh` program of the record. |
+| `sw/bin`, `sw/lib`, `sw/share` | Links to the entries in `bin`, `sbin`, `lib`, and `share` of the outputs selected in `packages`. Matching directories merge recursively. Other name conflicts go to the later entry. `sw/sbin` links to `bin`, and `sw/bin/sh` links to the `sh` program of the record. |
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
-| `manifest/` | The paths and kinds of the files, the modes of the seed files, `passwd`, `group`, `shadow`, the home directories, the setuid programs, and `closure`: the store paths of the system, its kernel, its packages, and everything they need at run time. |
+| `manifest/` | The managed files, seed modes, users, groups, home directories, and setuid programs. `closure` lists the system's own store path and the deduplicated store paths of the selected kernel and package outputs and their transitive runtime dependencies. |
 | `.vug/system.toml`, `.vug/services/<name>.toml` | Copies of the system record and of its service records. |
 
 Owners and permission bits other than the execute bit are not part of a store
@@ -200,9 +203,9 @@ Paths the record does not list are never touched.
 
 `<system>/bin/switch-to-system`, run as root on the running machine:
 
-1. Checks the link paths (above), and, for a system with boot entries, that
-   `/boot` is mounted. A failed check ends the switch before anything
-   changes.
+1. Checks that the store paths in `manifest/closure` exist, validates the
+   link paths, and checks that `/boot` is mounted for a system with boot
+   entries. A failed check ends the switch before any changes.
 2. Finds the generation that points to this system, or adds the next number,
    and points `/vug/profiles/system` to it.
 3. Runs `activate`: `/run/current-system` is replaced in one rename, then
@@ -252,7 +255,7 @@ $ qemu-system-x86_64 -enable-kvm -m 1024 -nographic \
 | Command | Result |
 |---|---|
 | `build-system` | The system in the store. |
-| `build-image --image FILE [--size SIZE]` | For a system with `[boot]`: also a GPT disk image with an EFI system partition of 256 MiB (the loader, the kernel, and the entry of generation 1) and a root partition of `SIZE`, made with `sfdisk`, `mkfs.fat`, `mcopy`, and `mke2fs` of the packages `util-linux`, `dosfstools`, `mtools`, and `e2fsprogs`. Written to a disk, it boots a machine with EFI firmware. Otherwise: also an ext4 image (default size `4g`) whose root holds the store paths of the system, generation 1 pointing to it, the index of the data directory at `/vug/index`, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
+| `build-image --image FILE [--size SIZE]` | For a system with `[boot]`: also a GPT disk image with an EFI system partition of 256 MiB (the loader, the kernel, and the entry of generation 1) and a root partition of `SIZE`, made with `sfdisk`, `mkfs.fat`, `mcopy`, and `mke2fs` of the packages `util-linux`, `dosfstools`, `mtools`, and `e2fsprogs`. Written to a disk, it boots a machine with EFI firmware. Otherwise: also an ext4 image (default size `4g`) whose root holds the store paths listed in `manifest/closure`, generation 1 pointing to the system, the data directory indexes at `/vug/index` and `/vug/index-outputs` when present, the records (`seed.toml`, `packages`, `services`, `systems`) at `/vug/tree`, and empty directories. The image is made by `mke2fs` of the package `e2fsprogs`; every file belongs to root. The kernel needs the drivers of the disk and ext4 built in, since there is no initramfs. |
 | `switch-system` | The system in the store, then its `bin/switch-to-system` runs. For a machine that runs a vug system. |
 | `export-system --archive FILE [--base SYSTEM]` | Also a cpio archive ("newc") of the store paths of the system, without those of the system `SYSTEM` (an id or a store path in the same store). |
 

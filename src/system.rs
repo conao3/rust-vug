@@ -9,6 +9,7 @@ use vug::cpio;
 
 use crate::build::{self, Builder, Settings};
 use crate::naming::model;
+use crate::record::dependency_output;
 use vug::steps::shell_quote;
 
 const STORE: &str = "/vug/store";
@@ -178,6 +179,12 @@ if [ "$($b id -u)" != 0 ]; then
   echo "vug: switch-to-system must run as root" >&2
   exit 1
 fi
+while IFS= read -r path; do
+  if [ ! -d "$path" ]; then
+    echo "vug: missing store path $path required by $self" >&2
+    exit 1
+  fi
+done < "$self/manifest/closure"
 $self/activate check
 if [ -x $self/bin/install-boot ] && ! $b mountpoint -q /boot; then
   echo "vug: /boot is not mounted; nothing was changed" >&2
@@ -482,11 +489,10 @@ fn fragment(
         None if parameters.is_some() => Vec::new(),
         _ => strings(table, "packages", "")?,
     };
-    for package in &packages {
-        if !model::valid_name(package) {
-            return Err(format!("{package:?}: not a valid package name"));
-        }
-    }
+    let packages = packages
+        .iter()
+        .map(|package| package_selector(package).map(str::to_owned))
+        .collect::<Result<_, _>>()?;
 
     let mut groups = Vec::new();
     for entry in tables(table, "group")? {
@@ -606,6 +612,7 @@ fn fragment(
     for entry in tables(table, "setuid")? {
         unknown_keys(entry, &["package", "program"], "setuid.")?;
         let package = string(entry, "package", "setuid.")?;
+        let package = package_selector(&package)?.to_owned();
         let program = string(entry, "program", "setuid.")?;
         if !valid_image_path(&format!("/{program}")) {
             return Err(format!(
@@ -723,6 +730,16 @@ fn validate(parts: &Fragment) -> Result<(), String> {
     Ok(())
 }
 
+fn package_selector(selector: &str) -> Result<&str, String> {
+    let (package, output) = dependency_output(selector);
+    if !model::valid_name(package) || !model::valid_name(output) {
+        return Err(format!(
+            "{selector:?}: not a valid package or output selector"
+        ));
+    }
+    Ok(if output == "out" { package } else { selector })
+}
+
 /// Reads `services/<name>.toml` with the parameter values `given`.
 fn load_service(
     root: &Path,
@@ -777,9 +794,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         return Err(format!("name: expected {name:?}"));
     }
     let kernel = string(&table, "kernel", "")?;
-    if !model::valid_name(&kernel) {
-        return Err(format!("{kernel:?}: not a valid package name"));
-    }
+    let kernel = package_selector(&kernel)?.to_owned();
     let init = string(&table, "init", "")?;
     if init.split_whitespace().next().is_none() {
         return Err("init: expected a command".to_owned());
@@ -998,7 +1013,11 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     for package in &record.parts.packages {
         let built = builder.build(package, None)?;
         closure.extend(built.closure().iter().cloned());
-        paths.insert(package.clone(), format!("{STORE}/{}", built.id));
+        let path = format!("{STORE}/{}", built.id);
+        if !package.contains(':') {
+            paths.insert(format!("{package}:out"), path.clone());
+        }
+        paths.insert(package.clone(), path);
         roots.push(built.id);
     }
 
@@ -1389,9 +1408,11 @@ pub fn build_image(
         &root.join("vug/profiles/system-1"),
     )?;
     symlink("system-1", &root.join("vug/profiles/system"))?;
-    let index = settings.data_dir.join("index");
-    if index.exists() {
-        copy_tree(&index, &root.join("vug/index"))?;
+    for name in ["index", "index-outputs"] {
+        let index = settings.data_dir.join(name);
+        if index.exists() {
+            copy_tree(&index, &root.join("vug").join(name))?;
+        }
     }
     let tree = root.join("vug/tree");
     io("create", &tree, fs::create_dir_all(&tree))?;
