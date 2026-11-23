@@ -58,6 +58,16 @@ while :; do
         fail "partition did not appear within 30 seconds; detected:${detected:- none}"
     sleep 1
 done
+if [ -f /etc/luks-name ]; then
+    mapper=$(cat /etc/luks-name)
+    console=
+    for tty in $(cat /sys/class/tty/console/active); do console=$tty; done
+    [ -n "$console" ] && [ -c "/dev/$console" ] || fail "no local unlock console"
+    setsid -c cryptsetup open --type luks2 --tries 1 "$device" "$mapper" \
+        <"/dev/$console" >"/dev/$console" 2>&1 ||
+        fail "unlocking $device failed"
+    device=/dev/mapper/$mapper
+fi
 mount -t ext4 -o ro "$device" /new-root || fail "mounting $device"
 [ -x "/new-root$init" ] || fail "generation init missing: $init"
 udevadm control --exit

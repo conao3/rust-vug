@@ -5,6 +5,7 @@ pub(super) struct Layout {
     pub esp_bytes: u64,
     pub esp_name: String,
     pub root_name: String,
+    pub luks: Option<String>,
     pub esp_options: String,
 }
 
@@ -27,7 +28,7 @@ impl Layout {
             return Err("disk.partition: expected ESP followed by root".into());
         };
         unknown_keys(esp, &["name", "type", "size-mib"], "disk.partition.")?;
-        unknown_keys(root, &["name", "type", "grow"], "disk.partition.")?;
+        unknown_keys(root, &["name", "type", "grow", "luks"], "disk.partition.")?;
         let esp_name = string(esp, "name", "disk.partition.")?;
         let root_name = string(root, "name", "disk.partition.")?;
         if [&esp_name, &root_name]
@@ -45,6 +46,25 @@ impl Layout {
         {
             return Err("disk.partition: expected ESP of at least 64 MiB and growing root".into());
         }
+        let luks = root
+            .get("luks")
+            .map(|value| -> Result<String, String> {
+                let table = value
+                    .as_table()
+                    .ok_or("disk.partition.luks: expected a table")?;
+                unknown_keys(table, &["name"], "disk.partition.luks.")?;
+                let name = string(table, "name", "disk.partition.luks.")?;
+                if name.len() > 36
+                    || !valid_account(&name)
+                    || name == "control"
+                    || name == esp_name
+                    || name == root_name
+                {
+                    return Err("disk.partition.luks.name: expected a distinct mapper name".into());
+                }
+                Ok(name)
+            })
+            .transpose()?;
         let mut esp_options = None;
         let mut have_root = false;
         for filesystem in tables(table, "filesystem")? {
@@ -57,7 +77,9 @@ impl Layout {
             let mount = string(filesystem, "mount", "filesystem.")?;
             let kind = string(filesystem, "type", "filesystem.")?;
             match (mount.as_str(), kind.as_str()) {
-                ("/", "ext4") if partition == root_name && !have_root => {
+                ("/", "ext4")
+                    if partition == *luks.as_ref().unwrap_or(&root_name) && !have_root =>
+                {
                     if filesystem.contains_key("options") {
                         return Err("filesystem.options: unsupported for root".into());
                     }
@@ -92,15 +114,20 @@ impl Layout {
                 esp_bytes,
                 root_name,
                 esp_options,
+                luks,
             })),
             _ => Err("filesystem: root and ESP mounts are required".into()),
         }
     }
 
     pub fn partition_spec(&self) -> String {
-        format!(
+        let mut spec = format!(
             "{} {} {} {}\n",
             self.esp_name, self.esp_bytes, self.root_name, self.esp_options
-        )
+        );
+        if let Some(name) = &self.luks {
+            spec.push_str(&format!("luks2 {name}\n"));
+        }
+        spec
     }
 }

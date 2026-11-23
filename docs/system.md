@@ -312,6 +312,22 @@ The ESP comes first and is at least 64 MiB. The root takes the size requested by
 
 This layout supplies the root boot argument and the ESP mount. Omit `boot.root`, `service.esp`, and separate fstab or boot mount definitions for these systems. The system switch checks the requested layout against the installed layout before changing generations. It reuses the installed root PARTUUID for the next boot menu and leaves the partition table in place.
 
+### Encrypting the root
+
+Add `[disk.partition.luks]` below the growing root partition and set
+`name = "vug-root"`. Set the root filesystem's `partition` to that mapper
+name. The ESP remains FAT, and the root stays ext4 inside LUKS2. The kernel
+needs device mapper, dm-crypt, and AES-XTS support. The initial environment
+includes cryptsetup and loads dm-crypt for this layout.
+
+Run the installer with `--apply` from a local terminal to set and confirm the
+passphrase, then enter it again to populate the encrypted partition. The
+installer needs loop and device mapper support on the running kernel.
+`build-image` with an encrypted layout likewise requires root and a terminal.
+Each boot resolves the outer partition by PARTUUID and prompts once on the
+active local console. A failed unlock stops stage 1. The generation layout
+check includes the mapper name, and the root fstab entry refers to that mapper.
+
 ## Commands
 
 ```console

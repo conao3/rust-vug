@@ -11,10 +11,11 @@ pub(super) struct Config {
     available: Vec<String>,
     force: Vec<String>,
     firmware: Vec<PathBuf>,
+    luks: Option<String>,
 }
 
 impl Config {
-    pub(super) fn load(value: &toml::Value) -> Result<Self, String> {
+    pub(super) fn load(value: &toml::Value, luks: Option<String>) -> Result<Self, String> {
         let table = value.as_table().ok_or("boot.initrd: expected a table")?;
         unknown_keys(
             table,
@@ -38,9 +39,14 @@ impl Config {
             }
             Ok(values)
         };
+        let mut force = modules("force-modules")?;
+        if luks.is_some() {
+            force.push("dm_crypt".into());
+        }
         Ok(Self {
             available: modules("available-modules")?,
-            force: modules("force-modules")?,
+            force,
+            luks,
             firmware: super::firmware::selection(table)?,
         })
     }
@@ -302,6 +308,12 @@ pub(super) fn build(
     executables.link(&format!("{systemd}/bin/udevadm"), "udevadm")?;
     executables.link(&format!("{systemd}/bin/udevadm"), "systemd-udevd")?;
     executables.link(&format!("{util}/sbin/blkid"), "blkid")?;
+    if let Some(name) = &config.luks {
+        symlink("busybox", &stage.join("bin/setsid"))?;
+        let cryptsetup = package(builder, "cryptsetup")?;
+        executables.link(&format!("{cryptsetup}/sbin/cryptsetup"), "cryptsetup")?;
+        write_file(&stage.join("etc/luks-name"), name.as_bytes(), 0o644)?;
+    }
     let rules = store
         .join(systemd.strip_prefix("/vug/store/").unwrap())
         .join("lib/udev/rules.d/80-drivers.rules");

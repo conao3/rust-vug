@@ -857,7 +857,15 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         Some(value) => {
             let entry = value.as_table().ok_or("boot: expected a table")?;
             unknown_keys(entry, &["loader", "root", "arguments", "initrd"], "boot.")?;
-            let initrd = entry.get("initrd").map(initrd::Config::load).transpose()?;
+            let initrd = entry
+                .get("initrd")
+                .map(|value| {
+                    initrd::Config::load(
+                        value,
+                        disk.as_ref().and_then(|layout| layout.luks.clone()),
+                    )
+                })
+                .transpose()?;
             let arguments = match entry.get("arguments") {
                 None => Vec::new(),
                 Some(_) => strings(entry, "arguments", "boot.")?,
@@ -1474,10 +1482,14 @@ fn write_efi_parts(
             esp_uuid.as_bytes(),
             0o644,
         )?;
+        let root_device = match &layout.luks {
+            Some(name) => format!("/dev/mapper/{name}"),
+            None => format!("PARTUUID={root_uuid}"),
+        };
         write_file(
             &root.join("etc/fstab"),
             format!(
-                "PARTUUID={root_uuid} / ext4 defaults 0 0\nPARTUUID={esp_uuid} /boot vfat {} 0 0\n",
+                "{root_device} / ext4 defaults 0 0\nPARTUUID={esp_uuid} /boot vfat {} 0 0\n",
                 layout.esp_options
             )
             .as_bytes(),
@@ -1608,6 +1620,21 @@ fn image_with(
     size: &str,
     builder: &mut Builder<'_>,
 ) -> Result<BuiltSystem, String> {
+    use std::io::{IsTerminal as _, Seek as _, SeekFrom};
+    use std::os::fd::AsFd as _;
+
+    let encrypted = record
+        .disk
+        .as_ref()
+        .is_some_and(|layout| layout.luks.is_some());
+    if encrypted && (unsafe { libc::geteuid() } != 0 || !std::io::stdin().is_terminal()) {
+        return Err("LUKS2 image creation requires root and a local terminal".into());
+    }
+    let cryptsetup = if encrypted {
+        Some(builder.build("cryptsetup", None)?.id)
+    } else {
+        None
+    };
     let system = build_with(settings, name, record, builder)?;
     let tools = builder.build("e2fsprogs", None)?;
     let work = work_dir(settings, "image")?;
@@ -1639,6 +1666,7 @@ fn image_with(
     if image.symlink_metadata().is_ok() {
         io("remove", image, fs::remove_file(image))?;
     }
+    let mut offset = None;
     let mut options = format!("root_owner=0:0,hash_seed={IMAGE_UUID}");
     if system.efi {
         io("create", &root, fs::create_dir_all(root.join("boot")))?;
@@ -1654,22 +1682,102 @@ fn image_with(
         io("resize", image, disk.set_len(image_bytes))?;
         drop(disk);
         write_efi_parts(settings, &system, &work, image, root_bytes, builder)?;
-        options.push_str(&format!(",offset={root_offset}"));
+        offset = Some(root_offset);
+        if !encrypted {
+            options.push_str(&format!(",offset={root_offset}"));
+        }
     }
-    let status = build::store_command(settings, true)?
-        .env("E2FSPROGS_FAKE_TIME", "315532800")
-        .arg(format!("{STORE}/{}/sbin/mke2fs", tools.id))
-        .args(["-q", "-F", "-t", "ext4", "-L", "vug"])
-        .args(["-U", IMAGE_UUID])
-        .args(["-E", &options])
-        .arg("-d")
-        .arg(&root)
-        .arg(image)
-        .arg(size)
-        .status()
-        .map_err(|e| format!("bwrap: {e}"))?;
-    if !status.success() {
-        return Err(format!("mke2fs: {status}"));
+    let format_root = |destination: &Path, size: Option<&str>| {
+        let mut command = build::store_command(settings, !encrypted)?;
+        command
+            .env("E2FSPROGS_FAKE_TIME", "315532800")
+            .arg(format!("{STORE}/{}/sbin/mke2fs", tools.id))
+            .args(["-q", "-F", "-t", "ext4", "-L", "vug"])
+            .args(["-U", IMAGE_UUID])
+            .args(["-E", &options])
+            .arg("-d")
+            .arg(&root)
+            .arg(destination)
+            .args(size);
+        let status = command
+            .status()
+            .map_err(|error| format!("mke2fs: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("mke2fs: {status}"))
+        }
+    };
+    if let Some(id) = cryptsetup {
+        let ciphertext = tempfile::NamedTempFile::new_in(&work)
+            .map_err(|error| format!("stage LUKS2 partition: {error}"))?;
+        ciphertext
+            .as_file()
+            .set_len(size_in_bytes(size)?)
+            .map_err(|error| format!("size LUKS2 partition: {error}"))?;
+        let mapper = format!(
+            "vug-install-{}",
+            ciphertext.path().file_name().unwrap().to_string_lossy()
+        );
+        let device = Path::new("/dev/mapper").join(&mapper);
+        let cryptsetup = |arguments: &[&std::ffi::OsStr]| {
+            let status = build::store_command(settings, false)?
+                .arg(format!("{STORE}/{id}/sbin/cryptsetup"))
+                .args(arguments)
+                .stdout(
+                    std::io::stderr()
+                        .as_fd()
+                        .try_clone_to_owned()
+                        .map_err(|error| error.to_string())?,
+                )
+                .status()
+                .map_err(|error| format!("cryptsetup: {error}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("cryptsetup: {status}"))
+            }
+        };
+        let path = ciphertext.path().as_os_str();
+        cryptsetup(&[
+            "luksFormat".as_ref(),
+            "--type".as_ref(),
+            "luks2".as_ref(),
+            path,
+        ])?;
+        cryptsetup(&[
+            "open".as_ref(),
+            "--type".as_ref(),
+            "luks2".as_ref(),
+            path,
+            mapper.as_ref(),
+        ])?;
+        let formatted = format_root(&device, None);
+        let closed = cryptsetup(&["close".as_ref(), mapper.as_ref()]);
+        match (formatted, closed) {
+            (Err(format), Err(close)) => {
+                return Err(format!("{format}; closing {mapper}: {close}"));
+            }
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+            (Ok(()), Ok(())) => {}
+        }
+        let mut disk = io(
+            "open",
+            image,
+            fs::OpenOptions::new().write(true).open(image),
+        )?;
+        io(
+            "seek",
+            image,
+            disk.seek(SeekFrom::Start(offset.expect("LUKS2 requires GPT"))),
+        )?;
+        io(
+            "write encrypted partition",
+            image,
+            std::io::copy(&mut ciphertext.as_file(), &mut disk),
+        )?;
+    } else {
+        format_root(image, Some(size))?;
     }
     remove_tree(&work)?;
     Ok(system)

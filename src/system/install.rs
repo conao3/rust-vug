@@ -133,6 +133,9 @@ pub fn run(settings: &Settings, name: &str, path: &Path, apply: bool) -> Result<
         ],
         "Applied": false
     });
+    if let Some(name) = &layout.luks {
+        plan["Partitions"][1]["Luks"] = json!({ "Type": "luks2", "Name": name });
+    }
     drop(disk);
     if !apply {
         return Ok(plan);
