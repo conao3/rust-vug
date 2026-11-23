@@ -88,9 +88,9 @@ skip = []
 | `patches` | array of strings | no (default empty) | File names in `patches/`, applied in order with `-p1`. Order is kept. |
 | `build.kind` | string | yes | One of the build kinds below. |
 | `build.*` | | | Options of that kind. Unknown options are rejected. |
-| `dependencies.build` | array of strings | yes | Package names needed while building. Sorted, no duplicates. |
-| `dependencies.run` | array of strings | yes | Package names needed by the output at run time. Sorted, no duplicates. |
-| `dependencies.expose` | array of strings | no | Package names that a build against this package needs as well, without the output needing them at run time: the headers its own headers include, the pkg-config files its pkg-config file requires. Sorted, no duplicates; left out when empty. |
+| `dependencies.build` | array of strings | yes | Dependency selectors needed while building. Sorted, no duplicate selections. |
+| `dependencies.run` | array of strings | yes | Dependency selectors needed by the implicit `out` output at run time. Sorted, no duplicate selections. Empty when declaring `[outputs]`. |
+| `dependencies.expose` | array of strings | no | Dependency selectors passed to builds against this package, such as the headers its own headers include or the pkg-config files its pkg-config files require. Sorted, no duplicate selections. Omitted when empty. |
 | `check.enabled` | boolean | yes | Whether the test suite runs. |
 | `check.skip` | array of strings | yes | Test names to skip when `check.enabled` is true. Sorted, no duplicates. A nonempty list requires a build kind that supports exclusions. |
 | `check.private-cxx-runtime` | boolean | no | `true` lets the output hold a statically linked C++ runtime (`build.md`, "The C++ runtime"): the runtime package itself and the tools it is built with. Left out when false. |
@@ -99,6 +99,48 @@ Unknown keys and unknown tables are errors.
 
 A source file named `*.tar.lz` is decoded from lzip before tar extraction.
 `source.sha256` covers the downloaded, compressed file.
+
+### Outputs and dependency selectors
+
+A bare package name selects `out`. Use `package:output` to select an output
+explicitly in `dependencies.build`, `dependencies.run`, `dependencies.expose`,
+or an output's `run` list. For example, a consumer can list both `llvm:dev`
+and `llvm:lib` in `dependencies.build`. Within an output's `run` list,
+`:output` selects another output of the same build.
+
+A version record with output tables must declare `[outputs.out]` and set
+`dependencies.run = []`. Use `dependencies.build` for shared build inputs
+and each output's `run` list for its own runtime dependencies. Output names
+follow the package-name rules. A version without output tables has one
+implicit output named `out`.
+
+```toml
+[outputs.out]
+run = []
+
+[outputs.lib]
+paths = ["lib/*.so.*"]
+run = ["zlib"]
+
+[outputs.dev]
+paths = ["include/**", "lib/*.a", "lib/example.so"]
+run = [":lib"]
+```
+
+`paths` lists exact paths or glob patterns relative to the staging tree.
+`*` matches zero or more characters within a path component, `?` matches
+one character within a component, and `**` as an entire component matches
+zero or more components. Other characters match literally. All components
+must be nonempty and stay inside the staging tree. The partition assigns
+unmatched files to `out`. Declarations that can assign the same path to two
+outputs are invalid.
+
+Both arrays default to empty. Canonical formatting writes `paths` when
+nonempty and always writes `run`. Both arrays and the output tables are
+sorted by byte order. Record validation checks local output names and cycles.
+Tree validation also resolves external selectors to the current version of
+each dependency and checks for unknown outputs and dependency cycles.
+Building a version with output tables requires staging-tree partition support.
 
 ### Selecting tests to skip
 
@@ -120,7 +162,8 @@ Inside the strings of `configure-flags`, `make-flags`, `install-flags`, and
 
 - `{out}` is replaced by the store path the package is installed to.
 - `{dep:NAME}` is replaced by the store path of the dependency `NAME`, which
-  must be listed in `dependencies.build` or `dependencies.run`.
+  must be listed in `dependencies.build` or `dependencies.run`. Use
+  `{dep:NAME:OUTPUT}` for an explicitly listed selector.
 
 ```toml
 configure-flags = [
@@ -308,7 +351,8 @@ identical files.
 - No comments.
 - Top-level keys first, then tables, each in the order of the tables above
   (`package.toml`: `name`, `license`, `[upstream]`; version files: `version`,
-  `patches`, `[source]`, `[build]`, `[dependencies]`, `[check]`, `[links]`,
+  `patches`, `[source]`, `[build]`, `[dependencies]`, `[outputs.*]`,
+  `[check]`, `[links]`,
   `[wrappers]`). Keys inside a
   table follow the order of the tables above; `build.kind` comes first in
   `[build]`.

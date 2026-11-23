@@ -707,3 +707,131 @@ fn version_linux_kind() {
     .unwrap();
     assert_invalid(&check_record(&v), "build.config");
 }
+
+fn with_outputs(record: &str, outputs: &str) -> String {
+    record.replace("[check]", &format!("{outputs}\n[check]"))
+}
+
+#[test]
+fn format_outputs_in_canonical_order() {
+    let tmp = TmpDir::new("format-outputs");
+    let record = version_toml("1").replace("build = []", "build = [\"llvm:dev\", \"llvm:lib\"]");
+    let input = with_outputs(
+        &record,
+        r#"[outputs.out]
+[outputs."dev.sdk"]
+run = ["zlib", ":lib"]
+paths = ["include/**", "bin/header-tool"]
+
+[outputs.lib]
+paths = ["lib/*.so.*"]
+"#,
+    );
+    let file = package_dir(&tmp, "consumer").join("versions/1.toml");
+    std::fs::write(&file, input).unwrap();
+    let result = format_record(&file);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let canonical = result["Record"].as_str().unwrap();
+    assert!(canonical.contains(
+        "[outputs.\"dev.sdk\"]\npaths = [\n  \"bin/header-tool\",\n  \"include/**\",\n]\nrun = [\n  \":lib\",\n  \"zlib\",\n]\n\n[outputs.lib]\npaths = [\n  \"lib/*.so.*\",\n]\nrun = []\n\n[outputs.out]\nrun = []"
+    ));
+    std::fs::write(&file, canonical).unwrap();
+    assert!(check_record(&file).status.success());
+}
+
+#[test]
+fn reject_invalid_output_declarations() {
+    let tmp = TmpDir::new("invalid-outputs");
+    let file = package_dir(&tmp, "consumer").join("versions/1.toml");
+    for (declarations, diagnostic) in [
+        ("[outputs.lib]\nrun = []\n", "outputs.out"),
+        ("[outputs.out]\nrun = [\":lib\"]\n", "unknown output"),
+        (
+            "[outputs.out]\nrun = [\":lib\"]\n[outputs.lib]\nrun = [\":out\"]\n",
+            "dependency cycle",
+        ),
+        ("[outputs.out]\nrun = [\":out\"]\n", "dependency cycle"),
+        (
+            "[outputs.out]\npaths = [\"../lib\"]\n",
+            "inside the staging tree",
+        ),
+        (
+            "[outputs.out]\npaths = [\"lib/**/a?.so\"]\n[outputs.dev]\npaths = [\"lib/**/a*.so\"]\n",
+            "overlaps",
+        ),
+        (
+            "[outputs.out]\npaths = [\"bin/tool\"]\n[outputs.dev]\npaths = [\"bin/tool\"]\n",
+            "overlaps",
+        ),
+    ] {
+        std::fs::write(&file, with_outputs(&version_toml("1"), declarations)).unwrap();
+        assert_invalid(&format_record(&file), diagnostic);
+    }
+    for (build, run, output, diagnostic) in [
+        ("[\":lib\"]", "[]", "", "invalid dependency"),
+        ("[\"empty:\"]", "[]", "", "invalid dependency"),
+        ("[\"foo:out:lib\"]", "[]", "", "invalid dependency"),
+        ("[\"foo\", \"foo:out\"]", "[]", "", "select the same output"),
+        (
+            "[]",
+            "[\"foo\"]",
+            "[outputs.out]\nrun = []\n",
+            "expected an empty array",
+        ),
+    ] {
+        let record = version_toml("1").replace(
+            "build = []\nrun = []",
+            &format!("build = {build}\nrun = {run}"),
+        );
+        std::fs::write(&file, with_outputs(&record, output)).unwrap();
+        assert_invalid(&format_record(&file), diagnostic);
+    }
+}
+
+#[test]
+fn check_tree_resolves_outputs_on_current_dependency_versions() {
+    let tmp = TmpDir::new("check-output-tree");
+    let consumer_dir = package_dir(&tmp, "consumer");
+    let library_dir = package_dir(&tmp, "library");
+    let consumer = consumer_dir.join("versions/1.toml");
+    let library_v2 = library_dir.join("versions/2.toml");
+    std::fs::write(
+        &consumer,
+        version_toml("1").replace(
+            "build = []\nrun = []",
+            "build = [\n  \"library:dev\",\n]\nrun = [\n  \"library:lib\",\n]\nexpose = [\n  \"library:dev\",\n]",
+        ),
+    )
+    .unwrap();
+    let library_outputs = "[outputs.dev]\npaths = [\n  \"include/**\",\n]\nrun = [\n  \":lib\",\n]\n\n[outputs.lib]\npaths = [\n  \"lib/*.so.*\",\n]\nrun = []\n\n[outputs.out]\nrun = []\n";
+    std::fs::write(
+        library_dir.join("versions/1.toml"),
+        with_outputs(&version_toml("1"), library_outputs),
+    )
+    .unwrap();
+    std::fs::write(&library_v2, version_toml("2")).unwrap();
+    assert_invalid(&check_tree(tmp.path()), "unknown output \"library:dev\"");
+    assert_invalid(&check_tree(tmp.path()), "unknown output \"library:lib\"");
+    assert!(check_record(&consumer).status.success());
+
+    let current_library = with_outputs(&version_toml("2"), library_outputs);
+    std::fs::write(&library_v2, &current_library).unwrap();
+    let result = check_tree(tmp.path());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+
+    std::fs::write(
+        &library_v2,
+        current_library.replace("build = []", "build = [\n  \"consumer\",\n]"),
+    )
+    .unwrap();
+    assert_invalid(&check_tree(tmp.path()), "consumer -> library -> consumer");
+}

@@ -14,7 +14,6 @@ use vug::{fetch, rewrite, treehash};
 
 use crate::naming::model;
 use crate::record::{self, BuildOptions};
-use crate::version;
 
 const STORE: &str = "/vug/store";
 const PLACEHOLDER_ID: &str = "00000000000000000000000000000000";
@@ -24,6 +23,58 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
 const BUILD_RULES: &str = "8";
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct OutputBinding<'a> {
+    role: String,
+    package: &'a str,
+    output: &'a str,
+    id: &'a str,
+}
+
+fn build_key(
+    canonical: &str,
+    seed_id: &str,
+    dep_ids: &BTreeSet<String>,
+    bindings: Option<&BTreeSet<OutputBinding<'_>>>,
+) -> String {
+    let mut hasher = if bindings.is_some() {
+        blake3::Hasher::new_derive_key("vug build key for selected outputs v1")
+    } else {
+        blake3::Hasher::new()
+    };
+    if let Some(bindings) = bindings {
+        let mut field = |value: &str| {
+            hasher.update(&(value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        };
+        for value in [canonical, seed_id, BUILD_RULES] {
+            field(value);
+        }
+        field(&dep_ids.len().to_string());
+        for id in dep_ids {
+            field(id);
+        }
+        for binding in bindings {
+            for value in [
+                binding.role.as_str(),
+                binding.package,
+                binding.output,
+                binding.id,
+            ] {
+                field(value);
+            }
+        }
+    } else {
+        hasher.update(canonical.as_bytes());
+        hasher.update(seed_id.as_bytes());
+        hasher.update(BUILD_RULES.as_bytes());
+        for id in dep_ids {
+            hasher.update(id.as_bytes());
+        }
+    }
+    treehash::encode_base32(hasher.finalize().as_bytes().first_chunk().unwrap())
+}
 
 pub struct Settings {
     /// Repository root containing `seed.toml` and `packages/`.
@@ -297,34 +348,6 @@ fn ensure_seed(settings: &Settings, table: &toml::Table, id: &str) -> Result<Pat
     Ok(seed_dir)
 }
 
-fn version_stems(versions_dir: &Path) -> Result<Vec<String>, String> {
-    let mut stems = Vec::new();
-    for entry in io("read", versions_dir, fs::read_dir(versions_dir))? {
-        let entry = io("read", versions_dir, entry)?;
-        if let Some(stem) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.strip_suffix(".toml"))
-        {
-            stems.push(stem.to_owned());
-        }
-    }
-    Ok(stems)
-}
-
-fn current_version(versions_dir: &Path) -> Result<String, String> {
-    version_stems(versions_dir)?
-        .into_iter()
-        .reduce(|best, v| {
-            if version::compare(&v, &best) == version::model::Ordering::Gt {
-                v
-            } else {
-                best
-            }
-        })
-        .ok_or_else(|| format!("{}: no version records", versions_dir.display()))
-}
-
 /// Puts a link `into/<name>` to `<inside>/<name>` for every entry of
 /// `host_dir`, replacing a link of the same name. A missing `host_dir` adds
 /// nothing.
@@ -511,6 +534,9 @@ impl<'a> Builder<'a> {
     /// Builds `name` (or takes it from the index or the binary cache) and
     /// returns it with its output and run-time closure present in the store.
     pub fn build(&mut self, name: &str, requested: Option<&str>) -> Result<Built, String> {
+        if !model::valid_name(name) {
+            return Err(format!("{name:?}: not a valid package name"));
+        }
         self.resolve(name, requested, true)
     }
 
@@ -519,13 +545,11 @@ impl<'a> Builder<'a> {
     /// or the binary cache knows is returned as it is.
     fn resolve(
         &mut self,
-        name: &str,
+        spec: &str,
         requested: Option<&str>,
         present: bool,
     ) -> Result<Built, String> {
-        if !model::valid_name(name) {
-            return Err(format!("{name:?}: not a valid package name"));
-        }
+        let (name, output) = record::dependency_output(spec);
         if self.in_progress.iter().any(|n| n == name) {
             return Err(format!(
                 "dependency cycle: {} -> {name}",
@@ -533,7 +557,7 @@ impl<'a> Builder<'a> {
             ));
         }
         self.in_progress.push(name.to_owned());
-        let result = self.build_inner(name, requested, present);
+        let result = self.build_inner(name, output, requested, present);
         self.in_progress.pop();
         result
     }
@@ -615,6 +639,7 @@ impl<'a> Builder<'a> {
     fn build_inner(
         &mut self,
         name: &str,
+        output: &str,
         requested: Option<&str>,
         present: bool,
     ) -> Result<Built, String> {
@@ -622,7 +647,7 @@ impl<'a> Builder<'a> {
         let package_dir = settings.root.join(model::package_dir(name));
         let version = match requested {
             Some(v) => v.to_owned(),
-            None => current_version(&package_dir.join("versions"))?,
+            None => record::current_version(&package_dir.join("versions"))?,
         };
         if !model::valid_version(&version) {
             return Err(format!("{version:?}: not a valid version"));
@@ -635,9 +660,20 @@ impl<'a> Builder<'a> {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
+        if !record.has_output(output) {
+            return Err(format!(
+                "{name}:{output}: unknown output in version {version}"
+            ));
+        }
+        if !record.outputs.is_empty() {
+            return Err(format!(
+                "{name}: building packages with split outputs is not supported yet"
+            ));
+        }
 
         let mut dep_ids = BTreeSet::new();
         let mut direct = BTreeMap::new();
+        let mut selected_ids = BTreeMap::new();
         let mut run_closure = BTreeSet::new();
         let mut exposed = BTreeSet::new();
         let mut dep_names = record.deps_build.clone();
@@ -649,6 +685,7 @@ impl<'a> Builder<'a> {
             dep_ids.extend(built.closure.iter().cloned());
             dep_ids.extend(built.exposed.iter().cloned());
             direct.insert(dep.clone(), format!("{STORE}/{}", built.id));
+            selected_ids.insert(dep.as_str(), built.id);
             if record.deps_run.contains(dep) {
                 run_closure.extend(built.closure.iter().cloned());
                 exposed.extend(built.exposed.iter().cloned());
@@ -658,19 +695,24 @@ impl<'a> Builder<'a> {
             let built = self.resolve(dep, None, present)?;
             exposed.extend(built.closure.iter().cloned());
             exposed.extend(built.exposed.iter().cloned());
+            selected_ids.insert(dep.as_str(), built.id);
         }
 
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(canonical.as_bytes());
-        hasher.update(self.seed_id.as_bytes());
-        hasher.update(BUILD_RULES.as_bytes());
-        for id in &dep_ids {
-            hasher.update(id.as_bytes());
-        }
-        let key_bytes: [u8; 20] = hasher.finalize().as_bytes()[..20]
-            .try_into()
-            .map_err(|_| "key hash".to_owned())?;
-        let key = treehash::encode_base32(&key_bytes);
+        let bindings = record.uses_output_keys().then(|| {
+            record
+                .dependencies()
+                .filter_map(|(role, dep)| {
+                    let (package, output) = record::dependency_output(dep);
+                    (!package.is_empty()).then(|| OutputBinding {
+                        role,
+                        package,
+                        output,
+                        id: &selected_ids[dep],
+                    })
+                })
+                .collect()
+        });
+        let key = build_key(&canonical, &self.seed_id, &dep_ids, bindings.as_ref());
 
         let store_dir = settings.data_dir.join("store");
         let index_path = settings.data_dir.join("index").join(name).join(&version);
@@ -1165,7 +1207,107 @@ pub fn export_cache(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_archive, private_cxx_runtime};
+    use super::{BUILD_RULES, OutputBinding, build_key, prepare_archive, private_cxx_runtime};
+    use super::{Builder, Settings, fs, model, record};
+    use std::collections::BTreeSet;
+    use vug::treehash;
+
+    #[test]
+    fn legacy_key_uses_the_original_concatenation() {
+        let ids = BTreeSet::from(["id-one".to_owned(), "id-two".to_owned()]);
+        let hash = blake3::hash(format!("recordseed{BUILD_RULES}id-oneid-two").as_bytes());
+        let expected = treehash::encode_base32(hash.as_bytes().first_chunk().unwrap());
+        assert_eq!(build_key("record", "seed", &ids, None), expected);
+    }
+
+    #[test]
+    fn versioned_key_commits_to_the_selected_outputs_and_roles() {
+        let ids = BTreeSet::from(["id-one".to_owned(), "id-two".to_owned()]);
+        let key = |role: &str, output: &str, id: &str| {
+            build_key(
+                "record",
+                "seed",
+                &ids,
+                Some(&BTreeSet::from([OutputBinding {
+                    role: role.to_owned(),
+                    package: "llvm",
+                    output,
+                    id,
+                }])),
+            )
+        };
+        let original = key("dependencies.build", "dev", "id-one");
+        assert_ne!(original, build_key("record", "seed", &ids, None));
+        assert_ne!(original, key("dependencies.run", "dev", "id-one"));
+        assert_ne!(original, key("dependencies.build", "lib", "id-one"));
+        assert_ne!(original, key("dependencies.build", "dev", "id-two"));
+    }
+
+    #[test]
+    fn explicit_out_selector_uses_the_versioned_key_for_an_index_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            root: directory.path().to_owned(),
+            data_dir: directory.path().join("data"),
+            cache_dir: directory.path().join("cache"),
+            jobs: 1,
+            binary_cache: None,
+            trusted_key: None,
+        };
+        fs::write(settings.root.join("seed.toml"), "").unwrap();
+        let mut builder = Builder::new(&settings).unwrap();
+        let write_record = |name: &str, run: &str| {
+            let path = settings.root.join(model::version_path(name, "1"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path.parent().unwrap().join("../package.toml"),
+                format!("name = \"{name}\"\nlicense = \"MIT\"\n[upstream]\nsources = [\"https://example.org/\"]\n"),
+            )
+            .unwrap();
+            fs::write(
+                &path,
+                format!(
+                    "version = \"1\"\n[source]\nurl = \"https://example.org/{name}.tar.gz\"\nsha256 = \"{}\"\n[build]\nkind = \"autotools\"\n[dependencies]\nbuild = []\nrun = [{run}]\n[check]\nenabled = false\nskip = []\n",
+                    "0".repeat(64)
+                ),
+            )
+            .unwrap();
+            record::load_version(&path).ok().unwrap().1
+        };
+        let write_index = |name: &str, key: &str, id: &str| {
+            let index = settings.data_dir.join("index").join(name);
+            fs::create_dir_all(&index).unwrap();
+            fs::write(index.join("1"), format!("{key} {id}\n")).unwrap();
+            fs::create_dir_all(settings.data_dir.join("store").join(id)).unwrap();
+        };
+        let dependency_id = "a".repeat(32);
+        let consumer_id = "b".repeat(32);
+        let canonical = write_record("library", "");
+        let key = build_key(&canonical, &builder.seed_id, &BTreeSet::new(), None);
+        write_index("library", &key, &dependency_id);
+
+        let canonical = write_record("consumer", "\"library:out\"");
+        let key = build_key(
+            &canonical,
+            &builder.seed_id,
+            &BTreeSet::from([dependency_id.clone()]),
+            Some(&BTreeSet::from([OutputBinding {
+                role: "dependencies.run".to_owned(),
+                package: "library",
+                output: "out",
+                id: &dependency_id,
+            }])),
+        );
+        write_index("consumer", &key, &consumer_id);
+        let built = builder.build("consumer", None).ok().unwrap();
+        assert!(!built.fresh);
+        assert_eq!(built.id, consumer_id);
+        assert!(built.closure().contains(&dependency_id));
+
+        write_record("consumer", "\"library:dev\"");
+        let error = builder.build("consumer", None).err().unwrap();
+        assert!(error.contains("library:dev: unknown output"), "{error}");
+    }
 
     #[test]
     fn lzip_source_decodes_to_tar_and_checks_the_trailer() {

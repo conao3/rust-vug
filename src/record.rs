@@ -4,10 +4,14 @@
 //! generated to Rust. This module owns TOML structure validation, the
 //! canonical writer, and the package-tree checks of `docs/record.md`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::naming::model;
+use crate::version;
+
+mod output;
 
 /// A validation or tree error: the file it belongs to and what is expected.
 #[derive(Clone)]
@@ -53,6 +57,7 @@ pub(crate) struct VersionRecord {
     pub(crate) deps_build: Vec<String>,
     pub(crate) deps_run: Vec<String>,
     pub(crate) deps_expose: Vec<String>,
+    pub(crate) outputs: BTreeMap<String, output::Output>,
     pub(crate) check_enabled: bool,
     pub(crate) check_skip: Vec<String>,
     pub(crate) private_cxx_runtime: bool,
@@ -61,6 +66,42 @@ pub(crate) struct VersionRecord {
     /// (path in the output, command the program at that path runs),
     /// ascending by path.
     pub(crate) wrappers: Vec<(String, Vec<String>)>,
+}
+
+impl VersionRecord {
+    pub(crate) fn dependencies(&self) -> impl Iterator<Item = (String, &str)> {
+        [
+            ("dependencies.build", &self.deps_build),
+            ("dependencies.run", &self.deps_run),
+            ("dependencies.expose", &self.deps_expose),
+        ]
+        .into_iter()
+        .flat_map(|(field, deps)| deps.iter().map(move |dep| (field.to_owned(), dep.as_str())))
+        .chain(self.outputs.iter().flat_map(|(name, output)| {
+            output
+                .run
+                .iter()
+                .map(move |dep| (format!("outputs.{name}.run"), dep.as_str()))
+        }))
+    }
+
+    pub(crate) fn uses_output_keys(&self) -> bool {
+        !self.outputs.is_empty()
+            || self
+                .deps_build
+                .iter()
+                .chain(&self.deps_run)
+                .chain(&self.deps_expose)
+                .any(|dep| dep.contains(':'))
+    }
+
+    pub(crate) fn has_output(&self, name: &str) -> bool {
+        name == "out" || self.outputs.contains_key(name)
+    }
+}
+
+pub(crate) fn dependency_output(spec: &str) -> (&str, &str) {
+    spec.split_once(':').unwrap_or((spec, "out"))
 }
 
 pub(crate) enum BuildOptions {
@@ -311,6 +352,7 @@ fn parse_version(
             "source",
             "build",
             "dependencies",
+            "outputs",
             "check",
             "links",
             "wrappers",
@@ -643,6 +685,14 @@ fn parse_version(
             opt_string_array(deps, "expose", "dependencies.", &mut errors).unwrap_or_default();
         check_unique("expose", "dependencies.", &deps_expose, &mut errors);
     }
+    for (field, deps) in [
+        ("dependencies.build", &deps_build),
+        ("dependencies.run", &deps_run),
+        ("dependencies.expose", &deps_expose),
+    ] {
+        output::check_dependencies(field, deps, false, &mut errors);
+    }
+    let outputs = output::parse(map, &deps_run, &mut errors);
     if matches!(
         build,
         BuildOptions::Autotools {
@@ -651,7 +701,10 @@ fn parse_version(
         }
     ) {
         for tool in ["autoconf", "automake", "libtool"] {
-            if !deps_build.iter().any(|dep| dep == tool) {
+            if !deps_build
+                .iter()
+                .any(|dep| dependency_output(dep) == (tool, "out"))
+            {
                 errors.push(format!(
                     "build.autoreconf: dependencies.build must include {tool}"
                 ));
@@ -785,6 +838,7 @@ fn parse_version(
             deps_build,
             deps_run,
             deps_expose,
+            outputs,
             check_enabled,
             check_skip,
             private_cxx_runtime,
@@ -1077,6 +1131,22 @@ fn canonical_version(record: &VersionRecord) -> String {
         deps_expose.sort();
         write_array(&mut out, "expose", &deps_expose);
     }
+    for (name, output) in &record.outputs {
+        out.push_str("\n[outputs.");
+        if name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+        {
+            out.push_str(name);
+        } else {
+            write_escaped(&mut out, name);
+        }
+        out.push_str("]\n");
+        if !output.paths.is_empty() {
+            write_array(&mut out, "paths", &output.paths);
+        }
+        write_array(&mut out, "run", &output.run);
+    }
     out.push('\n');
     out.push_str("[check]\n");
     write_bool_field(&mut out, "enabled", record.check_enabled);
@@ -1209,6 +1279,35 @@ fn upstream_sources_of(path: &Path) -> Option<Vec<String>> {
     errors.is_empty().then_some(record.sources)
 }
 
+fn version_stems(versions_dir: &Path) -> Result<Vec<String>, String> {
+    let mut stems = Vec::new();
+    let read_error = |error| format!("read {}: {error}", versions_dir.display());
+    for entry in std::fs::read_dir(versions_dir).map_err(read_error)? {
+        let entry = entry.map_err(read_error)?;
+        if let Some(stem) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.strip_suffix(".toml"))
+        {
+            stems.push(stem.to_owned());
+        }
+    }
+    Ok(stems)
+}
+
+pub(crate) fn current_version(versions_dir: &Path) -> Result<String, String> {
+    version_stems(versions_dir)?
+        .into_iter()
+        .reduce(|best, v| {
+            if version::compare(&v, &best) == version::model::Ordering::Gt {
+                v
+            } else {
+                best
+            }
+        })
+        .ok_or_else(|| format!("{}: no version records", versions_dir.display()))
+}
+
 /// Check every record under `<root>/packages`.
 pub fn check_tree(root: &Path) -> TreeReport {
     let mut report = TreeReport {
@@ -1224,6 +1323,7 @@ pub fn check_tree(root: &Path) -> TreeReport {
         ));
         return report;
     }
+    let mut versions = BTreeMap::new();
     for shard_entry in sorted_entries(&packages_dir) {
         let shard = shard_entry.file_name().to_string_lossy().into_owned();
         if !shard_entry.path().is_dir() {
@@ -1233,8 +1333,9 @@ pub fn check_tree(root: &Path) -> TreeReport {
             ));
             continue;
         }
-        check_shard_dir(&shard_entry.path(), &shard, &mut report);
+        check_shard_dir(&shard_entry.path(), &shard, &mut report, &mut versions);
     }
+    output::check_tree(root, &versions, &mut report.errors);
     report
         .errors
         .sort_by(|a, b| a.path.cmp(&b.path).then(a.message.cmp(&b.message)));
@@ -1249,7 +1350,12 @@ fn sorted_entries(dir: &Path) -> Vec<std::fs::DirEntry> {
     entries
 }
 
-fn check_shard_dir(dir: &Path, shard: &str, report: &mut TreeReport) {
+fn check_shard_dir(
+    dir: &Path,
+    shard: &str,
+    report: &mut TreeReport,
+    versions: &mut BTreeMap<PathBuf, VersionRecord>,
+) {
     if shard.chars().count() != 2 {
         report.errors.push(error_at(
             dir,
@@ -1265,11 +1371,17 @@ fn check_shard_dir(dir: &Path, shard: &str, report: &mut TreeReport) {
             ));
             continue;
         }
-        check_package_dir(&name_entry.path(), &name, shard, report);
+        check_package_dir(&name_entry.path(), &name, shard, report, versions);
     }
 }
 
-fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeReport) {
+fn check_package_dir(
+    dir: &Path,
+    name: &str,
+    shard: &str,
+    report: &mut TreeReport,
+    versions: &mut BTreeMap<PathBuf, VersionRecord>,
+) {
     if !model::valid_name(name) {
         report.errors.push(error_at(
             dir,
@@ -1391,6 +1503,7 @@ fn check_package_dir(dir: &Path, name: &str, shard: &str, report: &mut TreeRepor
                 upstream_sources.as_deref(),
                 &patch_names,
                 report,
+                versions,
             );
         }
     }
@@ -1421,6 +1534,7 @@ fn check_version_file(
     upstream_sources: Option<&[String]>,
     patch_names: &[String],
     report: &mut TreeReport,
+    versions: &mut BTreeMap<PathBuf, VersionRecord>,
 ) {
     report.versions += 1;
     let stem = path
@@ -1471,6 +1585,7 @@ fn check_version_file(
             .errors
             .push(error_at(path, "not in canonical form".to_owned()));
     }
+    versions.insert(path.to_owned(), record);
 }
 
 #[cfg(test)]
@@ -1535,6 +1650,7 @@ sources = [
             deps_build: vec!["make".to_owned()],
             deps_run: Vec::new(),
             deps_expose: Vec::new(),
+            outputs: BTreeMap::new(),
             check_enabled: true,
             check_skip: Vec::new(),
             private_cxx_runtime: false,
@@ -1641,6 +1757,7 @@ skip = []
             deps_build: Vec::new(),
             deps_run: vec!["ca-certificates".to_owned()],
             deps_expose: Vec::new(),
+            outputs: BTreeMap::new(),
             check_enabled: false,
             check_skip: Vec::new(),
             private_cxx_runtime: false,

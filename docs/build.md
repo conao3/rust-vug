@@ -222,10 +222,24 @@ put into the store (from a binary cache, `docs/cache.md`, or by building)
 when the build runs, and the seed is fetched and assembled then.
 
 A finished build is recorded in `index/<name>/<version>` as `<key> <id>`.
-The key is the BLAKE3 hash of the canonical version record, the seed, the
-revision of vug's build rules, and the ids of the dependencies in the build
-root. A build whose key is already
-in the index returns the recorded id without running.
+A build whose key is already in the index returns the recorded ID without
+running.
+
+A record with neither output tables nor an explicit output selector uses the
+BLAKE3 hash of the concatenated canonical record, seed ID, build rules
+revision, and sorted IDs of the dependencies visible in the build root.
+
+Output declarations and explicit selectors select a versioned key format.
+It uses the BLAKE3 derive-key context `vug build key for selected outputs v1`.
+Every field has an unsigned 64-bit little-endian byte length followed by
+its UTF-8 bytes. The fields are the canonical record, seed ID, build rules
+revision, the decimal count of visible dependency IDs, the sorted IDs, and
+the sorted dependency bindings. Each binding has four fields: the record
+field name (for example, `dependencies.build` or `outputs.dev.run`), the
+external dependency package name, the selected output name, and its resolved
+ID. Same-build output edges are represented in the canonical record.
+Both formats encode the first 20 hash bytes in base32. A single-output build
+can use an explicit `package:out` selector for a single-output dependency.
 
 ## Command
 
