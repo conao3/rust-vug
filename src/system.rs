@@ -1,5 +1,6 @@
 //! Building a system from a system record (`docs/system.md`).
 
+mod firmware;
 mod initrd;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -389,6 +390,7 @@ pub struct SystemRecord {
     init: String,
     sh: Option<String>,
     boot: Option<Boot>,
+    firmware: Vec<String>,
     parts: Fragment,
 }
 
@@ -803,7 +805,15 @@ fn load_service(
 /// names, and merges them.
 pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
     let (text, table) = parse(&root.join("systems").join(format!("{name}.toml")))?;
-    let mut allowed = vec!["name", "kernel", "init", "sh", "boot", "service"];
+    let mut allowed = vec![
+        "name",
+        "kernel",
+        "init",
+        "sh",
+        "boot",
+        "service",
+        "firmware-packages",
+    ];
     allowed.extend(FRAGMENT_KEYS);
     unknown_keys(&table, &allowed, "")?;
     if string(&table, "name", "")? != name {
@@ -819,6 +829,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         None => None,
         Some(_) => Some(string(&table, "sh", "")?),
     };
+    let firmware = firmware::packages(&table)?;
     let boot = match table.get("boot") {
         None => None,
         Some(value) => {
@@ -885,6 +896,7 @@ pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
         init,
         sh,
         boot,
+        firmware,
         parts,
     })
 }
@@ -1057,6 +1069,17 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     let work = work_dir(settings, "system")?;
     let out = work.join("out");
 
+    let mut firmware = firmware::Files::new();
+    for package in &record.firmware {
+        let built = builder.build(package, None)?;
+        closure.extend(built.closure().iter().cloned());
+        firmware::collect(
+            &store_dir.join(&built.id).join("lib/firmware"),
+            Path::new(""),
+            &mut firmware,
+        )?;
+    }
+
     let busybox = builder.busybox()?;
     write_file(
         &out.join("bin/busybox"),
@@ -1104,7 +1127,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                 &kernel.id,
                 &busybox,
                 &work,
-                &out,
+                &firmware,
             )?;
             write_file(&out.join("boot/initrd-name"), archive.as_bytes(), 0o644)?;
             format!("    module_path: boot():/vug-initrd/{archive}\n")
@@ -1146,6 +1169,16 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                 )?;
             }
         }
+    }
+
+    if !firmware.is_empty() {
+        if out.join("sw/lib/firmware").symlink_metadata().is_ok() {
+            return Err(
+                "firmware: use firmware-packages for outputs containing lib/firmware".to_owned(),
+            );
+        }
+        firmware::install(&firmware, &store_dir, &out.join("firmware"))?;
+        symlink("../../firmware", &out.join("sw/lib/firmware"))?;
     }
 
     if store_dir.join(&kernel.id).join("lib/modules").is_dir() {

@@ -10,6 +10,7 @@ use super::{STORE, cpio, entry_names, io, run_tool, strings, symlink, unknown_ke
 pub(super) struct Config {
     available: Vec<String>,
     force: Vec<String>,
+    firmware: Vec<PathBuf>,
 }
 
 impl Config {
@@ -17,7 +18,7 @@ impl Config {
         let table = value.as_table().ok_or("boot.initrd: expected a table")?;
         unknown_keys(
             table,
-            &["available-modules", "force-modules"],
+            &["available-modules", "force-modules", "firmware-files"],
             "boot.initrd.",
         )?;
         let modules = |key| {
@@ -40,6 +41,7 @@ impl Config {
         Ok(Self {
             available: modules("available-modules")?,
             force: modules("force-modules")?,
+            firmware: super::firmware::selection(table)?,
         })
     }
 }
@@ -268,7 +270,7 @@ pub(super) fn build(
     kernel: &str,
     busybox: &Path,
     work: &Path,
-    out: &Path,
+    firmware: &super::firmware::Files,
 ) -> Result<String, String> {
     let stage = work.join("initrd");
     let store = settings.data_dir.join("store");
@@ -309,6 +311,7 @@ pub(super) fn build(
         0o644,
     )?;
     install_modules(settings, &stage, &store.join(kernel), config, &kmod)?;
+    super::firmware::copy_selected(firmware, &config.firmware, &stage.join("lib/firmware"))?;
     write_file(&stage.join("init"), include_bytes!("stage1.sh"), 0o755)?;
     let force: String = config
         .force
@@ -320,7 +323,7 @@ pub(super) fn build(
     let raw = work.join("initrd.cpio");
     let mut archive = io("create", &raw, fs::File::create(&raw))?;
     io("archive", &raw, cpio::write_newc(&stage, &mut archive))?;
-    let destination = out.join("boot/initrd.gz");
+    let destination = work.join("out/boot/initrd.gz");
     let compressed = io("create", &destination, fs::File::create(&destination))?;
     let status = build::store_command(settings, false)?
         .args([&format!("{gzip}/bin/gzip"), "-n", "-c"])

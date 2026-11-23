@@ -63,6 +63,7 @@ user = "root"
 | `init` | string | yes | The command the system starts as process 1, split at white space. |
 | `sh` | string | no | The program `/bin/sh` runs. Without it `/bin/sh` exists only when a listed package has a program `sh`. |
 | `packages` | array of strings | yes | Package outputs to merge into the system. |
+| `firmware-packages` | array of strings | no | Package outputs that contribute to `/lib/firmware`. |
 | `file.path` | string | yes | A path below `/etc`. No listed path equals or lies inside another. |
 | `file.kind` | `"link"` or `"seed"` | no (default `"link"`) | How the file is managed, see below. |
 | `file.mode` | string of octal digits | no (default `"644"`) | Permission bits. A link file takes `"644"` or `"755"`. |
@@ -82,6 +83,7 @@ user = "root"
 | `boot.initrd` | table | no | Build a plain ext4 root initrd for the selected kernel. |
 | `boot.initrd.available-modules` | array of strings | no | Include these modules and their dependencies for udev coldplug. |
 | `boot.initrd.force-modules` | array of strings | no | Include these modules and their dependencies, then load the listed modules in order before coldplug. |
+| `boot.initrd.firmware-files` | array of strings | no | Include these firmware paths and their link targets in the initrd. |
 
 `user.password` goes into a store path that every user of the machine can
 read, and a package tree is usually public: it is the place for `""` (no
@@ -177,6 +179,20 @@ the mounts into the real root before `switch_root`.
 
 When installing the boot menu, the kernel and initrd are copied before the menu
 is replaced. Boot files referenced by retained generations remain on the ESP.
+
+### Firmware
+
+Set the system's top-level `firmware-packages` array to package or output
+selectors that provide `lib/firmware`. The selected outputs are part of the
+system closure. During activation, `/lib/firmware` resolves to their merged
+tree. Identical files may share a path. Conflicting files and directory
+collisions stop the build. Relative symbolic links resolve within that tree.
+
+In `[boot.initrd]`, set `firmware-files` to paths relative to
+`/lib/firmware`. Use the firmware names reported by `modinfo -F firmware`
+for the storage drivers needed during early boot. The initrd includes these
+files and the targets of their relative symbolic links. A missing file
+stops the build.
 
 ## The root file system
 
