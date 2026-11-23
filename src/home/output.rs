@@ -480,7 +480,7 @@ fn render(
     if !record.secret.is_empty() {
         write(
             &out.join("units").join(super::secrets::UNIT),
-            "[Unit]\nDescription=Prepare Vug home credentials\n[Service]\nType=oneshot\nExecStart=/bin/vug home prepare-secrets\n",
+            "[Unit]\nDescription=Prepare Vug home credentials\nStartLimitIntervalSec=0\n[Service]\nType=oneshot\nExecStart=/bin/vug home prepare-secrets\n",
         )?;
         let wants = out.join("units/default.target.wants");
         io(&wants, fs::create_dir_all(&wants))?;
