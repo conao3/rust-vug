@@ -356,3 +356,22 @@ Without `vug` on the machine: export the new system with the running
 system as the base, unpack the archive at `/` as root
 (`/run/current-system/bin/busybox cpio -id`), and run its
 `bin/switch-to-system`.
+
+### Installing onto a disk
+
+Run `vug system install --root DIR --name NAME --disk /dev/disk/by-id/ID` to
+inspect the target and print its capacity, current partition table signature,
+and planned ESP and root filesystem. The system record must define a GPT
+layout and an EFI boot loader. The target must be an exclusively accessible
+whole disk with writable 512-byte logical sectors and a capacity in whole KiB.
+
+Pass `--apply` as root to overwrite the disk. Set `--binary-cache URL` and
+`--trusted-key KEY`, or configure the same values in the running Vug system.
+The installer resolves the package closure from the signed cache in an empty
+temporary store, then stages a bootable image sized for the target. The
+staging filesystem must have space for the substituted outputs and the
+filesystem image. The target stays untouched if staging fails. Once staged,
+the installer opens the target exclusively, checks its identity and partition
+header again, writes the image, and synchronizes the disk. Generation 1 and
+the chosen partition identifiers are stored on the target. Boot it through
+the UEFI fallback loader after installation.

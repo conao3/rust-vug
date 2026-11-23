@@ -79,6 +79,9 @@ enum SystemCommands {
     BuildSystem(BuildArgs),
     /// Build a system and write a disk image that boots it.
     BuildImage(ImageArgs),
+    /// Plan or apply a system installation on a whole disk.
+    #[cfg(target_os = "linux")]
+    Install(InstallArgs),
     /// Build a system and write an archive of its store paths.
     ExportSystem(ExportArgs),
     /// Build a system and switch the running machine to it.
@@ -152,6 +155,22 @@ struct ImageArgs {
     /// Size of the file system (a number with a k, m, g, or t suffix).
     #[arg(long, default_value = "4g")]
     size: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Args)]
+struct InstallArgs {
+    #[command(flatten)]
+    build: BuildArgs,
+    /// Target whole block disk.
+    #[arg(long)]
+    disk: PathBuf,
+    /// Overwrite the target with the planned system.
+    #[arg(long, overrides_with = "no_apply")]
+    apply: bool,
+    /// Show the plan without writing (after --apply).
+    #[arg(long, overrides_with = "apply")]
+    no_apply: bool,
 }
 
 #[derive(Args)]
@@ -529,6 +548,8 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
         Commands::System { command } => match command {
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
             SystemCommands::BuildImage(args) => run_build_image(&cli, args),
+            #[cfg(target_os = "linux")]
+            SystemCommands::Install(args) => run_install(&cli, args),
             SystemCommands::ExportSystem(args) => run_export_system(&cli, args),
             SystemCommands::DeleteGenerations(args) => run_delete_generations(&cli, args),
             SystemCommands::SwitchSystem(args) => {
@@ -1043,6 +1064,48 @@ fn run_build_image(cli: &Cli, args: &ImageArgs) -> Result<i32, (i32, String)> {
     let built = system::build_image(&settings, &args.build.name, &args.image, &args.size)
         .map_err(|e| (version::failure_status(), e))?;
     print_system(cli, &built, json!({ "Image": args.image }))
+}
+
+#[cfg(target_os = "linux")]
+fn run_install(cli: &Cli, args: &InstallArgs) -> Result<i32, (i32, String)> {
+    let settings = settings_of(cli, &args.build)?;
+    let plan = system::install::run(&settings, &args.build.name, &args.disk, args.apply)
+        .map_err(input_failure)?;
+    match cli.output {
+        Output::Json => print_json(&plan),
+        Output::Table => {
+            let mut rows = String::from("Disk\tBytes\tExistingTable\tApplied\n");
+            rows.push_str(&format!(
+                "{}\t{}\t{}\t{}\n\nName\tBytes\tType\tMount\n",
+                args.disk.display(),
+                plan["Bytes"],
+                plan["ExistingTable"].as_str().unwrap_or_default(),
+                plan["Applied"],
+            ));
+            if let Some(partitions) = plan["Partitions"].as_array() {
+                for partition in partitions {
+                    rows.push_str(&format!(
+                        "{}\t{}\t{}\t{}\n",
+                        partition["Name"].as_str().unwrap_or_default(),
+                        partition["Bytes"],
+                        partition["Type"].as_str().unwrap_or_default(),
+                        partition["Mount"].as_str().unwrap_or_default(),
+                    ));
+                }
+            }
+            write_out(&rows)
+        }
+        Output::Text => write_out(&format!(
+            "{}: {} bytes, {} → GPT, {} ESP bytes, {} ext4 root bytes ({})\n",
+            args.disk.display(),
+            plan["Bytes"],
+            plan["ExistingTable"].as_str().unwrap_or_default(),
+            plan["Partitions"][0]["Bytes"],
+            plan["Partitions"][1]["Bytes"],
+            if args.apply { "applied" } else { "plan" },
+        )),
+    }?;
+    Ok(0)
 }
 
 fn run_export_system(cli: &Cli, args: &ExportArgs) -> Result<i32, (i32, String)> {

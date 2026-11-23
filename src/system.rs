@@ -3,6 +3,8 @@
 mod disk;
 mod firmware;
 mod initrd;
+#[cfg(target_os = "linux")]
+pub mod install;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -818,6 +820,9 @@ fn load_service(
 /// Reads `systems/<name>.toml` under `root` and the service records it
 /// names, and merges them.
 pub fn load(root: &Path, name: &str) -> Result<SystemRecord, String> {
+    if !model::valid_name(name) {
+        return Err(format!("{name:?}: not a valid system name"));
+    }
     let (text, table) = parse(&root.join("systems").join(format!("{name}.toml")))?;
     let mut allowed = vec![
         "name",
@@ -1073,14 +1078,19 @@ fn work_dir(settings: &Settings, what: &str) -> Result<PathBuf, String> {
 }
 
 pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
-    if !model::valid_name(name) {
-        return Err(format!("{name:?}: not a valid system name"));
-    }
     let record = load(&settings.root, name)?;
+    build_with(settings, name, record, &mut Builder::new(settings)?)
+}
+
+fn build_with(
+    settings: &Settings,
+    name: &str,
+    record: SystemRecord,
+    builder: &mut Builder<'_>,
+) -> Result<BuiltSystem, String> {
     let pkg = |text: &str, paths: &BTreeMap<String, String>| {
         expand(text, "pkg", paths, "is not a package of this system")
     };
-    let mut builder = Builder::new(settings)?;
     let kernel = builder.build(&record.kernel, None)?;
     let mut closure: BTreeSet<String> = kernel.closure().clone();
     let mut paths = BTreeMap::new();
@@ -1160,13 +1170,7 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
         }
         let module = if let Some(config) = &boot.initrd {
             let archive = initrd::build(
-                settings,
-                &mut builder,
-                config,
-                &kernel.id,
-                &busybox,
-                &work,
-                &firmware,
+                settings, builder, config, &kernel.id, &busybox, &work, &firmware,
             )?;
             write_file(&out.join("boot/initrd-name"), archive.as_bytes(), 0o644)?;
             format!("    module_path: boot():/vug-initrd/{archive}\n")
@@ -1385,9 +1389,14 @@ fn size_in_bytes(size: &str) -> Result<u64, String> {
 
 fn run_tool(settings: &Settings, words: &[String], input: Option<&str>) -> Result<(), String> {
     use std::io::Write as _;
+    use std::os::fd::AsFd as _;
 
     let mut command = build::store_command(settings, true)?;
-    command.args(words);
+    let diagnostic = std::io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|error| format!("duplicate stderr: {error}"))?;
+    command.args(words).stdout(diagnostic);
     if input.is_some() {
         command.stdin(std::process::Stdio::piped());
     }
@@ -1413,17 +1422,17 @@ fn write_efi_parts(
     work: &Path,
     image: &Path,
     root_bytes: u64,
-    layout: Option<&disk::Layout>,
+    builder: &mut Builder<'_>,
 ) -> Result<(), String> {
-    let mut builder = Builder::new(settings)?;
+    let layout = system.disk.as_ref();
     let tool = |builder: &mut Builder, package: &str, program: &str| {
         builder
             .build(package, None)
             .map(|built| format!("{STORE}/{}/{program}", built.id))
     };
-    let sfdisk = tool(&mut builder, "util-linux", "sbin/sfdisk")?;
-    let mkfs = tool(&mut builder, "dosfstools", "sbin/mkfs.fat")?;
-    let mcopy = tool(&mut builder, "mtools", "bin/mcopy")?;
+    let sfdisk = tool(builder, "util-linux", "sbin/sfdisk")?;
+    let mkfs = tool(builder, "dosfstools", "sbin/mkfs.fat")?;
+    let mcopy = tool(builder, "mtools", "bin/mcopy")?;
     let image_name = image.display().to_string();
     let new_uuid = || {
         fs::read_to_string("/proc/sys/kernel/random/uuid")
@@ -1580,8 +1589,27 @@ pub fn build_image(
     image: &Path,
     size: &str,
 ) -> Result<BuiltSystem, String> {
-    let system = build(settings, name)?;
-    let tools = Builder::new(settings)?.build("e2fsprogs", None)?;
+    let record = load(&settings.root, name)?;
+    image_with(
+        settings,
+        name,
+        record,
+        image,
+        size,
+        &mut Builder::new(settings)?,
+    )
+}
+
+fn image_with(
+    settings: &Settings,
+    name: &str,
+    record: SystemRecord,
+    image: &Path,
+    size: &str,
+    builder: &mut Builder<'_>,
+) -> Result<BuiltSystem, String> {
+    let system = build_with(settings, name, record, builder)?;
+    let tools = builder.build("e2fsprogs", None)?;
     let work = work_dir(settings, "image")?;
     let root = work.join("root");
     copy_store(settings, &system.closure, &root)?;
@@ -1625,7 +1653,7 @@ pub fn build_image(
         let disk = io("create", image, fs::File::create(image))?;
         io("resize", image, disk.set_len(image_bytes))?;
         drop(disk);
-        write_efi_parts(settings, &system, &work, image, root_bytes, layout)?;
+        write_efi_parts(settings, &system, &work, image, root_bytes, builder)?;
         options.push_str(&format!(",offset={root_offset}"));
     }
     let status = build::store_command(settings, true)?
