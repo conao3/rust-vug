@@ -14,6 +14,24 @@ fn run_as(
     libcxx: Option<&str>,
     arguments: &[&str],
 ) -> Vec<String> {
+    let output = wrapper_command(directory, tool, lang, libcxx)
+        .args(arguments)
+        .output()
+        .expect("run wrapper");
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout)
+        .expect("UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn wrapper_command(
+    directory: &std::path::Path,
+    tool: &str,
+    lang: &str,
+    libcxx: Option<&str>,
+) -> Command {
     let zig = directory.join("zig");
     std::fs::write(&zig, "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done\n").expect("write");
     let wrapper = directory.join("cc");
@@ -25,21 +43,15 @@ fn run_as(
     let mut command = Command::new("sh");
     command
         .arg(&wrapper)
-        .args(arguments)
         .current_dir(directory)
+        .env("TMPDIR", directory)
         .env_remove("VUG_CFLAGS")
         .env_remove("VUG_LDFLAGS")
         .env_remove("VUG_LIBCXX");
     if let Some(libcxx) = libcxx {
         command.env("VUG_LIBCXX", libcxx);
     }
-    let output = command.output().expect("run wrapper");
-    assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout)
-        .expect("UTF-8")
-        .lines()
-        .map(str::to_owned)
-        .collect()
+    command
 }
 
 /// The arguments after the fixed head `cc -target ... -UNDEBUG`, without
@@ -127,6 +139,68 @@ fn linker_words_that_zig_rejects() {
 }
 
 #[test]
+fn retain_symbols_file_becomes_a_version_script() {
+    let script =
+        "{\n  global: extern \"C\" {\n    \"f\";\n    \"name[0]\";\n  };\n  local: *;\n};\n";
+    for (flags, prefix, suffix) in [
+        (
+            vec!["-Wl,-retain-symbols-file", "-Wl,f.sym,-soname,f.so.1"],
+            "",
+            "",
+        ),
+        (
+            vec!["-Wl,--retain-symbols-file", "f.sym", "-Wl,-soname,f.so.1"],
+            "",
+            "",
+        ),
+        (
+            vec!["-Wl,-retain-symbols-file,f.sym,-soname,f.so.1"],
+            "",
+            "",
+        ),
+        (
+            vec![
+                "-Wl,--version-script,named.map",
+                "-Wl,--retain-symbols-file=f.sym,-soname,f.so.1",
+            ],
+            "-Wl,--version-script,named.map\n-Wl,-soname,f.so.1\nVERSION {\n",
+            "}\n",
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut command = wrapper_command(directory.path(), "cc", "c", None);
+        std::fs::write(
+            directory.path().join("zig"),
+            "#!/bin/sh\nfor a; do\n\
+             case \"$a\" in\n\
+             -Wl,--version-script,named.map|-Wl,-soname,*) printf '%s\\n' \"$a\" ;;\n\
+             -Wl,--version-script,*|-Wl,-T,*) cat \"${a##*,}\" ;;\n\
+             esac\ndone\n",
+        )
+        .expect("write");
+        std::fs::write(
+            directory.path().join("f.sym"),
+            "# symbols\n\n  f  \r\nname[0]\n",
+        )
+        .expect("write");
+        let output = command
+            .args(["-shared", "a.c"])
+            .args(flags)
+            .output()
+            .expect("run wrapper");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("UTF-8"),
+            if prefix.is_empty() {
+                format!("-Wl,-soname,f.so.1\n{script}")
+            } else {
+                format!("{prefix}{script}{suffix}")
+            }
+        );
+    }
+}
+
+#[test]
 fn compile_only_spellings() {
     assert_eq!(
         translated(&[
@@ -143,6 +217,34 @@ fn compile_only_spellings() {
         ["-c", "a.c", "-I/i", "-I/j"]
     );
     assert_eq!(translated(&["-E", "-"]), ["-x", "c", "-E", "-"]);
+}
+
+#[test]
+fn dependency_headers_follow_package_headers_and_precede_seed_headers() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let output = wrapper_command(directory.path(), "cc", "c", None)
+        .args(["-E", "-nostdlib", "-isystem", "/package", "a.c"])
+        .env("VUG_CFLAGS", "-isystem /dependency -isystem/another -fPIC")
+        .output()
+        .expect("run wrapper");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+    let args: Vec<_> = stdout.lines().collect();
+    assert_eq!(
+        &args[5..15],
+        [
+            "-E",
+            "-nostdlib",
+            "-I/package",
+            "a.c",
+            "-I/dependency",
+            "-I/another",
+            "-fPIC",
+            "-isystem",
+            "/seed/zig/lib/libc/include/x86_64-linux-musl",
+            "-isystem",
+        ]
+    );
 }
 
 #[test]
@@ -276,5 +378,58 @@ fn cxx_runtime_flags_of_the_caller_are_kept() {
     assert_eq!(
         cxx("c++", "c++", None, &["a.cpp", "-lc++", "-o", "a"]),
         ["a.cpp", "-lc++", "-o", "a"]
+    );
+}
+
+#[test]
+fn cxx_nostdlib_shared_links_keep_the_shared_runtime() {
+    let args = cxx("c++", "c++", Some("/r"), &["-shared", "-nostdlib", "a.o"]);
+    assert!(
+        args.windows(5).any(|args| args
+            == [
+                "-Wl,--no-as-needed",
+                "/r/lib/libc++.so.1",
+                "-Wl,--as-needed",
+                "/r/lib/libc++abi.so.1",
+                "/r/lib/libunwind.so.1",
+            ]),
+        "{args:?}"
+    );
+    for flags in [
+        vec!["-nostdlib", "a.o"],
+        vec!["-shared", "-nostdlib", "-nostdlib++", "a.o"],
+    ] {
+        assert!(
+            cxx("c++", "c++", Some("/r"), &flags)
+                .iter()
+                .all(|arg| !arg.starts_with("/r/lib/")),
+            "{flags:?}"
+        );
+    }
+}
+
+#[test]
+fn verbose_links_report_reusable_libraries_and_preserve_diagnostics() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut command = wrapper_command(directory.path(), "c++", "c++", Some("/r"));
+    std::fs::write(
+        directory.path().join("zig"),
+        "#!/bin/sh\ncat >&2 <<'EOF'\n\
+         ld.lld -shared -o /tmp/global/o/hash/libc.so /tmp/global/o/hash/libc.o\n\
+         ld.lld -o a -L/vendor conftest.o /r/lib/libc++.so.1 /r/lib/libc++abi.so.1 /r/lib/libunwind.so.1 /tmp/global/o/hash/libcompiler_rt.a local/o/hash/temporary.o\n\
+         error: bad input\nEOF\nexit 42\n",
+    )
+    .expect("write");
+    let output = command
+        .args(["-v", "conftest.o"])
+        .env("PWD", directory.path())
+        .env("ZIG_GLOBAL_CACHE_DIR", "/tmp/global")
+        .env("ZIG_LOCAL_CACHE_DIR", directory.path().join("local"))
+        .output()
+        .expect("run wrapper");
+    assert_eq!(output.status.code(), Some(42));
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("UTF-8"),
+        "ld.lld -o a -L/vendor conftest.o -L/r/lib -lc++ -lc++abi -lunwind\nerror: bad input\n"
     );
 }
