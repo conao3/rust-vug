@@ -59,6 +59,7 @@ pub(crate) struct VersionRecord {
     pub(crate) deps_expose: Vec<String>,
     pub(crate) outputs: BTreeMap<String, output::Output>,
     pub(crate) check_enabled: bool,
+    pub(crate) check_target: Option<String>,
     pub(crate) check_skip: Vec<String>,
     pub(crate) private_cxx_runtime: bool,
     /// (path in the output, link target), ascending by path.
@@ -106,6 +107,7 @@ pub(crate) fn dependency_output(spec: &str) -> (&str, &str) {
 
 pub(crate) enum BuildOptions {
     Autotools {
+        path: String,
         autoreconf: bool,
         configure_flags: Vec<String>,
         make_flags: Vec<String>,
@@ -134,6 +136,7 @@ pub(crate) enum BuildOptions {
         commands: Vec<Vec<String>>,
     },
     Meson {
+        path: String,
         setup_flags: Vec<String>,
     },
     Linux {
@@ -186,6 +189,25 @@ fn req_string(map: &toml::Table, key: &str, prefix: &str, errors: &mut Errors) -
             errors.push(format!("{prefix}{key}: expected a string"));
             None
         }
+    }
+}
+
+fn source_path(build_table: &toml::Table, errors: &mut Errors) -> String {
+    match build_table.get("path") {
+        None => ".".to_owned(),
+        Some(value) => match value.as_str() {
+            Some(path)
+                if !path.is_empty()
+                    && !path.starts_with('/')
+                    && path.split('/').all(|part| part != "..") =>
+            {
+                path.to_owned()
+            }
+            _ => {
+                errors.push("build.path: expected a path inside the source".to_owned());
+                ".".to_owned()
+            }
+        },
     }
 }
 
@@ -413,6 +435,7 @@ fn parse_version(
     }
 
     let mut build = BuildOptions::Autotools {
+        path: ".".to_owned(),
         autoreconf: false,
         configure_flags: Vec::new(),
         make_flags: Vec::new(),
@@ -429,6 +452,7 @@ fn parse_version(
                     &[
                         "kind",
                         "autoreconf",
+                        "path",
                         "configure-command",
                         "configure-flags",
                         "make-flags",
@@ -439,6 +463,7 @@ fn parse_version(
                     &mut errors,
                 );
                 build = BuildOptions::Autotools {
+                    path: source_path(build_table, &mut errors),
                     autoreconf: build_table.contains_key("autoreconf")
                         && req_bool(build_table, "autoreconf", "build.", &mut errors)
                             .unwrap_or(false),
@@ -521,22 +546,7 @@ fn parse_version(
                     "build.",
                     &mut errors,
                 );
-                let path = match build_table.get("path") {
-                    None => ".".to_owned(),
-                    Some(value) => match value.as_str() {
-                        Some(path)
-                            if !path.is_empty()
-                                && !path.starts_with('/')
-                                && path.split('/').all(|part| part != "..") =>
-                        {
-                            path.to_owned()
-                        }
-                        _ => {
-                            errors.push("build.path: expected a path inside the source".to_owned());
-                            ".".to_owned()
-                        }
-                    },
-                };
+                let path = source_path(build_table, &mut errors);
                 build = BuildOptions::Cmake {
                     path,
                     setup_flags: opt_string_array(
@@ -549,8 +559,14 @@ fn parse_version(
                 };
             }
             "meson" => {
-                unknown_keys(build_table, &["kind", "setup-flags"], "build.", &mut errors);
+                unknown_keys(
+                    build_table,
+                    &["kind", "path", "setup-flags"],
+                    "build.",
+                    &mut errors,
+                );
                 build = BuildOptions::Meson {
+                    path: source_path(build_table, &mut errors),
                     setup_flags: opt_string_array(
                         build_table,
                         "setup-flags",
@@ -713,11 +729,12 @@ fn parse_version(
     }
 
     let (mut check_enabled, mut check_skip) = (true, Vec::new());
+    let mut check_target = None;
     let mut private_cxx_runtime = false;
     if let Some(check) = req_table(map, "check", "", &mut errors) {
         unknown_keys(
             check,
-            &["enabled", "skip", "private-cxx-runtime"],
+            &["enabled", "skip", "private-cxx-runtime", "target"],
             "check.",
             &mut errors,
         );
@@ -725,9 +742,26 @@ fn parse_version(
             private_cxx_runtime =
                 req_bool(check, "private-cxx-runtime", "check.", &mut errors).unwrap_or(false);
         }
+        check_target =
+            opt_string(check, "target", "check.", &mut errors).filter(|target| target != "check");
         check_enabled = req_bool(check, "enabled", "check.", &mut errors).unwrap_or(true);
         check_skip = req_string_array(check, "skip", "check.", &mut errors).unwrap_or_default();
         check_unique("skip", "check.", &check_skip, &mut errors);
+    }
+    if let Some(target) = check_target.as_deref() {
+        if !matches!(
+            build,
+            BuildOptions::Autotools { .. } | BuildOptions::Make { .. }
+        ) {
+            errors.push("check.target: unsupported for this build kind".to_owned());
+        } else if target.is_empty()
+            || target.starts_with('-')
+            || !target
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._/+-".contains(&c))
+        {
+            errors.push("check.target: expected a make target name".to_owned());
+        }
     }
     if !check_skip.is_empty() {
         if !matches!(
@@ -840,6 +874,7 @@ fn parse_version(
             deps_expose,
             outputs,
             check_enabled,
+            check_target,
             check_skip,
             private_cxx_runtime,
             links,
@@ -1014,6 +1049,7 @@ fn canonical_version(record: &VersionRecord) -> String {
     out.push_str("[build]\n");
     match &record.build {
         BuildOptions::Autotools {
+            path,
             autoreconf,
             configure_flags,
             make_flags,
@@ -1022,6 +1058,9 @@ fn canonical_version(record: &VersionRecord) -> String {
             configure_command,
         } => {
             write_string_field(&mut out, "kind", "autotools");
+            if path != "." {
+                write_string_field(&mut out, "path", path);
+            }
             if *autoreconf {
                 write_bool_field(&mut out, "autoreconf", true);
             }
@@ -1076,8 +1115,11 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "setup-flags", setup_flags);
             }
         }
-        BuildOptions::Meson { setup_flags } => {
+        BuildOptions::Meson { path, setup_flags } => {
             write_string_field(&mut out, "kind", "meson");
+            if path != "." {
+                write_string_field(&mut out, "path", path);
+            }
             if !setup_flags.is_empty() {
                 write_array(&mut out, "setup-flags", setup_flags);
             }
@@ -1153,6 +1195,9 @@ fn canonical_version(record: &VersionRecord) -> String {
     let mut check_skip = record.check_skip.clone();
     check_skip.sort();
     write_array(&mut out, "skip", &check_skip);
+    if let Some(target) = &record.check_target {
+        write_string_field(&mut out, "target", target);
+    }
     if record.private_cxx_runtime {
         write_bool_field(&mut out, "private-cxx-runtime", true);
     }
@@ -1640,6 +1685,7 @@ sources = [
             sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
             strip_components: 1,
             build: BuildOptions::Autotools {
+                path: ".".to_owned(),
                 autoreconf: false,
                 configure_flags: vec!["--disable-nls".to_owned()],
                 make_flags: Vec::new(),
@@ -1652,6 +1698,7 @@ sources = [
             deps_expose: Vec::new(),
             outputs: BTreeMap::new(),
             check_enabled: true,
+            check_target: None,
             check_skip: Vec::new(),
             private_cxx_runtime: false,
             links: Vec::new(),
@@ -1759,6 +1806,7 @@ skip = []
             deps_expose: Vec::new(),
             outputs: BTreeMap::new(),
             check_enabled: false,
+            check_target: None,
             check_skip: Vec::new(),
             private_cxx_runtime: false,
             links: Vec::new(),

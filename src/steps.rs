@@ -16,8 +16,8 @@ pub struct Autotools {
     pub install_flags: Vec<String>,
     /// Targets of the install step; empty means `install`.
     pub install_targets: Vec<String>,
-    /// Whether `make check` runs.
-    pub check: bool,
+    /// Target of the check step, if enabled.
+    pub check_target: Option<String>,
     pub check_skip: Vec<String>,
     /// Parallel jobs passed as `-j<jobs>`.
     pub jobs: u32,
@@ -99,8 +99,8 @@ pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     }
     steps.extend([configure, make]);
 
-    if options.check {
-        let mut check = vec!["make".to_string(), jobs, "check".to_string()];
+    if let Some(target) = &options.check_target {
+        let mut check = vec!["make".to_string(), jobs, target.to_owned()];
         check.extend(options.make_flags.iter().cloned());
         if !options.check_skip.is_empty() {
             check.push(format!("VUG_CHECK_SKIP={}", options.check_skip.join(" ")));
@@ -174,7 +174,7 @@ pub fn make_steps(
     install_flags: &[String],
     build_targets: &[String],
     install_targets: &[String],
-    check: bool,
+    check_target: Option<&str>,
     jobs: u32,
 ) -> Vec<Step> {
     let jobs = format!("-j{jobs}");
@@ -182,8 +182,8 @@ pub fn make_steps(
     build.extend(make_flags.iter().cloned());
     build.extend(build_targets.iter().cloned());
     let mut steps = vec![build];
-    if check {
-        let mut step = vec!["make".to_string(), jobs, "check".to_string()];
+    if let Some(target) = check_target {
+        let mut step = vec!["make".to_string(), jobs, target.to_owned()];
         step.extend(make_flags.iter().cloned());
         steps.push(step);
     }

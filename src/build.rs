@@ -1055,6 +1055,15 @@ impl<'a> Builder<'a> {
                 .collect()
         };
         let mut script: Vec<Step> = steps::unpack_steps(&archive_dest, strip, &patches);
+        if let BuildOptions::Autotools { path, .. } | BuildOptions::Meson { path, .. } =
+            &record.build
+            && path != "."
+        {
+            script.push(vec!["cd".to_owned(), format!("./{path}")]);
+        }
+        let check_target = record
+            .check_enabled
+            .then(|| record.check_target.as_deref().unwrap_or("check"));
         script.extend(match &record.build {
             BuildOptions::Autotools {
                 autoreconf,
@@ -1063,6 +1072,7 @@ impl<'a> Builder<'a> {
                 install_flags,
                 install_targets,
                 configure_command,
+                ..
             } => steps::autotools_steps(
                 &prefix,
                 &steps::Autotools {
@@ -1072,7 +1082,7 @@ impl<'a> Builder<'a> {
                     make_flags: expand(make_flags)?,
                     install_flags: expand(install_flags)?,
                     install_targets: install_targets.clone(),
-                    check: record.check_enabled,
+                    check_target: check_target.map(str::to_owned),
                     check_skip: record.check_skip.clone(),
                     jobs: settings.jobs,
                 },
@@ -1090,7 +1100,7 @@ impl<'a> Builder<'a> {
                 &expand(install_flags)?,
                 build_targets,
                 install_targets,
-                record.check_enabled,
+                check_target,
                 settings.jobs,
             ),
             BuildOptions::Cmake { path, setup_flags } => steps::cmake_steps(
@@ -1101,7 +1111,7 @@ impl<'a> Builder<'a> {
                 &record.check_skip,
                 settings.jobs,
             ),
-            BuildOptions::Meson { setup_flags } => steps::meson_steps(
+            BuildOptions::Meson { setup_flags, .. } => steps::meson_steps(
                 &prefix,
                 &expand(setup_flags)?,
                 record.check_enabled,
@@ -1231,6 +1241,14 @@ impl<'a> Builder<'a> {
             })?;
         }
 
+        let mut entries = io("read", &out, fs::read_dir(&out))?;
+        let has_payload = entries.try_fold(false, |found, entry| {
+            let entry = io("read", &out, entry)?;
+            Ok::<_, String>(found || entry.file_name() != ".vug")
+        })?;
+        if !has_payload && !out.join(".vug/root").is_dir() {
+            return Err(format!("{name} {version}: build installed no files"));
+        }
         if !record.private_cxx_runtime
             && let Some(file) = private_cxx_runtime(&out)?
         {

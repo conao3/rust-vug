@@ -45,7 +45,7 @@ fn autotools_with_check() {
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
         install_targets: vec![],
-        check: true,
+        check_target: Some("check".to_owned()),
         check_skip: vec![],
         jobs: 4,
     };
@@ -92,7 +92,7 @@ fn autotools_excludes_tests_and_their_check_programs() {
             make_flags: vec![],
             install_flags: vec![],
             install_targets: vec![],
-            check: true,
+            check_target: Some("check".to_owned()),
             check_skip: owned(&["skip"]),
             jobs: 2,
         },
@@ -119,7 +119,7 @@ fn autotools_without_check() {
         make_flags: owned(&["V=1"]),
         install_flags: owned(&["DESTDIR="]),
         install_targets: vec![],
-        check: false,
+        check_target: None,
         check_skip: vec![],
         jobs: 4,
     };
@@ -146,7 +146,7 @@ fn autotools_minimal() {
         make_flags: vec![],
         install_flags: vec![],
         install_targets: vec![],
-        check: false,
+        check_target: None,
         check_skip: vec![],
         jobs: 1,
     };
@@ -173,7 +173,7 @@ fn autotools_autoreconf_precedes_custom_configure() {
             make_flags: vec![],
             install_flags: vec![],
             install_targets: vec![],
-            check: false,
+            check_target: None,
             check_skip: vec![],
             jobs: 1,
         },
@@ -199,7 +199,7 @@ fn autotools_collects_the_staged_install() {
         make_flags: vec![],
         install_flags: vec![],
         install_targets: vec![],
-        check: false,
+        check_target: None,
         check_skip: vec![],
         jobs: 1,
     };
@@ -455,17 +455,17 @@ fn make_kind() {
             &owned(&["DESTDIR="]),
             &[],
             &[],
-            true,
+            Some("test"),
             2
         ),
         vec![
             step(&["make", "-j2", "PREFIX=/out"]),
-            step(&["make", "-j2", "check", "PREFIX=/out"]),
+            step(&["make", "-j2", "test", "PREFIX=/out"]),
             step(&["make", "install", "PREFIX=/out", "DESTDIR="]),
         ]
     );
     assert_eq!(
-        vug::steps::make_steps(&[], &[], &[], &[], false, 1),
+        vug::steps::make_steps(&[], &[], &[], &[], None, 1),
         vec![step(&["make", "-j1"]), step(&["make", "install"])]
     );
     assert_eq!(
@@ -474,7 +474,7 @@ fn make_kind() {
             &[],
             &owned(&["headers"]),
             &owned(&["headers_install"]),
-            false,
+            None,
             1
         ),
         vec![
@@ -535,7 +535,7 @@ fn autotools_install_targets_replace_install() {
         make_flags: vec![],
         install_flags: vec!["sysconfdir=/out/etc".to_string()],
         install_targets: vec!["install-nokeys".to_string()],
-        check: false,
+        check_target: None,
         check_skip: vec![],
         jobs: 1,
     };
@@ -592,7 +592,7 @@ fn autotools_configure_command_replaces_the_default() {
         make_flags: vec![],
         install_flags: vec![],
         install_targets: vec![],
-        check: false,
+        check_target: None,
         check_skip: vec![],
         jobs: 1,
     };

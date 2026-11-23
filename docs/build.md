@@ -211,6 +211,8 @@ path and the wrappers change as follows:
 - `cc` and `c++` translate explicit `-lc++`, `-lstdc++`, `-lc++abi` and
   `-lunwind` to those packaged libraries.
 
+The builder rejects an installation with no payload files, including installations that only contain vug metadata. Files staged outside the prefix under `.vug/root` count as payload.
+
 After the install step the build fails when a file of the output is an
 ELF object holding a statically linked C++ runtime, unless the record sets
 `check.private-cxx-runtime`.

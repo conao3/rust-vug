@@ -93,6 +93,7 @@ skip = []
 | `dependencies.expose` | array of strings | no | Dependency selectors passed to builds against this package, such as the headers its own headers include or the pkg-config files its pkg-config files require. Sorted, no duplicate selections. Omitted when empty. |
 | `check.enabled` | boolean | yes | Whether the test suite runs. |
 | `check.skip` | array of strings | yes | Test names to skip when `check.enabled` is true. Sorted, no duplicates. A nonempty list requires a build kind that supports exclusions. |
+| `check.target` | string | no | Make target for enabled checks in `autotools` and `make`. Defaults to `"check"`. |
 | `check.private-cxx-runtime` | boolean | no | `true` lets the output hold a statically linked C++ runtime (`build.md`, "The C++ runtime"): the runtime package itself and the tools it is built with. Left out when false. |
 
 Unknown keys and unknown tables are errors.
@@ -175,9 +176,11 @@ configure-flags = [
 
 ### Build kind `autotools`
 
+Set `build.path` to the relative source directory containing the build definition. It defaults to `"."`.
+
 Runs `autoreconf -fi` when `build.autoreconf` is true, then
 `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
-`make check` (when `check.enabled`),
+`make <check.target>` (when `check.enabled`),
 and `make <install-targets> <make-flags> <install-flags> DESTDIR=/build/dest`.
 The install targets must honor `DESTDIR`. Files staged under the configured
 prefix go into the output. Files staged outside the prefix keep their paths
@@ -204,7 +207,7 @@ Builds GNU make where no `make` exists yet: `./configure --prefix=<output>
 ### Build kind `make`
 
 For packages that ship a Makefile and no configure script. Runs `make
-<make-flags>`, `make check <make-flags>` (when `check.enabled`), and `make
+<make-flags>`, `make <check.target> <make-flags>` (when `check.enabled`), and `make
 install <make-flags> <install-flags>`. The install location is passed as a
 flag, the way the package's Makefile names it:
 
@@ -273,6 +276,8 @@ store paths of the dependencies the record lists.
 | `build.setup-flags` | array of strings, order kept | empty |
 
 ### Build kind `meson`
+
+Set `build.path` to the relative source directory containing the build definition. It defaults to `"."`.
 
 Runs `meson setup build --prefix=<output> --libdir=lib --buildtype=release
 <setup-flags>`, `meson compile`, `meson test` (when `check.enabled`), and
