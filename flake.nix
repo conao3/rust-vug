@@ -52,8 +52,11 @@
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";
             nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeCheckInputs = [ pkgs.gitMinimal ];
             postInstall = ''
-              wrapProgram $out/bin/vug --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]}
+              wrapProgram $out/bin/vug \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]} \
+                --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.gitMinimal ]}
             '';
             meta = {
               mainProgram = "vug";
