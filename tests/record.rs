@@ -447,6 +447,25 @@ fn version_check_enabled_missing() {
 }
 
 #[test]
+fn skip_requires_a_supported_build_kind() {
+    let tmp = TmpDir::new("check-skip");
+    let dir = package_dir(&tmp, "hello");
+    let path = dir.join("versions/1.0.toml");
+    let record = version_toml("1.0").replace("skip = []", "skip = [\n  \"test-float-h\",\n]");
+    std::fs::write(&path, &record).unwrap();
+    assert!(check_record(&path).status.success());
+    std::fs::write(&path, record.replace("enabled = true", "enabled = false")).unwrap();
+    assert!(check_record(&path).status.success());
+    for invalid in [
+        record.replace("kind = \"autotools\"", "kind = \"make\""),
+        record.replace("test-float-h", "test-%"),
+    ] {
+        std::fs::write(&path, invalid).unwrap();
+        assert_invalid(&check_record(&path), "check.skip");
+    }
+}
+
+#[test]
 fn version_unknown_table() {
     let tmp = TmpDir::new("v-table");
     let dir = package_dir(&tmp, "hello");

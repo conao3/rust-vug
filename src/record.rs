@@ -676,6 +676,43 @@ fn parse_version(
         check_skip = req_string_array(check, "skip", "check.", &mut errors).unwrap_or_default();
         check_unique("skip", "check.", &check_skip, &mut errors);
     }
+    if !check_skip.is_empty() {
+        if !matches!(
+            build,
+            BuildOptions::Autotools { .. }
+                | BuildOptions::Cmake { .. }
+                | BuildOptions::Meson { .. }
+                | BuildOptions::Cargo { .. }
+        ) {
+            errors.push("check.skip: unsupported for this build kind".to_owned());
+        }
+        for name in &check_skip {
+            if name.trim().is_empty() || name.chars().any(char::is_control) {
+                errors.push(
+                    "check.skip: expected a nonempty test name without control characters"
+                        .to_owned(),
+                );
+            } else if matches!(build, BuildOptions::Autotools { .. })
+                && !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._/+-".contains(&b))
+            {
+                errors.push(format!("check.skip: invalid Automake test name {name:?}"));
+            }
+        }
+        if let BuildOptions::Autotools { make_flags, .. } = &build
+            && make_flags.iter().any(|flag| {
+                flag.split_once('=').is_some_and(|(name, _)| {
+                    matches!(
+                        name.trim_end_matches([' ', ':', '+', '?', '!']),
+                        "TESTS" | "check_PROGRAMS"
+                    )
+                })
+            })
+        {
+            errors.push("check.skip: build.make-flags must leave Automake TESTS and check_PROGRAMS to the test harness".to_owned());
+        }
+    }
 
     let mut links = Vec::new();
     match map.get("links") {

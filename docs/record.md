@@ -92,13 +92,26 @@ skip = []
 | `dependencies.run` | array of strings | yes | Package names needed by the output at run time. Sorted, no duplicates. |
 | `dependencies.expose` | array of strings | no | Package names that a build against this package needs as well, without the output needing them at run time: the headers its own headers include, the pkg-config files its pkg-config file requires. Sorted, no duplicates; left out when empty. |
 | `check.enabled` | boolean | yes | Whether the test suite runs. |
-| `check.skip` | array of strings | yes | Test names to skip. Sorted, no duplicates. |
+| `check.skip` | array of strings | yes | Test names to skip when `check.enabled` is true. Sorted, no duplicates. A nonempty list requires a build kind that supports exclusions. |
 | `check.private-cxx-runtime` | boolean | no | `true` lets the output hold a statically linked C++ runtime (`build.md`, "The C++ runtime"): the runtime package itself and the tools it is built with. Left out when false. |
 
 Unknown keys and unknown tables are errors.
 
 A source file named `*.tar.lz` is decoded from lzip before tar extraction.
 `source.sha256` covers the downloaded, compressed file.
+
+### Selecting tests to skip
+
+| Build kind | Test name and exclusion |
+|---|---|
+| `autotools` | An exact word from an Automake `TESTS` list, such as `tests/example.sh` or `test-float-h`, as written in that Makefile. Names use ASCII letters, digits, or `._/+-`. vug filters `TESTS` and the corresponding `check_PROGRAMS` entries in configured Automake Makefiles for `make check`. Leave those variables to the harness when using exclusions. [Automake test suites](https://www.gnu.org/software/automake/manual/html_node/Tests.html), [GNU make text functions](https://www.gnu.org/software/make/manual/html_node/Text-Functions.html). |
+| `cmake` | An exact CTest name. vug escapes and anchors the names in the regular expression passed to `ctest -E`. CTest can still add fixture setup and cleanup tests required by the remaining tests. [CTest options](https://cmake.org/cmake/help/latest/manual/ctest.1.html). |
+| `meson` | An exact test name from `meson introspect --tests build`. vug passes the remaining names to `meson test`. Tests with the same name in different subprojects are excluded together. [Meson introspection](https://mesonbuild.com/IDE-integration.html), [Meson test command](https://mesonbuild.com/Commands.html#test). |
+| `cargo` | A full libtest name, including any module path. A nonempty list opts into an offline, locked `cargo test --release` for the manifest under `build.path`, with `--exact` and one `--skip` per name. The test uses Cargo's default features. `build.flags` are passed to `cargo install`. [Cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html), [Rust test filters](https://doc.rust-lang.org/rustc/tests/index.html#filters). |
+
+`make` and the other build kinds require an empty list. A plain Makefile
+defines its own `check` target and test selection. [GNU make standard
+targets](https://www.gnu.org/software/make/manual/html_node/Standard-Targets.html).
 
 ### Paths in build options
 

@@ -870,6 +870,7 @@ impl<'a> Builder<'a> {
                     install_flags: expand(install_flags)?,
                     install_targets: install_targets.clone(),
                     check: record.check_enabled,
+                    check_skip: record.check_skip.clone(),
                     jobs: settings.jobs,
                 },
             ),
@@ -894,12 +895,14 @@ impl<'a> Builder<'a> {
                 path,
                 &expand(setup_flags)?,
                 record.check_enabled,
+                &record.check_skip,
                 settings.jobs,
             ),
             BuildOptions::Meson { setup_flags } => steps::meson_steps(
                 &prefix,
                 &expand(setup_flags)?,
                 record.check_enabled,
+                &record.check_skip,
                 settings.jobs,
             ),
             BuildOptions::Linux { defconfig, config } => {
@@ -1007,6 +1010,11 @@ impl<'a> Builder<'a> {
                         &prefix,
                         member,
                         &expand(flags)?,
+                        if record.check_enabled {
+                            &record.check_skip
+                        } else {
+                            &[]
+                        },
                         settings.jobs,
                         &crates,
                     )),
