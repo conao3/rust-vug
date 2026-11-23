@@ -81,7 +81,7 @@ ext4 file system for a kernel that QEMU loads directly, or a GPT disk with an
 EFI system partition when the record names a boot loader.
 
 ```console
-# vug system switch-system --root /vug/tree --name minimal
+# vug system switch-system --root /vug/tree --name systemd
 # vug system delete-generations --keep 2
 ```
 
