@@ -388,6 +388,23 @@ fn file_name_of(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }
 
+fn prepare_archive(archive: PathBuf, name: &str, work: &Path) -> Result<(PathBuf, String), String> {
+    if name.ends_with(".tar.lz") {
+        let tar = work.join("source.tar");
+        let input = std::io::BufReader::new(io("open", &archive, fs::File::open(&archive))?);
+        let mut decoder = lzma_rust2::LzipReader::new(input);
+        let mut output = io("create", &tar, fs::File::create(&tar))?;
+        io(
+            "decompress lzip",
+            &archive,
+            std::io::copy(&mut decoder, &mut output),
+        )?;
+        Ok((tar, format!("/src/{}", name.trim_end_matches(".lz"))))
+    } else {
+        Ok((archive, format!("/src/{name}")))
+    }
+}
+
 /// Moves the tree `out`, built for the placeholder path, into the store:
 /// hashes it, replaces the placeholder by the final path, and renames it.
 /// Returns the id.
@@ -720,7 +737,7 @@ impl<'a> Builder<'a> {
         )?;
 
         let prefix = format!("{STORE}/{PLACEHOLDER_ID}");
-        let archive_dest = format!("/src/{}", file_name_of(&record.url));
+        let (archive, archive_dest) = prepare_archive(archive, file_name_of(&record.url), &work)?;
         let patches: Vec<String> = record
             .patches
             .iter()
@@ -837,6 +854,7 @@ impl<'a> Builder<'a> {
         let mut script: Vec<Step> = steps::unpack_steps(&archive_dest, strip, &patches);
         script.extend(match &record.build {
             BuildOptions::Autotools {
+                autoreconf,
                 configure_flags,
                 make_flags,
                 install_flags,
@@ -845,6 +863,7 @@ impl<'a> Builder<'a> {
             } => steps::autotools_steps(
                 &prefix,
                 &steps::Autotools {
+                    autoreconf: *autoreconf,
                     configure_command: expand(configure_command)?,
                     configure_flags: expand(configure_flags)?,
                     make_flags: expand(make_flags)?,
@@ -1138,7 +1157,48 @@ pub fn export_cache(
 
 #[cfg(test)]
 mod tests {
-    use super::private_cxx_runtime;
+    use super::{prepare_archive, private_cxx_runtime};
+
+    #[test]
+    fn lzip_source_decodes_to_tar_and_checks_the_trailer() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive = directory.path().join("cached");
+        let mut lzip = [
+            0x4c, 0x5a, 0x49, 0x50, 0x01, 0x0c, 0x00, 0x39, 0x19, 0x49, 0xda, 0xe9, 0x39, 0xa3,
+            0xed, 0x32, 0x89, 0x36, 0x78, 0xe7, 0xf1, 0x5c, 0xa9, 0x15, 0xf6, 0xa3, 0x2e, 0x70,
+            0xa4, 0xa9, 0x2c, 0xd4, 0x2c, 0x43, 0x4a, 0xda, 0x35, 0x57, 0x02, 0x08, 0x08, 0x7e,
+            0x2d, 0x5b, 0x0f, 0x5c, 0x95, 0x2e, 0xb7, 0x9c, 0x35, 0x14, 0xa5, 0xa5, 0xc7, 0x9c,
+            0xff, 0x56, 0x5a, 0xec, 0xc4, 0x56, 0xab, 0x7a, 0xab, 0xa7, 0x31, 0x1c, 0xf2, 0x6b,
+            0x75, 0xba, 0x50, 0xb9, 0x5e, 0x5d, 0x22, 0xe2, 0xa6, 0xdc, 0x71, 0xac, 0x60, 0xf4,
+            0x95, 0x04, 0x91, 0x98, 0xd1, 0x85, 0xc4, 0x00, 0xe2, 0x69, 0xda, 0x31, 0x6f, 0x91,
+            0x7c, 0xab, 0x08, 0xd0, 0x05, 0x08, 0xff, 0xff, 0xf6, 0xb9, 0x1c, 0x20, 0x54, 0x61,
+            0x8c, 0x93, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x82, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(&archive, lzip).unwrap();
+        let (tar, destination) =
+            prepare_archive(archive.clone(), "release.tar.lz", directory.path()).unwrap();
+        assert_eq!(destination, "/src/release.tar");
+        assert_eq!(std::fs::read(&archive).unwrap(), lzip);
+        let extraction = std::process::Command::new("tar")
+            .args(["-xf"])
+            .arg(tar)
+            .arg("--strip-components=1")
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(extraction.success());
+        assert_eq!(
+            std::fs::read(directory.path().join("hello")).unwrap(),
+            b"hello\n"
+        );
+
+        let crc_offset = lzip.len() - 20;
+        lzip[crc_offset] ^= 1;
+        std::fs::write(&archive, lzip).unwrap();
+        let error = prepare_archive(archive, "release.tar.lz", directory.path()).unwrap_err();
+        assert!(error.starts_with("decompress lzip "), "{error}");
+    }
 
     #[test]
     fn static_cxx_runtime_is_found_in_elf_files_only() {

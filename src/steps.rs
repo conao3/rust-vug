@@ -5,6 +5,7 @@
 pub type Step = Vec<String>;
 
 pub struct Autotools {
+    pub autoreconf: bool,
     /// The words that start the configure step; empty means
     /// `./configure --prefix=<prefix>`.
     pub configure_command: Vec<String>,
@@ -69,10 +70,11 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
 
 /// Steps of the `autotools` build kind.
 ///
-/// 1. `["./configure", "--prefix=<prefix>", <configure_flags>...]`
-/// 2. `["make", "-j<jobs>", <make_flags>...]`
-/// 3. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
-/// 4. `["make", "install", <make_flags>..., <install_flags>...]`
+/// 1. only when `autoreconf`: `["autoreconf", "-fi"]`
+/// 2. `["./configure", "--prefix=<prefix>", <configure_flags>...]`
+/// 3. `["make", "-j<jobs>", <make_flags>...]`
+/// 4. only when `check`: `["make", "-j<jobs>", "check", <make_flags>...]`
+/// 5. `["make", "install", <make_flags>..., <install_flags>...]`
 pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     let mut configure = if options.configure_command.is_empty() {
         vec!["./configure".to_string(), format!("--prefix={prefix}")]
@@ -85,7 +87,11 @@ pub fn autotools_steps(prefix: &str, options: &Autotools) -> Vec<Step> {
     let mut make = vec!["make".to_string(), jobs.clone()];
     make.extend(options.make_flags.iter().cloned());
 
-    let mut steps = vec![configure, make];
+    let mut steps = Vec::new();
+    if options.autoreconf {
+        steps.push(vec!["autoreconf".to_owned(), "-fi".to_owned()]);
+    }
+    steps.extend([configure, make]);
 
     if options.check {
         let mut check = vec!["make".to_string(), jobs, "check".to_string()];

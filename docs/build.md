@@ -46,7 +46,8 @@ Checking a store path reverses step 3 and compares the hash with the id.
 
 1. Fetch `source.url` into the cache directory, keyed by `source.sha256`. A
    file whose SHA-256 differs from the record is rejected.
-2. Create the build root: the seed tools, each dependency at its store path,
+2. Decode a `.tar.lz` source into a temporary tar file with vug's built-in
+   lzip decoder. Create the build root: the seed tools, each dependency at its store path,
    the source archive, the patches, and an empty output directory at the
    placeholder path.
 3. Run the build inside `bwrap --unshare-all --hostname vug --clearenv`: no network, no
@@ -57,7 +58,9 @@ Checking a store path reverses step 3 and compares the hash with the id.
    patches with `patch -p1`. A source whose file name has no `.tar` in it
    and does not end in `.tgz`, `.txz`, or `.tbz2` is not an archive: it is
    copied into the source directory under its name.
-5. Run the steps of the build kind (`docs/record.md`).
+5. Run the steps of the build kind (`docs/record.md`). For an autotools
+   record with `autoreconf = true`, run `autoreconf -fi` in the patched
+   source directory before the configure command.
 6. Copy the version record to `.vug/record.toml` in the output.
 7. Hash the output, replace the placeholder, and move the output to its
    store path.

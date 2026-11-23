@@ -39,6 +39,7 @@ fn unpack_with_patches() {
 #[test]
 fn autotools_with_check() {
     let options = Autotools {
+        autoreconf: false,
         configure_command: vec![],
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
@@ -62,6 +63,7 @@ fn autotools_with_check() {
 #[test]
 fn autotools_without_check() {
     let options = Autotools {
+        autoreconf: false,
         configure_command: vec![],
         configure_flags: owned(&["--disable-nls"]),
         make_flags: owned(&["V=1"]),
@@ -86,6 +88,7 @@ fn autotools_without_check() {
 #[test]
 fn autotools_minimal() {
     let options = Autotools {
+        autoreconf: false,
         configure_command: vec![],
         configure_flags: vec![],
         make_flags: vec![],
@@ -99,6 +102,32 @@ fn autotools_minimal() {
         steps,
         vec![
             step(&["./configure", "--prefix=/out"]),
+            step(&["make", "-j1"]),
+            step(&["make", "install"]),
+        ]
+    );
+}
+
+#[test]
+fn autotools_autoreconf_precedes_custom_configure() {
+    let steps = autotools_steps(
+        "/out",
+        &Autotools {
+            autoreconf: true,
+            configure_command: owned(&["sh", "./configure"]),
+            configure_flags: owned(&["--disable-nls"]),
+            make_flags: vec![],
+            install_flags: vec![],
+            install_targets: vec![],
+            check: false,
+            jobs: 1,
+        },
+    );
+    assert_eq!(
+        steps,
+        vec![
+            step(&["autoreconf", "-fi"]),
+            step(&["sh", "./configure", "--disable-nls"]),
             step(&["make", "-j1"]),
             step(&["make", "install"]),
         ]
@@ -381,6 +410,7 @@ fn meson_kind() {
 #[test]
 fn autotools_install_targets_replace_install() {
     let options = Autotools {
+        autoreconf: false,
         configure_command: vec![],
         configure_flags: vec![],
         make_flags: vec![],
@@ -418,6 +448,7 @@ fn cmake_steps_configure_build_and_install() {
 #[test]
 fn autotools_configure_command_replaces_the_default() {
     let options = Autotools {
+        autoreconf: false,
         configure_command: vec!["./Configure".to_string(), "-Dprefix=/out".to_string()],
         configure_flags: vec!["-des".to_string()],
         make_flags: vec![],

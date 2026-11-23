@@ -97,6 +97,9 @@ skip = []
 
 Unknown keys and unknown tables are errors.
 
+A source file named `*.tar.lz` is decoded from lzip before tar extraction.
+`source.sha256` covers the downloaded, compressed file.
+
 ### Paths in build options
 
 Inside the strings of `configure-flags`, `make-flags`, `install-flags`, and
@@ -115,12 +118,14 @@ configure-flags = [
 
 ### Build kind `autotools`
 
-Runs `./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
+Runs `autoreconf -fi` when `build.autoreconf` is true, then
+`./configure --prefix=<output> <configure-flags>`, `make <make-flags>`,
 `make check` (when `check.enabled`),
 `make <install-targets> <make-flags> <install-flags>`.
 
 | Key | Type | Default |
 |---|---|---|
+| `build.autoreconf` | boolean | false, omitted from the canonical record. When true, `dependencies.build` must include `autoconf`, `automake`, and `libtool`. |
 | `build.configure-command` | array of strings, order kept | empty, which means `./configure --prefix=<output>` |
 | `build.configure-flags` | array of strings, order kept | empty |
 | `build.make-flags` | array of strings, order kept | empty |

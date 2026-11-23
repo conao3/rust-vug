@@ -65,6 +65,7 @@ pub(crate) struct VersionRecord {
 
 pub(crate) enum BuildOptions {
     Autotools {
+        autoreconf: bool,
         configure_flags: Vec<String>,
         make_flags: Vec<String>,
         install_flags: Vec<String>,
@@ -370,6 +371,7 @@ fn parse_version(
     }
 
     let mut build = BuildOptions::Autotools {
+        autoreconf: false,
         configure_flags: Vec::new(),
         make_flags: Vec::new(),
         install_flags: Vec::new(),
@@ -384,6 +386,7 @@ fn parse_version(
                     build_table,
                     &[
                         "kind",
+                        "autoreconf",
                         "configure-command",
                         "configure-flags",
                         "make-flags",
@@ -394,6 +397,9 @@ fn parse_version(
                     &mut errors,
                 );
                 build = BuildOptions::Autotools {
+                    autoreconf: build_table.contains_key("autoreconf")
+                        && req_bool(build_table, "autoreconf", "build.", &mut errors)
+                            .unwrap_or(false),
                     configure_flags: opt_string_array(
                         build_table,
                         "configure-flags",
@@ -636,6 +642,21 @@ fn parse_version(
         deps_expose =
             opt_string_array(deps, "expose", "dependencies.", &mut errors).unwrap_or_default();
         check_unique("expose", "dependencies.", &deps_expose, &mut errors);
+    }
+    if matches!(
+        build,
+        BuildOptions::Autotools {
+            autoreconf: true,
+            ..
+        }
+    ) {
+        for tool in ["autoconf", "automake", "libtool"] {
+            if !deps_build.iter().any(|dep| dep == tool) {
+                errors.push(format!(
+                    "build.autoreconf: dependencies.build must include {tool}"
+                ));
+            }
+        }
     }
 
     let (mut check_enabled, mut check_skip) = (true, Vec::new());
@@ -902,6 +923,7 @@ fn canonical_version(record: &VersionRecord) -> String {
     out.push_str("[build]\n");
     match &record.build {
         BuildOptions::Autotools {
+            autoreconf,
             configure_flags,
             make_flags,
             install_flags,
@@ -909,6 +931,9 @@ fn canonical_version(record: &VersionRecord) -> String {
             configure_command,
         } => {
             write_string_field(&mut out, "kind", "autotools");
+            if *autoreconf {
+                write_bool_field(&mut out, "autoreconf", true);
+            }
             if !configure_command.is_empty() {
                 write_array(&mut out, "configure-command", configure_command);
             }
@@ -1463,6 +1488,7 @@ sources = [
             sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
             strip_components: 1,
             build: BuildOptions::Autotools {
+                autoreconf: false,
                 configure_flags: vec!["--disable-nls".to_owned()],
                 make_flags: Vec::new(),
                 install_flags: Vec::new(),
@@ -1506,6 +1532,50 @@ skip = []
     #[test]
     fn version_canonical_bytes() {
         assert_eq!(canonical_version(&version_record()), CANONICAL_VERSION);
+    }
+
+    #[test]
+    fn autotools_autoreconf_is_opt_in_and_requires_build_dependencies() {
+        let mut table = CANONICAL_VERSION.parse::<toml::Table>().unwrap();
+        let build = table["build"].as_table_mut().unwrap();
+        build.insert("autoreconf".to_owned(), false.into());
+        let parse = |table: &toml::Table| {
+            parse_version(
+                table,
+                "2.12.2",
+                Some(vec!["https://ftp.gnu.org/gnu/hello/".to_owned()]),
+            )
+        };
+        let (record, errors) = parse(&table);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(canonical_version(&record), CANONICAL_VERSION);
+
+        table["build"]["autoreconf"] = "true".into();
+        let (_, errors) = parse(&table);
+        assert_eq!(errors, ["build.autoreconf: expected a boolean"]);
+
+        table["build"]["autoreconf"] = true.into();
+        let (_, errors) = parse(&table);
+        assert_eq!(
+            errors,
+            [
+                "build.autoreconf: dependencies.build must include autoconf",
+                "build.autoreconf: dependencies.build must include automake",
+                "build.autoreconf: dependencies.build must include libtool",
+            ]
+        );
+        table["dependencies"]["build"] = toml::Value::Array(
+            ["autoconf", "automake", "libtool", "make"]
+                .map(Into::into)
+                .to_vec(),
+        );
+        let (record, errors) = parse(&table);
+        assert!(errors.is_empty(), "{errors:?}");
+        let canonical = canonical_version(&record);
+        assert!(canonical.contains("kind = \"autotools\"\nautoreconf = true\n"));
+        let (record, errors) = parse(&canonical.parse().unwrap());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(canonical_version(&record), canonical);
     }
 
     #[test]
