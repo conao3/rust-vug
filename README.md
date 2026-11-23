@@ -5,8 +5,9 @@ services and systems are TOML records that carry data only, builds run in a
 sandbox that starts from two upstream binaries (busybox and zig), and outputs
 go to a content-addressed store. The records are in
 [vug-packages](https://github.com/conao3/vug-packages); a system built from
-them boots in QEMU and on EFI firmware, switches between generations, and
-rebuilds itself on the machine.
+them boots in QEMU, from a kernel given to QEMU or through EFI firmware
+(OVMF), switches between generations, and builds its next generation on the
+machine. It has not been started on real hardware.
 
 | Document | Contents |
 |---|---|
