@@ -132,6 +132,10 @@ pub(crate) enum BuildOptions {
         path: String,
         flags: Vec<String>,
     },
+    Perl {
+        driver: PerlDriver,
+        modules: Vec<String>,
+    },
     Python {
         imports: Vec<String>,
         native_imports: Vec<String>,
@@ -161,6 +165,21 @@ fn unknown_keys(map: &toml::Table, allowed: &[&str], prefix: &str, errors: &mut 
         if !allowed.contains(&key.as_str()) {
             let what = if value.is_table() { "table" } else { "key" };
             errors.push(format!("{prefix}{key}: unknown {what}"));
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PerlDriver {
+    MakeMaker,
+    ModuleBuild,
+}
+
+impl PerlDriver {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::MakeMaker => "make-maker",
+            Self::ModuleBuild => "module-build",
         }
     }
 }
@@ -653,6 +672,38 @@ fn parse_version(
                         .unwrap_or_default(),
                 };
             }
+            "perl" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "driver", "modules"],
+                    "build.",
+                    &mut errors,
+                );
+                let driver = match req_string(build_table, "driver", "build.", &mut errors)
+                    .as_deref()
+                {
+                    Some("module-build") => PerlDriver::ModuleBuild,
+                    Some("make-maker") | None => PerlDriver::MakeMaker,
+                    Some(_) => {
+                        errors.push("build.driver: expected make-maker or module-build".to_owned());
+                        PerlDriver::MakeMaker
+                    }
+                };
+                let modules = opt_string_array(build_table, "modules", "build.", &mut errors)
+                    .unwrap_or_default();
+                check_unique("modules", "build.", &modules, &mut errors);
+                for module in &modules {
+                    if !module.split("::").all(|part| {
+                        part.as_bytes()
+                            .first()
+                            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+                            && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    }) {
+                        errors.push(format!("build.modules: invalid module name {module:?}"));
+                    }
+                }
+                build = BuildOptions::Perl { driver, modules };
+            }
             "python" => {
                 unknown_keys(
                     build_table,
@@ -719,7 +770,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", \"prebuilt\", or \"python\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"linux\", \"make\", \"meson\", \"perl\", \"prebuilt\", or \"python\""
                         .to_owned(),
                 );
             }
@@ -1187,6 +1238,13 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !flags.is_empty() {
                 write_array(&mut out, "flags", flags);
+            }
+        }
+        BuildOptions::Perl { driver, modules } => {
+            write_string_field(&mut out, "kind", "perl");
+            write_string_field(&mut out, "driver", driver.name());
+            if !modules.is_empty() {
+                write_array(&mut out, "modules", modules);
             }
         }
         BuildOptions::Python {

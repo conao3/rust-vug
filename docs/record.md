@@ -248,6 +248,26 @@ linker is `cc`, and programs link against the C library of the build
 | `build.path` | string | `"."`: the directory of the package inside the source |
 | `build.flags` | array of strings, order kept | empty |
 
+### Build kind `perl`
+
+Build a pinned CPAN source archive with the `perl` interpreter from
+`dependencies.run`. Set `driver = "make-maker"` for `Makefile.PL` and add
+`make` to `dependencies.build`. Set `driver = "module-build"` for `Build.PL`
+and provide `Module::Build` as a build dependency when the archive needs it.
+Both drivers install under the output's `lib/perl5`, including the
+interpreter's architecture subdirectory for XS extensions.
+
+Put configure, build and test tools in `dependencies.build`. Put imported
+modules and shared libraries in `dependencies.run`. When CPAN metadata is
+present, required modules and versions are checked for the applicable phases.
+The build uses the declared dependencies' Perl libraries and rejects
+incompatible ABI markers. Installed Perl scripts use the selected interpreter
+and a fixed `PERL5LIB` containing the output and its runtime dependency closure.
+
+With `check.enabled = true`, the driver runs the upstream test suite and
+loads each module named in the optional `build.modules` array from the
+installed tree. Module names use Perl syntax, for example `"Try::Tiny"`.
+
 ### Build kind `python`
 
 `kind = "python"` builds a wheel from the patched source tree using

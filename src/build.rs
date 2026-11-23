@@ -782,12 +782,17 @@ impl<'a> Builder<'a> {
                 })
                 .collect()
         });
-        let python_key;
-        let key_record = if matches!(record.build, BuildOptions::Python { .. }) {
-            python_key = format!("python-build-rules=v1\n{canonical}");
-            &python_key
-        } else {
-            &canonical
+        let kind_key;
+        let key_record = match &record.build {
+            BuildOptions::Python { .. } => {
+                kind_key = format!("python-build-rules=v1\n{canonical}");
+                &kind_key
+            }
+            BuildOptions::Perl { .. } => {
+                kind_key = format!("perl-build-rules=v1\n{canonical}");
+                &kind_key
+            }
+            _ => &canonical,
         };
         let key = build_key(key_record, &self.seed_id, &dep_ids, bindings.as_ref());
 
@@ -1147,6 +1152,43 @@ impl<'a> Builder<'a> {
                     "cp".to_owned(),
                     "Cargo.lock".to_owned(),
                     "/build/Cargo.lock".to_owned(),
+                ]]
+            }
+            BuildOptions::Perl { driver, modules } => {
+                let perl = direct
+                    .get("perl")
+                    .filter(|_| record.deps_run.iter().any(|dep| dep == "perl"))
+                    .ok_or("build.kind perl requires perl in dependencies.run")?;
+                let mut runtime = Vec::new();
+                for dep in &all_run {
+                    let id = &resolved[dep].id;
+                    if !runtime.contains(id) {
+                        runtime.push(id.clone());
+                    }
+                }
+                for id in &build_run_closure {
+                    if !runtime.contains(id) {
+                        runtime.push(id.clone());
+                    }
+                }
+                let paths = |ids: Vec<String>| {
+                    ids.iter()
+                        .map(|id| format!("{STORE}/{id}"))
+                        .collect::<Vec<_>>()
+                        .join(":")
+                };
+                vec![vec![
+                    format!("{perl}/bin/perl"),
+                    "-e".to_owned(),
+                    include_str!("build/perl.pl").to_owned(),
+                    "--".to_owned(),
+                    prefix.clone(),
+                    driver.name().to_owned(),
+                    paths(dep_ids.iter().cloned().collect()),
+                    paths(runtime),
+                    settings.jobs.to_string(),
+                    record.check_enabled.to_string(),
+                    modules.join(","),
                 ]]
             }
             BuildOptions::Python {
