@@ -272,6 +272,42 @@ Modules with no external dependencies can omit the vendor tree.
 Set `check.enabled = true` to run `go test ./...` under the same constraints.
 Use an empty `check.skip` list. List runtime tools and data separately in `dependencies.run`.
 
+### Build kind `node`
+
+```toml
+[build]
+kind = "node"
+build-script = true
+
+[dependencies]
+build = ["npm"]
+run = ["nodejs"]
+
+[check]
+enabled = false
+skip = []
+```
+
+Use a source archive with `package.json` and an npm `package-lock.json`
+at the project root. The lockfile must be version 3 and describe registry
+tarballs with SHA-512 integrity. Git, file and workspace dependencies
+require a different packaging path. vug verifies the tarballs before
+populating a fresh npm cache inside the network-disabled build sandbox.
+Optional dependencies are selected for Linux, the target CPU and musl.
+
+`build.build-script` defaults to false. With it enabled, vug runs the
+manifest's `build` script. Set `check.enabled` to run `npm test` and
+use an empty `check.skip` list. npm disables dependency lifecycle scripts
+and the implicit pre/post hooks around the explicit build and test scripts.
+The final install includes only production dependencies. The project lives
+under `lib/node_modules/<name>`; manifest bin entries use launchers in
+`bin/` that invoke the declared Node executable.
+
+For a bundled musl executable with an interpreter outside the store, add
+its project-relative path to `build.musl-executables`. List `patchelf`
+in `dependencies.build` and `musl` in `dependencies.run`. vug sets the
+listed interpreter paths to the musl loader in the store after each install.
+
 ### Build kind `perl`
 
 Build a pinned CPAN source archive with the `perl` interpreter from

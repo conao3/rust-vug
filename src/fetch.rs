@@ -1,6 +1,6 @@
 //! Fetching a source file into a cache keyed by its SHA-256.
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -23,8 +23,12 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
     sha256_reader(File::open(path)?)
 }
 
-pub fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
-    let mut hasher = Sha256::new();
+pub fn sha256_reader(reader: impl Read) -> io::Result<String> {
+    digest_reader::<Sha256>(reader)
+}
+
+fn digest_reader<D: Digest>(mut reader: impl Read) -> io::Result<String> {
+    let mut hasher = D::new();
     let mut buf = [0u8; 8192];
     loop {
         let n = reader.read(&mut buf)?;
@@ -33,12 +37,12 @@ pub fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(sha256_hex(hasher))
+    Ok(digest_hex(hasher))
 }
 
-fn sha256_hex(hasher: Sha256) -> String {
-    let mut hex = String::with_capacity(64);
-    for b in hasher.finalize() {
+fn digest_hex<D: Digest>(hasher: D) -> String {
+    let mut hex = String::with_capacity(2 * <D as Digest>::output_size());
+    for b in hasher.finalize().iter() {
         let _ = write!(hex, "{b:02x}");
     }
     hex
@@ -50,7 +54,7 @@ fn sha256_hex(hasher: Sha256) -> String {
 /// - `cache_dir` is created when missing.
 /// - When `cache_dir/<sha256>` exists and its SHA-256 equals `sha256`, it is
 ///   returned without any network access.
-/// - When it exists with different content, it is deleted and fetched again.
+/// - When its content differs, a verified download replaces it atomically.
 /// - Otherwise the body of a GET to `url` is streamed to
 ///   `cache_dir/<sha256>.<process id>.partial` (so that two processes fetching
 ///   the same file do not write to one file), hashed, and renamed to
@@ -58,16 +62,31 @@ fn sha256_hex(hasher: Sha256) -> String {
 /// - On a hash mismatch the partial file is removed and
 ///   `FetchError::HashMismatch` is returned with both hex values.
 /// - A status other than 200 or a transport error is `FetchError::Http`, and
-///   no file is left in `cache_dir`.
+///   no partial download is left in `cache_dir`.
 /// - There is no limit on the body size (ureq limits bodies by default;
 ///   remove the limit).
 pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, FetchError> {
-    let target = cache_dir.join(sha256);
-    if target.exists() {
-        if sha256_file(&target).map_err(FetchError::Io)? == sha256 {
-            return Ok(target);
+    fetch_digest::<Sha256>(url, sha256, cache_dir)
+}
+
+pub fn fetch_sha512(url: &str, checksum: &str, cache_dir: &Path) -> Result<PathBuf, FetchError> {
+    fetch_digest::<Sha512>(url, checksum, cache_dir)
+}
+
+fn fetch_digest<D: Digest>(
+    url: &str,
+    checksum: &str,
+    cache_dir: &Path,
+) -> Result<PathBuf, FetchError> {
+    let target = cache_dir.join(checksum);
+    match File::open(&target) {
+        Ok(file) => {
+            if digest_reader::<D>(file).map_err(FetchError::Io)? == checksum {
+                return Ok(target);
+            }
         }
-        fs::remove_file(&target).map_err(FetchError::Io)?;
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(FetchError::Io(e)),
     }
     fs::create_dir_all(cache_dir).map_err(FetchError::Io)?;
 
@@ -78,11 +97,11 @@ pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, Fetch
         return Err(FetchError::Http(format!("status {}", res.status())));
     }
 
-    let partial = cache_dir.join(format!("{sha256}.{}.partial", std::process::id()));
+    let partial = cache_dir.join(format!("{checksum}.{}.partial", std::process::id()));
     let result = (|| {
         let mut out = File::create(&partial).map_err(FetchError::Io)?;
         let mut reader = res.body_mut().with_config().limit(u64::MAX).reader();
-        let mut hasher = Sha256::new();
+        let mut hasher = D::new();
         let mut buf = [0u8; 64 * 1024];
         loop {
             let n = match reader.read(&mut buf) {
@@ -93,10 +112,10 @@ pub fn fetch(url: &str, sha256: &str, cache_dir: &Path) -> Result<PathBuf, Fetch
             out.write_all(&buf[..n]).map_err(FetchError::Io)?;
             hasher.update(&buf[..n]);
         }
-        let actual = sha256_hex(hasher);
-        if actual != sha256 {
+        let actual = digest_hex(hasher);
+        if actual != checksum {
             return Err(FetchError::HashMismatch {
-                expected: sha256.to_string(),
+                expected: checksum.to_string(),
                 actual,
             });
         }

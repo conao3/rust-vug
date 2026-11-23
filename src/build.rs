@@ -2,6 +2,7 @@
 
 mod cache;
 pub(crate) mod elf;
+mod node;
 mod outputs;
 
 pub use cache::export_cache;
@@ -788,6 +789,10 @@ impl<'a> Builder<'a> {
                 kind_key = format!("python-build-rules=v1\n{canonical}");
                 &kind_key
             }
+            BuildOptions::Node { .. } => {
+                kind_key = format!("node-build-rules=v1\n{canonical}");
+                &kind_key
+            }
             BuildOptions::Go { .. } => {
                 kind_key = format!("go-build-rules=v1\n{canonical}");
                 &kind_key
@@ -1165,6 +1170,7 @@ impl<'a> Builder<'a> {
                     "/build/Cargo.lock".to_owned(),
                 ]]
             }
+            BuildOptions::Node { .. } => Vec::new(),
             BuildOptions::Go { targets, .. } => {
                 let go = direct
                     .get("go")
@@ -1361,6 +1367,61 @@ impl<'a> Builder<'a> {
                         },
                         settings.jobs,
                         &crates,
+                    )),
+                ),
+            )?;
+            run_sandbox(&Sandbox {
+                binds,
+                env: build_env(path, &extra),
+                workdir: "/build/src".to_owned(),
+                command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
+            })?;
+        } else if let BuildOptions::Node {
+            build_script,
+            musl_executables,
+        } = &record.build
+        {
+            let node = direct
+                .get("nodejs")
+                .filter(|_| record.deps_run.iter().any(|dep| dep == "nodejs"))
+                .ok_or("build.kind node requires nodejs in dependencies.run")?;
+            let npm = direct
+                .get("npm")
+                .filter(|_| record.deps_build.iter().any(|dep| dep == "npm"))
+                .ok_or("build.kind node requires npm in dependencies.build")?;
+            let mut relocations = Vec::new();
+            if !musl_executables.is_empty() {
+                let musl = direct
+                    .get("musl")
+                    .filter(|_| record.deps_run.iter().any(|dep| dep == "musl"))
+                    .ok_or("build.musl-executables requires musl in dependencies.run")?;
+                let patchelf = direct
+                    .get("patchelf")
+                    .filter(|_| record.deps_build.iter().any(|dep| dep == "patchelf"))
+                    .ok_or("build.musl-executables requires patchelf in dependencies.build")?;
+                for executable in musl_executables {
+                    relocations.push(vec![
+                        format!("{patchelf}/bin/patchelf"),
+                        "--set-interpreter".to_owned(),
+                        format!("{musl}/lib/ld-musl-x86_64.so.1"),
+                        format!("./{executable}"),
+                    ]);
+                }
+            }
+            let archives = node::fetch_locked(&build_dir, &settings.cache_dir)?;
+            io(
+                "write",
+                &script_path,
+                fs::write(
+                    &script_path,
+                    steps::shell_script(&node::steps(
+                        &prefix,
+                        node,
+                        npm,
+                        &archives,
+                        &relocations,
+                        *build_script,
+                        record.check_enabled,
                     )),
                 ),
             )?;

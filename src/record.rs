@@ -132,6 +132,10 @@ pub(crate) enum BuildOptions {
         path: String,
         flags: Vec<String>,
     },
+    Node {
+        build_script: bool,
+        musl_executables: Vec<String>,
+    },
     Go {
         targets: Vec<(String, String)>,
         vendor: Option<(String, String)>,
@@ -676,6 +680,31 @@ fn parse_version(
                         .unwrap_or_default(),
                 };
             }
+            "node" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "build-script", "musl-executables"],
+                    "build.",
+                    &mut errors,
+                );
+                let build_script = match build_table.get("build-script") {
+                    Some(value) => value.as_bool().unwrap_or_else(|| {
+                        errors.push("build.build-script: expected a boolean".to_owned());
+                        false
+                    }),
+                    None => false,
+                };
+                let musl_executables =
+                    opt_string_array(build_table, "musl-executables", "build.", &mut errors)
+                        .unwrap_or_default();
+                for executable in &musl_executables {
+                    check_install_path("build.musl-executables", executable, &mut errors);
+                }
+                build = BuildOptions::Node {
+                    build_script,
+                    musl_executables,
+                };
+            }
             "go" => {
                 unknown_keys(
                     build_table,
@@ -858,7 +887,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"perl\", \"prebuilt\", or \"python\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"node\", \"perl\", \"prebuilt\", or \"python\""
                         .to_owned(),
                 );
             }
@@ -1326,6 +1355,18 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !flags.is_empty() {
                 write_array(&mut out, "flags", flags);
+            }
+        }
+        BuildOptions::Node {
+            build_script,
+            musl_executables,
+        } => {
+            write_string_field(&mut out, "kind", "node");
+            if *build_script {
+                out.push_str("build-script = true\n");
+            }
+            if !musl_executables.is_empty() {
+                write_array(&mut out, "musl-executables", musl_executables);
             }
         }
         BuildOptions::Go { targets, vendor } => {

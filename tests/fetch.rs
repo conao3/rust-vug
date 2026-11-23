@@ -173,3 +173,16 @@ fn fetch_large_body() {
     let path = fetch(&server.url, &sha, &cache).unwrap();
     assert_eq!(fs::read(&path).unwrap(), body);
 }
+
+#[test]
+fn fetch_sha512_rejects_wrong_tarball_without_publishing_it() {
+    let dir = tempdir().unwrap();
+    let server = serve(200, b"corrupt archive".to_vec());
+    let expected = concat!(
+        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a",
+        "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+    );
+    let err = vug::fetch::fetch_sha512(&server.url, expected, dir.path()).unwrap_err();
+    assert!(matches!(err, FetchError::HashMismatch { expected: hash, .. } if hash == expected));
+    assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+}
