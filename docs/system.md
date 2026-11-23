@@ -151,6 +151,11 @@ says.
 Owners and permission bits other than the execute bit are not part of a store
 path (`docs/build.md`), so every mode that matters is written in `manifest/`.
 
+When the kernel output contains `lib/modules`, the system exposes its
+module tree at `/lib/modules`. Boot selects the module tree together with
+the kernel. Switching between systems with modular kernels keeps the running
+kernel's module tree available until the next boot.
+
 ## The root file system
 
 The root is an ordinary writable file system:

@@ -26,6 +26,9 @@ $b chmod 1777 /tmp
 $b mountpoint -q /dev || $b mount -t devtmpfs devtmpfs /dev
 $b mountpoint -q /run || $b mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run
 {self}/activate boot
+if [ -L {self}/kernel-modules ]; then
+  $b ln -s "$($b readlink {self}/kernel-modules)" /run/vug-kernel-modules
+fi
 exec {init}
 "#;
 
@@ -1100,6 +1103,14 @@ pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
                 )?;
             }
         }
+    }
+
+    if store_dir.join(&kernel.id).join("lib/modules").is_dir() {
+        symlink(
+            format!("{STORE}/{}/lib/modules", kernel.id),
+            &out.join("kernel-modules"),
+        )?;
+        symlink("/run/vug-kernel-modules", &out.join("sw/lib/modules"))?;
     }
 
     if let Some(sh) = &record.sh {

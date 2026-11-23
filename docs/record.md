@@ -303,9 +303,16 @@ Builds a Linux kernel image for x86_64 with the seed compiler: `make
 `scripts/config`, `make olddefconfig`, `make bzImage`. The output holds
 `boot/bzImage` and `boot/config`.
 
+With `build.modules = true`, add `kmod` as a build dependency and enable
+`MODULES=y`. The build also runs `make modules`, `make modules_install`
+and `depmod`. The output contains `lib/modules/<kernelrelease>/` with the
+installed modules and their indexes. The kernel release includes the build key
+so changes to the build inputs produce a distinct release.
+
 | Key | Type | Default |
 |---|---|---|
 | `build.defconfig` | string: a configuration target of the kernel (`tinyconfig`, `defconfig`) | required |
+| `build.modules` | boolean: build and index kernel modules | false |
 | `build.config` | array of strings `NAME=value`, order kept. `y` enables, `n` disables, `m` builds a module, anything else is set as the value | empty |
 
 The programs that run during the build (`objtool` and the other host tools)

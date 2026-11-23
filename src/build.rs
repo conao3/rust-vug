@@ -1118,7 +1118,11 @@ impl<'a> Builder<'a> {
                 &record.check_skip,
                 settings.jobs,
             ),
-            BuildOptions::Linux { defconfig, config } => {
+            BuildOptions::Linux {
+                defconfig,
+                config,
+                modules,
+            } => {
                 let mut host_ldflags = ldflags.clone();
                 host_ldflags.extend(build_rpaths.iter().cloned());
                 steps::linux_steps(
@@ -1128,6 +1132,7 @@ impl<'a> Builder<'a> {
                     settings.jobs,
                     &cflags.join(" "),
                     &host_ldflags.join(" "),
+                    modules.then_some(key.as_str()),
                 )
             }
             BuildOptions::Cargo { .. } => {

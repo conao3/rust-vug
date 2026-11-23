@@ -47,7 +47,7 @@
           };
           packages.default = pkgs.rustPlatform.buildRustPackage {
             pname = "vug";
-            version = "0.2.1";
+            version = "0.2.2";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";
@@ -65,7 +65,7 @@
           };
           packages.static = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
             pname = "vug";
-            version = "0.2.1";
+            version = "0.2.2";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             LEANFRAN_OFFLINE = "1";

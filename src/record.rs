@@ -141,6 +141,7 @@ pub(crate) enum BuildOptions {
     },
     Linux {
         defconfig: String,
+        modules: bool,
         config: Vec<String>,
     },
     Prebuilt {
@@ -579,7 +580,7 @@ fn parse_version(
             "linux" => {
                 unknown_keys(
                     build_table,
-                    &["kind", "defconfig", "config"],
+                    &["kind", "defconfig", "config", "modules"],
                     "build.",
                     &mut errors,
                 );
@@ -610,7 +611,13 @@ fn parse_version(
                         ));
                     }
                 }
-                build = BuildOptions::Linux { defconfig, config };
+                let modules = build_table.contains_key("modules")
+                    && req_bool(build_table, "modules", "build.", &mut errors).unwrap_or(false);
+                build = BuildOptions::Linux {
+                    defconfig,
+                    config,
+                    modules,
+                };
             }
             "cargo" => {
                 unknown_keys(
@@ -1124,9 +1131,16 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "setup-flags", setup_flags);
             }
         }
-        BuildOptions::Linux { defconfig, config } => {
+        BuildOptions::Linux {
+            defconfig,
+            config,
+            modules,
+        } => {
             write_string_field(&mut out, "kind", "linux");
             write_string_field(&mut out, "defconfig", defconfig);
+            if *modules {
+                write_bool_field(&mut out, "modules", true);
+            }
             if !config.is_empty() {
                 write_array(&mut out, "config", config);
             }

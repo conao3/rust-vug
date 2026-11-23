@@ -411,6 +411,7 @@ fn linux() {
         4,
         "-I/e/include",
         "-L/e/lib",
+        None,
     );
     assert_eq!(steps.len(), 10);
     assert_eq!(steps[0][0], "make");

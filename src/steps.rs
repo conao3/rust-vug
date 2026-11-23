@@ -469,6 +469,7 @@ pub fn linux_steps(
     jobs: u32,
     host_cflags: &str,
     host_ldflags: &str,
+    module_key: Option<&str>,
 ) -> Vec<Step> {
     let make = |words: &[&str]| -> Step {
         let mut step: Step = [
@@ -494,6 +495,9 @@ pub fn linux_steps(
         step.push("KBUILD_BUILD_TIMESTAMP=1980-01-01".to_string());
         step.push("KBUILD_BUILD_USER=vug".to_string());
         step.push("KBUILD_BUILD_HOST=vug".to_string());
+        if let Some(key) = module_key {
+            step.push(format!("LOCALVERSION=-vug-{key}"));
+        }
         step.extend(words.iter().map(|w| w.to_string()));
         step
     };
@@ -511,6 +515,27 @@ pub fn linux_steps(
     }
     steps.push(make(&["olddefconfig"]));
     steps.push(make(&[&format!("-j{jobs}"), "bzImage"]));
+    if module_key.is_some() {
+        steps.push(make(&[&format!("-j{jobs}"), "modules"]));
+        steps.push(make(&[
+            &format!("INSTALL_MOD_PATH={prefix}"),
+            "DEPMOD=true",
+            "modules_install",
+        ]));
+        steps.push(vec![
+            "bash".into(),
+            "-ec".into(),
+            r#"release=$(cat include/config/kernel.release)
+dir="$1/lib/modules/$release"
+test -d "$dir/kernel"
+rm -f "$dir/build" "$dir/source"
+depmod -b "$1" "$release"
+test -s "$dir/modules.dep.bin""#
+                .into(),
+            "vug-modules".into(),
+            prefix.into(),
+        ]);
+    }
     steps.push(vec![
         "mkdir".to_string(),
         "-p".to_string(),
