@@ -131,7 +131,17 @@ fn fetch_digest<D: Digest>(
 
 /// The body of a GET to `url`, or `None` when the status is 404.
 pub fn get(url: &str) -> Result<Option<Vec<u8>>, String> {
-    let mut res = match ureq::get(url).call() {
+    let Some(mut reader) = get_reader(url)? else {
+        return Ok(None);
+    };
+    let mut body = Vec::new();
+    reader.read_to_end(&mut body).map_err(|e| e.to_string())?;
+    Ok(Some(body))
+}
+
+/// Opens a GET response body without buffering it, or returns None on 404.
+pub fn get_reader(url: &str) -> Result<Option<impl Read>, String> {
+    let res = match ureq::get(url).call() {
         Ok(res) => res,
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -141,12 +151,7 @@ pub fn get(url: &str) -> Result<Option<Vec<u8>>, String> {
         404 => return Ok(None),
         status => return Err(format!("status {status}")),
     }
-    let mut body = Vec::new();
-    res.body_mut()
-        .with_config()
-        .limit(u64::MAX)
-        .reader()
-        .read_to_end(&mut body)
-        .map_err(|e| e.to_string())?;
-    Ok(Some(body))
+    Ok(Some(
+        res.into_body().into_with_config().limit(u64::MAX).reader(),
+    ))
 }

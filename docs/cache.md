@@ -58,3 +58,8 @@ is missing, a command that builds can rebuild from the record. A rebuilt
 split manifest must agree with the known manifest, including the IDs of
 all outputs. A cache-only command reports a missing required archive.
 Invalid signatures, manifest contents, and archive contents are errors.
+
+Archive downloads stream through the zstd decoder into the temporary
+extraction directory. To migrate a cache containing uncompressed
+`paths/<id>.cpio` archives, re-export it from the store before switching
+consumers to this format.

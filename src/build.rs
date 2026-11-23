@@ -643,7 +643,8 @@ impl<'a> Builder<'a> {
             return Ok(false);
         };
         let url = format!("{}/paths/{id}.cpio.zst", base.trim_end_matches('/'));
-        let Some(archive) = fetch::get(&url).map_err(|e| format!("fetch {url}: {e}"))? else {
+        let Some(archive) = fetch::get_reader(&url).map_err(|e| format!("fetch {url}: {e}"))?
+        else {
             return Ok(false);
         };
         eprintln!("substituting {STORE}/{id}");
@@ -656,9 +657,10 @@ impl<'a> Builder<'a> {
         )?;
         let out = work.path().join(id);
         io("create", &out, fs::create_dir(&out))?;
-        let mut tree =
-            zstd::Decoder::new(archive.as_slice()).map_err(|error| format!("{url}: {error}"))?;
+        let mut tree = zstd::Decoder::new(archive).map_err(|error| format!("{url}: {error}"))?;
         vug::cpio::read_newc(&mut tree, &out).map_err(|error| format!("{url}: {error}"))?;
+        std::io::copy(&mut tree, &mut std::io::sink())
+            .map_err(|error| format!("{url}: {error}"))?;
         let path = format!("{STORE}/{id}");
         let placeholder = placeholder_path();
         io(
