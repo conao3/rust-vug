@@ -1,23 +1,16 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::collections::BTreeSet;
+use std::fs::{self, DirBuilder, File};
 use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
 use super::output::{io, lock, read_link};
 use crate::naming::model;
+use crate::secret::{Sources, private};
 
 pub(super) const UNIT: &str = "vug-home-secrets.service";
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Source {
-    document: PathBuf,
-    field: Vec<String>,
-}
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Change {
@@ -28,22 +21,6 @@ pub(super) struct Change {
 pub(super) struct Runtime {
     root: PathBuf,
     _lock: File,
-}
-
-fn private(path: &Path, directory: bool) -> Result<(), String> {
-    let metadata = io(path, fs::symlink_metadata(path))?;
-    let valid = if directory {
-        metadata.is_dir() && metadata.mode() & 0o777 == 0o700
-    } else {
-        metadata.is_file() && metadata.mode() & 0o777 == 0o600
-    };
-    if !valid || metadata.uid() != unsafe { libc::geteuid() } {
-        return Err(format!(
-            "{}: expected a private path owned by the current user",
-            path.display()
-        ));
-    }
-    Ok(())
 }
 
 impl Runtime {
@@ -102,59 +79,12 @@ impl Runtime {
         private(dir.path(), true)?;
         if !names.is_empty() {
             let config = home.join(".config/vug/home/secrets");
-            private(&config, true)?;
-            let key = config.join("age.key");
-            private(&key, false)?;
-            let mapping = config.join("sources.toml");
-            private(&mapping, false)?;
-            let sources: BTreeMap<String, Source> =
-                toml::from_str(&io(&mapping, fs::read_to_string(&mapping))?)
-                    .map_err(|_| format!("{}: invalid secret source map", mapping.display()))?;
+            let sources = Sources::open(&config)?;
             for name in names {
                 if !model::valid_name(name) {
                     return Err("invalid logical secret name in home manifest".to_owned());
                 }
-                let source = sources
-                    .get(name)
-                    .ok_or_else(|| format!("missing source for secret {name:?}"))?;
-                if !source.document.is_absolute()
-                    || source.field.is_empty()
-                    || source.field.iter().any(|key| {
-                        key.is_empty()
-                            || !key
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
-                    })
-                {
-                    return Err(format!("invalid source for secret {name:?}"));
-                }
-                let extract = source
-                    .field
-                    .iter()
-                    .map(|key| format!("[\"{key}\"]"))
-                    .collect::<String>();
-                let path = dir.path().join(name);
-                let file = io(
-                    &path,
-                    OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .mode(0o600)
-                        .open(&path),
-                )?;
-                let status = Command::new("/bin/sops")
-                    .env_clear()
-                    .env("SOPS_AGE_KEY_FILE", &key)
-                    .args(["decrypt", "--extract", &extract, "--"])
-                    .arg(&source.document)
-                    .stdin(Stdio::null())
-                    .stdout(file)
-                    .stderr(Stdio::null())
-                    .status()
-                    .map_err(|error| format!("could not run /bin/sops: {error}"))?;
-                if !status.success() {
-                    return Err(format!("could not decrypt secret {name:?}"));
-                }
+                sources.decrypt(name, &dir.path().join(name))?;
             }
         }
         let marker = dir.path().join(".output");

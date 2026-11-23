@@ -5,6 +5,7 @@ mod merge;
 mod naming;
 mod provenance;
 mod record;
+mod secret;
 mod system;
 mod version;
 
@@ -75,6 +76,13 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SystemCommands {
+    #[command(hide = true)]
+    PrepareSecret {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        uid: u32,
+    },
     /// Build a system into the store.
     BuildSystem(BuildArgs),
     /// Build a system and write a disk image that boots it.
@@ -589,6 +597,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             }
         },
         Commands::System { command } => match command {
+            SystemCommands::PrepareSecret { name, uid } => {
+                system::secrets::prepare(name, *uid).map_err(input_failure)?;
+                Ok(0)
+            }
             SystemCommands::BuildSystem(args) => run_build_system(&cli, args),
             SystemCommands::BuildImage(args) => run_build_image(&cli, args),
             #[cfg(target_os = "linux")]

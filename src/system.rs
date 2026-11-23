@@ -5,6 +5,7 @@ mod firmware;
 mod initrd;
 #[cfg(target_os = "linux")]
 pub mod install;
+pub(crate) mod secrets;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -279,7 +280,7 @@ fi
 echo "vug: generation $n is $self"
 "#;
 
-const FRAGMENT_KEYS: [&str; 5] = ["packages", "file", "group", "user", "setuid"];
+const FRAGMENT_KEYS: [&str; 6] = ["packages", "file", "group", "user", "setuid", "secret"];
 
 const INSTALL_BOOT: &str = r#"#!{self}/bin/busybox sh
 set -eu
@@ -640,6 +641,16 @@ fn fragment(
             },
             target,
         });
+    }
+
+    for generated in secrets::files(table)? {
+        if files.iter().any(|file| file.path == generated.path) {
+            return Err(format!(
+                "secret: duplicate generated file /etc/{}",
+                generated.path
+            ));
+        }
+        files.push(generated);
     }
 
     let mut setuid = Vec::new();

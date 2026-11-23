@@ -391,3 +391,24 @@ the installer opens the target exclusively, checks its identity and partition
 header again, writes the image, and synchronizes the disk. Generation 1 and
 the chosen partition identifiers are stored on the target. Boot it through
 the UEFI fallback loader after installation.
+
+## System service credentials
+
+A system or service record can declare a logical secret, its filesystem owner UID, and the systemd service that consumes it.
+
+```toml
+[[secret]]
+name = "example-key"
+uid = 1000
+unit = "example.service"
+```
+
+Include `vug` and provide SOPS at `/bin/sops` in the running system. Provision a root-owned directory at `/etc/vug/secrets` with mode `0700`. Place the system age identity in `age.key` and the source map in `sources.toml`, both root-owned regular files with mode `0600`. Keep these files and the encrypted documents outside the store. Store the encrypted documents in a directory controlled by the administrator.
+
+```toml
+[example-key]
+document = "/etc/vug/secrets/example.yaml"
+field = ["example", "key"]
+```
+
+Systemd starts a root preparation service before starting the consumer. The preparation service decrypts the selected field to `/run/vug/secrets/example-key/value` with mode `0600` and the declared UID. The consumer can use the named file inside `$CREDENTIALS_DIRECTORY`. A preparation failure prevents the consumer from starting. Restart `vug-secret-example-key.service` to refresh the value and restart its running consumer. Systemd removes that runtime directory when the preparation service stops.
