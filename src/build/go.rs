@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha256};
@@ -84,11 +84,41 @@ fn modules(sum: &str) -> Result<BTreeMap<(&str, &str), Module<'_>>, String> {
     Ok(modules)
 }
 
+fn download(agent: &ureq::Agent, url: &str) -> Result<impl std::io::Read, String> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match agent.get(url).call() {
+            Ok(response) if response.status().as_u16() == 200 => {
+                return Ok(response
+                    .into_body()
+                    .into_with_config()
+                    .limit(u64::MAX)
+                    .reader());
+            }
+            Ok(response) => return Err(format!("fetch {url}: status {}", response.status())),
+            Err(e)
+                if attempts == 3
+                    || matches!(&e, ureq::Error::StatusCode(code) if (400..500).contains(code) && *code != 429) =>
+            {
+                return Err(format!("fetch {url}: {e}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_secs(attempts)),
+        }
+    }
+}
+
 fn populate_proxy(
     proxy: &Path,
     modules: &BTreeMap<(&str, &str), Module<'_>>,
 ) -> Result<(), String> {
     let started = Instant::now();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(180)))
+        .build()
+        .into();
     let mut bytes = 0;
     for (&(name, version), module) in modules {
         let basename = format!("{}/@v/{}", escape(name), escape(version));
@@ -104,9 +134,7 @@ fn populate_proxy(
         };
         for ext in extensions {
             let url = format!("https://proxy.golang.org/{basename}.{ext}");
-            let mut source = fetch::get_reader(&url)
-                .map_err(|e| format!("fetch {url}: {e}"))?
-                .ok_or_else(|| format!("fetch {url}: module file not found"))?;
+            let mut source = download(&agent, &url)?;
             let dest = proxy.join(format!("{basename}.{ext}"));
             if *ext == "mod" {
                 let mut body = Vec::new();
