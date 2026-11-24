@@ -10,7 +10,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 root="$work/root"
 name=zz-vug-rust-wheel
-mkdir -p "$root/packages/zz/$name/versions" "$work/source" "$work/verified"
+mkdir -p "$root/packages/zz/$name/versions" "$work/source"
 ln -s "$packages/seed.toml" "$root/seed.toml"
 for shard in "$packages"/packages/*; do
     [[ ${shard##*/} == zz ]] || ln -s "$shard" "$root/packages/"
@@ -23,7 +23,7 @@ name = "$name"
 license = "MIT"
 
 [upstream]
-sources = ["$url"]
+sources = ["https://example.invalid/"]
 RECORD
 
 write_record() {
@@ -64,13 +64,12 @@ checksum=$(sed -n 's/^checksum = "\(.*\)"/\1/p' "$lock")
 wrong="0${checksum:1}"
 sed -i "s/$checksum/$wrong/" "$lock"
 write_record
-cp "$work/source.tar.gz" "$work/verified/$digest"
-cp "$cache/sources/$checksum" "$work/verified/$wrong"
-if "$vug" package build-package "${args[@]}" --source-cache-dir "$work/verified" >"$work/output" 2>&1; then
+cp -n "$work/source.tar.gz" "$cache/sources/$digest"
+if "$vug" package build-package "${args[@]}" >"$work/output" 2>&1; then
     exit 1
 fi
 cat "$work/output"
-grep -F "expected $wrong, got $checksum" "$work/output"
+grep -F "sha256 is $checksum, the record says $wrong" "$work/output"
 if grep -F 'Building wheel' "$work/output"; then
     exit 1
 fi
