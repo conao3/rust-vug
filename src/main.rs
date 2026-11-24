@@ -67,11 +67,32 @@ enum Commands {
         #[command(subcommand)]
         command: PackageCommands,
     },
+    /// Nix binary cache outputs.
+    NixCache {
+        #[command(subcommand)]
+        command: NixCacheCommands,
+    },
     /// The store.
     Store {
         #[command(subcommand)]
         command: StoreCommands,
     },
+}
+
+#[derive(Subcommand)]
+enum NixCacheCommands {
+    /// Verify and stage the reference closure from cache.nixos.org.
+    FetchClosure(FetchClosureArgs),
+}
+
+#[derive(Args)]
+struct FetchClosureArgs {
+    /// Absolute Nix store paths to resolve.
+    #[arg(long, required = true, num_args = 1..)]
+    store_path: Vec<String>,
+    /// Existing directory in which to create a staging directory.
+    #[arg(long)]
+    directory: String,
 }
 
 #[derive(Subcommand)]
@@ -461,6 +482,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "--trusted-key",
     "--profiles",
     "--directory",
+    "--store-path",
 ];
 
 /// A bare `help` at the end of the arguments asks for the help of the command
@@ -620,6 +642,10 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
                 ))
             }
         },
+        Commands::NixCache { command } => {
+            let NixCacheCommands::FetchClosure(args) = command;
+            run_fetch_closure(&cli, args)
+        }
         Commands::Store { command } => match command {
             StoreCommands::ExportCache(args) => run_export_cache(&cli, args),
             StoreCommands::ListCache(args) => run_list_cache(&cli, args),
@@ -639,6 +665,60 @@ fn run(cli: Cli) -> Result<i32, (i32, String)> {
             PackageCommands::RunPackage(args) => run_program(&cli, args),
         },
     }
+}
+
+fn run_fetch_closure(cli: &Cli, args: &FetchClosureArgs) -> Result<i32, (i32, String)> {
+    use vug::nix_cache::{Cache, Limits, StorePath};
+
+    let roots = args
+        .store_path
+        .iter()
+        .map(|path| resolve(path).and_then(|path| path.parse::<StorePath>()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(input_failure)?;
+    let directory = resolve(&args.directory).map_err(input_failure)?;
+    if cli.debug {
+        eprintln!("store_path={roots:?} directory={directory:?}");
+    }
+
+    let cache = Cache::default();
+    let closure = cache
+        .resolve(&roots, Limits::default())
+        .map_err(input_failure)?;
+    let staging = cache
+        .fetch(&closure, Path::new(&directory))
+        .map_err(input_failure)?;
+    let staging_path = staging
+        .path()
+        .to_str()
+        .ok_or_else(|| input_failure("staging path must be UTF-8".to_owned()))?;
+    match cli.output {
+        Output::Json => print_json(&json!({
+            "Directory": staging_path,
+            "Paths": closure.entries().iter().map(|info| json!({
+                "StorePath": info.store_path().as_str(),
+                "NarHash": info.nar_hash(),
+                "NarSize": info.nar_size(),
+                "FileSize": info.file_size(),
+                "References": info.references().iter().map(StorePath::as_str).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })),
+        Output::Text => write_out(&format!("{staging_path}\n")),
+        Output::Table => {
+            let mut text = format!("Directory\n{staging_path}\nStorePath\tNarHash\tNarSize\n");
+            for info in closure.entries() {
+                text.push_str(&format!(
+                    "{}\t{}\t{}\n",
+                    info.store_path(),
+                    info.nar_hash(),
+                    info.nar_size()
+                ));
+            }
+            write_out(&text)
+        }
+    }?;
+    let _ = staging.keep();
+    Ok(0)
 }
 
 fn run_compare(cli: &Cli, args: &CompareArgs) -> Result<i32, (i32, String)> {

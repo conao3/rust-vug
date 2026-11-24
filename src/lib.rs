@@ -3,6 +3,7 @@
 
 pub mod cpio;
 pub mod fetch;
+pub mod nix_cache;
 pub mod rewrite;
 pub mod sign;
 pub mod steps;

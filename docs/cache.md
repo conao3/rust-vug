@@ -84,3 +84,20 @@ Pass `--build-from-source NAME` to `package build-package` for each package
 that must be built in an independent store even when a matching remote
 cache entry exists. vug still uses the cache for other packages and can
 reuse local outputs built earlier in the same store.
+
+## Fetch a Nix reference closure
+
+```console
+$ stage_parent=$(mktemp -d)
+$ vug nix-cache fetch-closure --store-path /nix/store/jv5kdlkwx0l8a7jdpg21g934ff30s319-which-2.25 --directory "$stage_parent"
+```
+
+Supply one or more absolute Nix store paths after `--store-path`. The command resolves their complete `References` closure over HTTPS from `cache.nixos.org`. It verifies each narinfo with the built-in `cache.nixos.org-1` Ed25519 key and requires each `StorePath` to match the requested path. The cache URLs must be relative paths, and any HTTP redirect is an error. [Nix narinfo format](https://releases.nixos.org/nix/nix-2.36.0/manual/protocols/binary-cache/narinfo.html)
+
+The command verifies `FileHash` and `FileSize` when present, then verifies `NarHash` and `NarSize` on the decoded NAR before extraction. It accepts SHA-256 hashes in Nix32 and supports uncompressed, Zstandard, XZ, and bzip2 archives. Extraction supports directories, regular files, and symlinks. Staged directories and executables use mode `0755`, other regular files use `0644`, and symlink targets are preserved. It accepts a nesting depth of 128 and at most 1,000,000 nodes per archive. [NAR format](https://nix.dev/manual/nix/2.34/store/file-system-object/content-address.html#serial-nix-archive)
+
+The CLI allows up to 4,096 store paths, 64 KiB per narinfo, 4 GiB per archive transfer, and 8 GiB per decoded NAR. The closure totals are limited to 16 GiB transferred and 32 GiB decoded. Transfer limits apply to bytes read, including when the narinfo omits `FileSize`.
+
+Use an existing staging parent outside `/nix/store`. On success, JSON gives the new private `Directory` and the verified `Paths` with their hashes, sizes, and references. Text gives just the directory. Every staged store path is a direct child named by its Nix store basename. Absolute symlink targets still refer to their original paths. The caller owns the staging directory on success. Failed fetches clean up staging.
+
+Library callers use `vug::nix_cache::Cache::resolve` with their chosen `Limits` to inspect verified metadata and `Cache::fetch` to stage the closure. Staging is returned as a `tempfile::TempDir` and is removed when dropped unless the caller keeps it.
