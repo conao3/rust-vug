@@ -968,7 +968,7 @@ fn checks_nix_output_records_and_dependency_roles() {
 
 #[test]
 #[ignore = "requires access to cache.nixos.org"]
-fn builds_which_from_the_public_nix_cache() {
+fn builds_and_runs_which_from_the_public_nix_cache() {
     let tmp = TmpDir::new("nix-output-which");
     let which = package_dir(&tmp, "which").join("versions/2.25.toml");
     std::fs::write(which, WHICH_NIX_RECORD).unwrap();
@@ -1040,6 +1040,43 @@ fn builds_which_from_the_public_nix_cache() {
         .unwrap()
         .is_file()
     );
+
+    tmp.write("homes/test.toml", "name = 'test'\npackages = ['which']\n");
+    let home = vug(&[
+        "home",
+        "build-home",
+        "--root",
+        tmp.path().to_str().unwrap(),
+        "--name",
+        "test",
+        "--state-dir",
+        tmp.path().join("state").to_str().unwrap(),
+        "--data-dir",
+        data.path().to_str().unwrap(),
+    ]);
+    assert!(
+        home.status.success(),
+        "{}",
+        String::from_utf8_lossy(&home.stderr)
+    );
+    let home: serde_json::Value = serde_json::from_slice(&home.stdout).unwrap();
+    let package = out.file_name().unwrap().to_str().unwrap();
+    let which = vug(&[
+        "home",
+        "run-program",
+        "--home-output",
+        home["Path"].as_str().unwrap(),
+        "--program",
+        &format!("/vug/store/{package}/bin/which"),
+        "--",
+        "--version",
+    ]);
+    assert!(
+        which.status.success(),
+        "{}",
+        String::from_utf8_lossy(&which.stderr)
+    );
+    assert!(String::from_utf8_lossy(&which.stdout).contains("GNU which v2.25"));
 
     fn make_dirs_writable(path: &Path) {
         use std::os::unix::fs::PermissionsExt;

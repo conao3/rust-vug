@@ -1019,10 +1019,8 @@ impl<'a> Builder<'a> {
                     "{name}:{output}: Nix outputs can only be run dependencies"
                 ));
             }
-            if self.cache_only {
-                if let Some(inventory) = &mut self.cache_inventory {
-                    inventory.missing = true;
-                }
+            if let Some(inventory) = &mut self.cache_inventory {
+                inventory.missing = true;
                 return Err(format!(
                     "{name}: nix-output is acquired directly from cache.nixos.org"
                 ));

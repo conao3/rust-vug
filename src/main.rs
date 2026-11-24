@@ -5,6 +5,7 @@ mod merge;
 mod naming;
 mod provenance;
 mod record;
+mod runtime_nix;
 mod secret;
 mod system;
 mod version;

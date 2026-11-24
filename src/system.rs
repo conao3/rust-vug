@@ -17,6 +17,7 @@ use vug::cpio;
 use crate::build::{self, Builder, Settings};
 use crate::naming::model;
 use crate::record::dependency_output;
+use crate::runtime_nix::{self, NIX_STORE};
 use vug::steps::shell_quote;
 
 const STORE: &str = "/vug/store";
@@ -965,16 +966,22 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
         io("symlink", to, std::os::unix::fs::symlink(target, to))
     } else if file_type.is_dir() {
         io("create", to, fs::create_dir_all(to))?;
-        let mut entries: Vec<_> = io("read", from, fs::read_dir(from))?
-            .filter_map(|entry| entry.ok().map(|e| e.file_name()))
-            .collect();
+        let mut entries = io(
+            "read",
+            from,
+            io("read", from, fs::read_dir(from))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<std::io::Result<Vec<_>>>(),
+        )?;
         entries.sort();
         for name in entries {
             copy_tree(&from.join(&name), &to.join(&name))?;
         }
         io("chmod", to, fs::set_permissions(to, metadata.permissions()))
-    } else {
+    } else if file_type.is_file() {
         io("copy", to, fs::copy(from, to)).map(|_| ())
+    } else {
+        Err(format!("{}: unsupported file type", from.display()))
     }
 }
 
@@ -1081,7 +1088,16 @@ fn entry_names(dir: &Path) -> Vec<std::ffi::OsString> {
 
 fn remove_tree(path: &Path) -> Result<(), String> {
     if path.symlink_metadata().is_ok() {
-        io("remove", path, fs::remove_dir_all(path))?;
+        let result = fs::remove_dir_all(path);
+        if result
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+        {
+            io("prepare for removal", path, crate::gc::make_writable(path))?;
+            io("remove", path, fs::remove_dir_all(path))?;
+        } else {
+            io("remove", path, result)?;
+        }
     }
     Ok(())
 }
@@ -1388,6 +1404,35 @@ fn copy_store(settings: &Settings, ids: &BTreeSet<String>, root: &Path) -> Resul
     Ok(())
 }
 
+fn copy_image_stores(
+    settings: &Settings,
+    ids: &BTreeSet<String>,
+    root: &Path,
+) -> Result<(), String> {
+    let paths = runtime_nix::paths(&settings.data_dir.join("store"), ids)?;
+    copy_store(settings, ids, root)?;
+    if !paths.is_empty() {
+        let source = build::nix_store_dir(&settings.data_dir);
+        if !io("stat", &source, fs::symlink_metadata(&source))?.is_dir() {
+            return Err(format!(
+                "{}: expected a Nix store directory",
+                source.display()
+            ));
+        }
+        let target = root.join(NIX_STORE.trim_start_matches('/'));
+        io("create", &target, fs::create_dir_all(&target))?;
+        io(
+            "chmod",
+            &target,
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)),
+        )?;
+        for path in paths {
+            copy_tree(&source.join(path.basename()), &target.join(path.basename()))?;
+        }
+    }
+    Ok(())
+}
+
 /// A size as `mke2fs` takes it: a number of bytes with a k, m, g, or t suffix.
 fn size_in_bytes(size: &str) -> Result<u64, String> {
     let error = || format!("{size:?}: expected a number with a k, m, g, or t suffix");
@@ -1650,7 +1695,7 @@ fn image_with(
     let tools = builder.build("e2fsprogs", None)?;
     let work = work_dir(settings, "image")?;
     let root = work.join("root");
-    copy_store(settings, &system.closure, &root)?;
+    copy_image_stores(settings, &system.closure, &root)?;
     for dir in [
         "dev", "etc", "home", "proc", "root", "run", "sys", "tmp", "var",
     ] {
@@ -1846,4 +1891,103 @@ pub fn switch(settings: &Settings, name: &str) -> String {
         program.display(),
         std::process::Command::new(&program).exec()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink as link;
+
+    #[test]
+    fn image_staging_copies_only_the_selected_nix_closure() {
+        let work = tempfile::tempdir().unwrap();
+        let data_dir = work.path().join("data");
+        let root = work.path().join("root");
+        let settings = Settings {
+            root: work.path().to_owned(),
+            data_dir: data_dir.clone(),
+            cache_dir: work.path().join("cache"),
+            source_cache_dir: None,
+            jobs: 2,
+            binary_cache: None,
+            trusted_key: None,
+        };
+        let id = "a".repeat(32);
+        let package = data_dir.join("store").join(&id);
+        fs::create_dir_all(package.join(".vug")).unwrap();
+        fs::create_dir_all(package.join("bin")).unwrap();
+        let store = build::nix_store_dir(&data_dir);
+        let tool = format!("{}-tool", "0".repeat(32));
+        let dependency = format!("{}-dependency", "1".repeat(32));
+        let alias = format!("{}-alias", "2".repeat(32));
+        fs::create_dir_all(store.join(&tool).join("bin")).unwrap();
+        fs::write(store.join(&dependency), b"payload").unwrap();
+        fs::set_permissions(store.join(&dependency), fs::Permissions::from_mode(0o444)).unwrap();
+        link(format!("{NIX_STORE}/{dependency}"), store.join(&alias)).unwrap();
+        link(
+            format!("{NIX_STORE}/{alias}"),
+            store.join(&tool).join("bin/tool"),
+        )
+        .unwrap();
+        fs::set_permissions(
+            store.join(&tool).join("bin"),
+            fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+        let scratch = format!("{}-unselected", "3".repeat(32));
+        fs::create_dir(store.join(&scratch)).unwrap();
+        link(
+            format!("{NIX_STORE}/{tool}/bin/tool"),
+            package.join("bin/tool"),
+        )
+        .unwrap();
+        let paths = [&tool, &dependency, &alias].map(|name| {
+            serde_json::json!({
+                "store-path": format!("{NIX_STORE}/{name}"),
+                "nar-hash": format!("sha256:{}", "0".repeat(52)),
+            })
+        });
+        fs::write(
+            package.join(build::NIX_CLOSURE_MANIFEST),
+            serde_json::to_vec(&serde_json::json!({"format": 1, "paths": paths})).unwrap(),
+        )
+        .unwrap();
+
+        copy_image_stores(&settings, &BTreeSet::from([id.clone()]), &root).unwrap();
+        let image_store = root.join("nix/store");
+        assert_eq!(entry_names(&image_store).len(), 3);
+        assert_eq!(
+            fs::metadata(&image_store).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(fs::read(image_store.join(&dependency)).unwrap(), b"payload");
+        assert_eq!(
+            fs::metadata(image_store.join(&dependency))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o444
+        );
+        assert_eq!(
+            fs::metadata(image_store.join(&tool).join("bin"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o555
+        );
+        assert_eq!(
+            fs::read_link(image_store.join(&alias)).unwrap(),
+            Path::new(NIX_STORE).join(&dependency)
+        );
+        assert_eq!(
+            fs::read_link(root.join("vug/store").join(id).join("bin/tool")).unwrap(),
+            Path::new(NIX_STORE).join(tool).join("bin/tool")
+        );
+        remove_tree(&root).unwrap();
+        assert!(!root.exists());
+        assert!(store.join(scratch).is_dir());
+        crate::gc::make_writable(&store).unwrap();
+    }
 }

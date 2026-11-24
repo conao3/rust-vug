@@ -9,7 +9,8 @@ use std::process::Command;
 use serde::Deserialize;
 
 use super::output::io;
-use crate::build::valid_store_id;
+use crate::build::{nix_store_dir, valid_store_id};
+use crate::runtime_nix::{self, NIX_STORE};
 use vug::treehash;
 
 const SYSTEM_STORE: &str = "/vug/store";
@@ -56,14 +57,43 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
     };
     let mut command = Command::new(bwrap);
     command.args(["--unshare-user", "--die-with-parent"]);
+    let nix_paths = runtime_nix::paths(store, &manifest.closure)?;
     for entry in io(Path::new("/"), fs::read_dir("/"))? {
         let path = entry.map_err(|error| error.to_string())?.path();
+        if !nix_paths.is_empty() && path == Path::new("/nix") {
+            continue;
+        }
         let flag = if path == Path::new("/dev") {
             "--dev-bind"
         } else {
             "--bind"
         };
         command.arg(flag).arg(&path).arg(&path);
+    }
+
+    if !nix_paths.is_empty() {
+        let data = store.parent().ok_or("home store has no data directory")?;
+        let nix_store = nix_store_dir(data);
+        if !io(&nix_store, fs::symlink_metadata(&nix_store))?.is_dir() {
+            return Err(format!(
+                "{}: expected a Nix store directory",
+                nix_store.display()
+            ));
+        }
+        command.args(["--tmpfs", NIX_STORE]);
+        for path in nix_paths {
+            let source = nix_store.join(path.basename());
+            let metadata = io(&source, fs::symlink_metadata(&source))?;
+            if metadata.is_symlink() {
+                let target = io(&source, fs::read_link(&source))?;
+                command.arg("--symlink").arg(target).arg(path.as_str());
+            } else if metadata.is_dir() || metadata.is_file() {
+                command.arg("--ro-bind").arg(source).arg(path.as_str());
+            } else {
+                return Err(format!("{}: invalid Nix store entry", source.display()));
+            }
+        }
+        command.args(["--remount-ro", NIX_STORE]);
     }
 
     let system = Path::new(SYSTEM_STORE);
@@ -87,12 +117,6 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         command.arg("--ro-bind").arg(&path).arg(&path);
     }
     for id in &manifest.closure {
-        if !valid_store_id(id) {
-            return Err(format!(
-                "{}: invalid closure ID {id:?}",
-                manifest_path.display()
-            ));
-        }
         let source = store.join(id);
         let destination = system.join(id);
         if !io(&source, fs::symlink_metadata(&source))?.is_dir() {

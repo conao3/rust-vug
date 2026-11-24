@@ -117,13 +117,14 @@ with its byte length as a little-endian u64. The first 20 bytes of the digest
 are encoded like a store ID. The vug output ID is the normal tree hash of
 the manifest, record and links.
 
-Executing the links with an isolated store requires exposing the closure
-at `/nix/store` in the program's mount namespace. System image assembly,
-generation tracking and garbage collection of Nix paths are separate from
-package acquisition.
+Home launchers mount the selected closure at `/nix/store` in the program's
+mount namespace. System images place the closure at the same path in the
+guest root. See [home launchers](home.md#login-and-user-services) and
+[system images](system.md#commands).
 
-To test real acquisition into a temporary data directory, run
-`cargo test --test record builds_which_from_the_public_nix_cache -- --ignored`.
+To test acquisition and launch in a temporary data directory on Linux with
+bubblewrap, run
+`cargo test --test record builds_and_runs_which_from_the_public_nix_cache -- --ignored`.
 To verify compatibility with the existing package corpus, extract
 `packages/` and `seed.toml` from vug-packages commit
 `a61c2f4316cad0d30ca4362eb00ad09f2f72f97e` into a temporary directory, then run
