@@ -1336,6 +1336,15 @@ impl<'a> Builder<'a> {
                 &record.check_skip,
                 settings.jobs,
             ),
+            BuildOptions::TreeSitter { path, language } => vec![vec![
+                "sh".to_owned(),
+                "-ec".to_owned(),
+                include_str!("build/tree-sitter.sh").to_owned(),
+                "tree-sitter".to_owned(),
+                format!("./{path}"),
+                prefix.clone(),
+                language.clone(),
+            ]],
             BuildOptions::Linux {
                 defconfig,
                 config,

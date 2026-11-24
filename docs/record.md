@@ -409,6 +409,29 @@ of the dependencies through `LDFLAGS`, which meson keeps.
 |---|---|---|
 | `build.setup-flags` | array of strings, order kept | empty |
 
+### Tree-sitter grammars
+
+```toml
+[build]
+kind = "tree-sitter"
+path = "tsx"
+language = "tsx"
+```
+
+`path` defaults to the archive root. Use a source-relative directory for a
+grammar in a multi-grammar repository. `language` is the exported language
+identifier without the `tree_sitter_` prefix. It starts with a lowercase ASCII
+letter and may contain lowercase ASCII letters, digits, and underscores.
+
+The builder compiles the shipped `src/parser.c` and any `src/scanner.c` or
+`src/scanner.cc`. It installs `lib/libtree-sitter-<language>.so`, a relative
+symlink at `parser/<language>.so`, and query files under
+`queries/<language>/`. It takes queries from the grammar directory when
+available and falls back to the archive root. Add the package output to Neovim's runtime path or
+add its `lib/` directory to Emacs's `treesit-extra-load-path`. Consumers
+must support the ABI of the shipped parser. C++ scanners require the
+`libcxx` runtime dependency.
+
 ### Build kind `linux`
 
 Builds a Linux kernel image for x86_64 with the seed compiler: `make

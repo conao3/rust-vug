@@ -835,3 +835,33 @@ fn check_tree_resolves_outputs_on_current_dependency_versions() {
     .unwrap();
     assert_invalid(&check_tree(tmp.path()), "consumer -> library -> consumer");
 }
+
+#[test]
+fn tree_sitter_grammar_record_round_trips() {
+    let tmp = TmpDir::new("tree-sitter");
+    let dir = package_dir(&tmp, "tree-sitter-tsx");
+    let record = version_toml("0.23.2").replace(
+        "kind = \"autotools\"",
+        "kind = \"tree-sitter\"\npath = \"tsx\"\nlanguage = \"tsx\"",
+    );
+    let version = dir.join("versions/0.23.2.toml");
+    std::fs::write(&version, &record).unwrap();
+    assert!(check_record(&version).status.success());
+    let formatted = format_record(&version);
+    assert!(formatted.status.success());
+    let formatted: serde_json::Value = serde_json::from_slice(&formatted.stdout).unwrap();
+    assert_eq!(formatted["Record"].as_str().unwrap(), record);
+
+    std::fs::write(
+        &version,
+        record.replace("language = \"tsx\"", "language = \"../tsx\""),
+    )
+    .unwrap();
+    assert_invalid(&check_record(&version), "build.language");
+    std::fs::write(
+        &version,
+        record.replace("path = \"tsx\"", "path = \"../tsx\""),
+    )
+    .unwrap();
+    assert_invalid(&check_record(&version), "build.path");
+}

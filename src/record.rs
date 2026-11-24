@@ -155,6 +155,10 @@ pub(crate) enum BuildOptions {
         path: String,
         setup_flags: Vec<String>,
     },
+    TreeSitter {
+        path: String,
+        language: String,
+    },
     Linux {
         defconfig: String,
         modules: bool,
@@ -608,6 +612,30 @@ fn parse_version(
                     .unwrap_or_default(),
                 };
             }
+            "tree-sitter" => {
+                unknown_keys(
+                    build_table,
+                    &["kind", "path", "language"],
+                    "build.",
+                    &mut errors,
+                );
+                let language =
+                    req_string(build_table, "language", "build.", &mut errors).unwrap_or_default();
+                if !language.starts_with(|c: char| c.is_ascii_lowercase())
+                    || !language
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                {
+                    errors.push(
+                        "build.language: expected a lowercase Tree-sitter language identifier"
+                            .to_owned(),
+                    );
+                }
+                build = BuildOptions::TreeSitter {
+                    path: source_path(build_table, &mut errors),
+                    language,
+                };
+            }
             "linux" => {
                 unknown_keys(
                     build_table,
@@ -856,7 +884,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"node\", \"perl\", \"prebuilt\", or \"python\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"node\", \"perl\", \"prebuilt\", \"python\", or \"tree-sitter\""
                         .to_owned(),
                 );
             }
@@ -1314,6 +1342,13 @@ fn canonical_version(record: &VersionRecord) -> String {
             if !setup_flags.is_empty() {
                 write_array(&mut out, "setup-flags", setup_flags);
             }
+        }
+        BuildOptions::TreeSitter { path, language } => {
+            write_string_field(&mut out, "kind", "tree-sitter");
+            if path != "." {
+                write_string_field(&mut out, "path", path);
+            }
+            write_string_field(&mut out, "language", language);
         }
         BuildOptions::Linux {
             defconfig,
