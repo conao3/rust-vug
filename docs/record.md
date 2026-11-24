@@ -262,12 +262,13 @@ targets = [
 ```
 
 Builds use the root Go module, disable cgo, and install executables in `bin/`.
-Go uses vendor mode with network module lookups, workspace discovery, and toolchain downloads disabled.
-The source can include its own `vendor/` tree. If needed, set
-`vendor = { url = "https://example.org/vendor.tar.gz", sha256 = "<64 lowercase hex characters>" }`
-as an inline `vendor` field in `[build]`. The archive must contain `vendor/modules.txt`
-at that exact path. vug verifies its SHA-256 before starting the sandbox.
-Modules with no external dependencies can omit the vendor tree.
+A source with a `vendor/` tree uses Go vendor mode. Otherwise vug fetches
+the Go module files named by `go.sum` from `https://proxy.golang.org`.
+Before building, it checks module manifests and ZIPs against their Go checksums
+and resolves dependencies for the executable targets and enabled tests.
+Missing files or checksums and mismatches stop dependency preparation.
+The build and tests run offline with the prepared module cache.
+Workspace discovery and toolchain downloads are disabled.
 
 Set `check.enabled = true` to run `go test ./...` under the same constraints.
 Use an empty `check.skip` list. List runtime tools and data separately in `dependencies.run`.

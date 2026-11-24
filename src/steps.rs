@@ -71,6 +71,29 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
     steps
 }
 
+pub fn go_command(goroot: &str, jobs: u32, proxy: &str) -> Step {
+    let mut step = [
+        "env",
+        "GOENV=off",
+        "GOFLAGS=-modcacherw",
+        "GOSUMDB=off",
+        "GOTOOLCHAIN=local",
+        "GOWORK=off",
+        "CGO_ENABLED=0",
+        "GOCACHE=/build/go-cache",
+        "GOMODCACHE=/build/go-modcache",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    step.extend([
+        format!("GOPROXY={proxy}"),
+        format!("GOROOT={goroot}"),
+        format!("GOMAXPROCS={jobs}"),
+        format!("{goroot}/bin/go"),
+    ]);
+    step
+}
+
 pub fn go_steps(
     prefix: &str,
     goroot: &str,
@@ -79,42 +102,21 @@ pub fn go_steps(
     check: bool,
     jobs: u32,
 ) -> Vec<Step> {
-    let mut steps = Vec::new();
-    if vendor {
-        steps.push(["test", "!", "-e", "vendor"].map(str::to_owned).to_vec());
-        steps.push(["tar", "-xf", "/vendor.tar.gz"].map(str::to_owned).to_vec());
-        steps.push(
-            ["test", "-f", "vendor/modules.txt"]
-                .map(str::to_owned)
-                .to_vec(),
-        );
-    }
-    steps.push(["test", "-f", "go.mod"].map(str::to_owned).to_vec());
-    steps.push(vec![
+    let mut steps = vec![vec![
         "mkdir".to_owned(),
         "-p".to_owned(),
         format!("{prefix}/bin"),
-    ]);
+    ]];
     let go = |command: &str| {
-        let mut step = [
-            "env",
-            "GOENV=off",
-            "GOPROXY=off",
-            "GOSUMDB=off",
-            "GOTOOLCHAIN=local",
-            "GOWORK=off",
-            "CGO_ENABLED=0",
-            "GOCACHE=/build/go-cache",
-            "GOMODCACHE=/build/go-modcache",
-        ]
-        .map(str::to_owned)
-        .to_vec();
+        let mut step = go_command(goroot, jobs, "off");
         step.extend([
-            format!("GOROOT={goroot}"),
-            format!("GOMAXPROCS={jobs}"),
-            format!("{goroot}/bin/go"),
             command.to_owned(),
-            "-mod=vendor".to_owned(),
+            if vendor {
+                "-mod=vendor"
+            } else {
+                "-mod=readonly"
+            }
+            .to_owned(),
             "-trimpath".to_owned(),
             "-buildvcs=false".to_owned(),
             format!("-p={jobs}"),

@@ -2,6 +2,7 @@
 
 mod cache;
 pub(crate) mod elf;
+mod go;
 mod node;
 mod outputs;
 
@@ -871,7 +872,7 @@ impl<'a> Builder<'a> {
                 &kind_key
             }
             BuildOptions::Go { .. } => {
-                kind_key = format!("go-build-rules=v1\n{canonical}");
+                kind_key = format!("go-build-rules=v2\n{canonical}");
                 &kind_key
             }
             BuildOptions::Perl { .. } => {
@@ -1029,13 +1030,6 @@ impl<'a> Builder<'a> {
         }
         let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
         let archive = fetch_source(settings, &record.url, &record.sha256)?;
-        let vendor_archive = match &record.build {
-            BuildOptions::Go {
-                vendor: Some((url, sha256)),
-                ..
-            } => Some(fetch_source(settings, url, sha256)?),
-            _ => None,
-        };
         let work = settings
             .data_dir
             .join("tmp")
@@ -1281,20 +1275,7 @@ impl<'a> Builder<'a> {
                 ]]
             }
             BuildOptions::Node { .. } => Vec::new(),
-            BuildOptions::Go { targets, .. } => {
-                let go = direct
-                    .get("go")
-                    .filter(|_| record.deps_build.iter().any(|dep| dep == "go"))
-                    .ok_or("build.kind go requires go in dependencies.build")?;
-                steps::go_steps(
-                    &prefix,
-                    &format!("{go}/lib/go"),
-                    targets,
-                    vendor_archive.is_some(),
-                    record.check_enabled,
-                    settings.jobs,
-                )
-            }
+            BuildOptions::Go { .. } => Vec::new(),
             BuildOptions::Perl { driver, modules } => {
                 let perl = direct
                     .get("perl")
@@ -1434,9 +1415,6 @@ impl<'a> Builder<'a> {
             bind(&archive, &archive_dest, false),
             bind(&out, &prefix, true),
         ];
-        if let Some(vendor) = &vendor_archive {
-            binds.push(bind(vendor, "/vendor.tar.gz", false));
-        }
         if !record.patches.is_empty() {
             binds.push(bind(&package_dir.join("patches"), "/patches", false));
         }
@@ -1486,6 +1464,42 @@ impl<'a> Builder<'a> {
                 workdir: "/build/src".to_owned(),
                 command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
             })?;
+        } else if let BuildOptions::Go { targets } = &record.build {
+            let go = direct
+                .get("go")
+                .filter(|_| record.deps_build.iter().any(|dep| dep == "go"))
+                .ok_or("build.kind go requires go in dependencies.build")?;
+            let goroot = format!("{go}/lib/go");
+            let sandbox = Sandbox {
+                binds,
+                env: build_env(path, &extra),
+                workdir: "/build/src".to_owned(),
+                command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
+            };
+            let vendor = go::prepare(
+                &build_dir,
+                &sandbox,
+                &goroot,
+                targets,
+                record.check_enabled,
+                settings.jobs,
+            )?;
+            io(
+                "write",
+                &script_path,
+                fs::write(
+                    &script_path,
+                    steps::shell_script(&steps::go_steps(
+                        &prefix,
+                        &goroot,
+                        targets,
+                        vendor,
+                        record.check_enabled,
+                        settings.jobs,
+                    )),
+                ),
+            )?;
+            run_sandbox(&sandbox)?;
         } else if let BuildOptions::Node {
             build_script,
             musl_executables,

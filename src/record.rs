@@ -138,7 +138,6 @@ pub(crate) enum BuildOptions {
     },
     Go {
         targets: Vec<(String, String)>,
-        vendor: Option<(String, String)>,
     },
     Perl {
         driver: PerlDriver,
@@ -706,12 +705,7 @@ fn parse_version(
                 };
             }
             "go" => {
-                unknown_keys(
-                    build_table,
-                    &["kind", "targets", "vendor"],
-                    "build.",
-                    &mut errors,
-                );
+                unknown_keys(build_table, &["kind", "targets"], "build.", &mut errors);
                 let mut targets = Vec::new();
                 let mut bins = std::collections::BTreeSet::new();
                 if let Some(items) = build_table.get("targets").and_then(toml::Value::as_array) {
@@ -762,32 +756,7 @@ fn parse_version(
                 if targets.is_empty() {
                     errors.push("build.targets: expected at least one Go main package".to_owned());
                 }
-                let vendor = if build_table.contains_key("vendor") {
-                    req_table(build_table, "vendor", "build.", &mut errors).map(|vendor| {
-                        unknown_keys(vendor, &["url", "sha256"], "build.vendor.", &mut errors);
-                        let url = req_string(vendor, "url", "build.vendor.", &mut errors)
-                            .unwrap_or_default();
-                        let sha256 = req_string(vendor, "sha256", "build.vendor.", &mut errors)
-                            .unwrap_or_default();
-                        if !url.starts_with("https://") {
-                            errors.push("build.vendor.url: expected an HTTPS URL".to_owned());
-                        }
-                        if sha256.len() != 64
-                            || !sha256
-                                .bytes()
-                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                        {
-                            errors.push(
-                                "build.vendor.sha256: expected 64 lowercase hex characters"
-                                    .to_owned(),
-                            );
-                        }
-                        (url, sha256)
-                    })
-                } else {
-                    None
-                };
-                build = BuildOptions::Go { targets, vendor };
+                build = BuildOptions::Go { targets };
             }
             "perl" => {
                 unknown_keys(
@@ -1369,7 +1338,7 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "musl-executables", musl_executables);
             }
         }
-        BuildOptions::Go { targets, vendor } => {
+        BuildOptions::Go { targets } => {
             write_string_field(&mut out, "kind", "go");
             out.push_str("targets = [\n");
             for (path, bin) in targets {
@@ -1380,13 +1349,6 @@ fn canonical_version(record: &VersionRecord) -> String {
                 out.push_str(" },\n");
             }
             out.push_str("]\n");
-            if let Some((url, sha256)) = vendor {
-                out.push_str("vendor = { url = ");
-                write_escaped(&mut out, url);
-                out.push_str(", sha256 = ");
-                write_escaped(&mut out, sha256);
-                out.push_str(" }\n");
-            }
         }
         BuildOptions::Perl { driver, modules } => {
             write_string_field(&mut out, "kind", "perl");
