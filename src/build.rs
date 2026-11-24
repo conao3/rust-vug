@@ -253,6 +253,20 @@ fn fetch_crates(
                 "Cargo.lock: {name} {version} comes from {source}; only crates.io with a checksum is supported"
             ));
         };
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            || !version.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            || !version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            || !crate::merge::is_hex(sha256, 64)
+        {
+            return Err(format!(
+                "Cargo.lock: invalid crates.io package {name:?} {version:?} or checksum"
+            ));
+        }
         let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
         let file = fetch_source(settings, &url, sha256)?;
         let dest = crates_dir.join(format!("{name}-{version}.crate"));
@@ -1279,6 +1293,21 @@ impl<'a> Builder<'a> {
         {
             script.push(vec!["cd".to_owned(), format!("./{path}")]);
         }
+        let python_unpack = matches!(
+            record.build,
+            BuildOptions::Python {
+                cargo_lock: true,
+                ..
+            }
+        )
+        .then(|| {
+            script.push(
+                ["cp", "Cargo.lock", "/build/Cargo.lock"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            );
+            std::mem::take(&mut script)
+        });
         let check_target = record
             .check_enabled
             .then(|| record.check_target.as_deref().unwrap_or("check"));
@@ -1417,6 +1446,7 @@ impl<'a> Builder<'a> {
                 imports,
                 native_imports,
                 pytest,
+                cargo_lock,
             } => {
                 let python = direct
                     .get("python")
@@ -1460,6 +1490,8 @@ impl<'a> Builder<'a> {
                         String::new()
                     },
                     (record.check_enabled && *pytest).to_string(),
+                    cargo_lock.to_string(),
+                    settings.jobs.to_string(),
                 ]]
             }
             BuildOptions::Commands { commands } => commands
@@ -1499,7 +1531,10 @@ impl<'a> Builder<'a> {
         io(
             "write",
             &script_path,
-            fs::write(&script_path, steps::shell_script(&script)),
+            fs::write(
+                &script_path,
+                steps::shell_script(python_unpack.as_ref().unwrap_or(&script)),
+            ),
         )?;
 
         let bind = |source: &Path, dest: &str, writable: bool| Bind {
@@ -1579,6 +1614,21 @@ impl<'a> Builder<'a> {
                         &crates,
                     )),
                 ),
+            )?;
+            run_sandbox(&Sandbox {
+                binds,
+                env: build_env(path, &extra),
+                workdir: "/build/src".to_owned(),
+                command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
+            })?;
+        } else if python_unpack.is_some() {
+            let crates = fetch_crates(settings, &build_dir)?;
+            let mut offline_steps = steps::cargo_vendor_steps(&crates);
+            offline_steps.extend(script);
+            io(
+                "write",
+                &script_path,
+                fs::write(&script_path, steps::shell_script(&offline_steps)),
             )?;
             run_sandbox(&Sandbox {
                 binds,

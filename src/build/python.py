@@ -13,9 +13,17 @@ from packaging.requirements import Requirement
 from packaging.tags import sys_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
-prefix, roots, imports, native_imports, pytest = sys.argv[1:]
+prefix, roots, imports, native_imports, pytest, cargo_lock, jobs = sys.argv[1:]
 prefix = Path(prefix)
 env = dict(os.environ, PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+if cargo_lock == "true":
+    env.update(
+        CARGO_HOME="/build/cargo-home",
+        CARGO_NET_OFFLINE="true",
+        MATURIN_PEP517_ARGS="--locked --offline",
+        MATURIN_NO_INSTALL_RUST="1",
+        CARGO_BUILD_JOBS=jobs,
+    )
 wheels = Path("/build/wheels")
 subprocess.run(
     [sys.executable, "-sB", "-m", "build", "--wheel", "--no-isolation", "--outdir", wheels],
@@ -112,7 +120,11 @@ if bin_dir.is_dir():
         if not script.is_file() or script.is_symlink():
             sys.exit(f"expected a Python script in bin: {script.name}")
         with script.open("rb") as stream:
-            shebang = stream.readline()
+            magic = stream.read(4)
+            if cargo_lock == "true" and magic == b"\x7fELF":
+                script.chmod(0o755)
+                continue
+            shebang = magic + stream.readline()
         if not shebang.startswith(b"#!") or b"python" not in shebang:
             sys.exit(f"expected a Python shebang: {script.name}")
         target = libexec / script.name

@@ -147,6 +147,7 @@ pub(crate) enum BuildOptions {
         imports: Vec<String>,
         native_imports: Vec<String>,
         pytest: bool,
+        cargo_lock: bool,
     },
     Commands {
         commands: Vec<Vec<String>>,
@@ -821,7 +822,7 @@ fn parse_version(
             "python" => {
                 unknown_keys(
                     build_table,
-                    &["kind", "imports", "native-imports", "pytest"],
+                    &["kind", "imports", "native-imports", "pytest", "cargo-lock"],
                     "build.",
                     &mut errors,
                 );
@@ -844,6 +845,9 @@ fn parse_version(
                 build = BuildOptions::Python {
                     imports: modules("imports"),
                     native_imports: modules("native-imports"),
+                    cargo_lock: build_table.contains_key("cargo-lock")
+                        && req_bool(build_table, "cargo-lock", "build.", &mut errors)
+                            .unwrap_or(false),
                     pytest: build_table.contains_key("pytest")
                         && req_bool(build_table, "pytest", "build.", &mut errors).unwrap_or(false),
                 };
@@ -1408,6 +1412,7 @@ fn canonical_version(record: &VersionRecord) -> String {
             imports,
             native_imports,
             pytest,
+            cargo_lock,
         } => {
             write_string_field(&mut out, "kind", "python");
             if !imports.is_empty() {
@@ -1418,6 +1423,9 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if *pytest {
                 write_bool_field(&mut out, "pytest", true);
+            }
+            if *cargo_lock {
+                write_bool_field(&mut out, "cargo-lock", true);
             }
         }
         BuildOptions::Commands { commands } => {

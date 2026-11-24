@@ -324,31 +324,14 @@ pub fn cmake_steps(
     steps
 }
 
-/// Steps of the `cargo` build kind, run in the unpacked source after the
-/// crates `(name, version, sha256)` are at `/build/crates/<name>-<version>.crate`.
-///
-/// 1. `["rm", "-rf", ".cargo"]`
-/// 2. per crate: unpack it to `/build/vendor/<name>-<version>` and write its
-///    `.cargo-checksum.json`
-/// 3. write `/build/cargo-home/config.toml`: the vendor directory replaces
-///    crates.io, the linker is `cc`, and programs link against the C
-///    library the linker chooses
-/// 4. `["env", "CARGO_HOME=/build/cargo-home", "cargo", "install", "--path",
-///    <path>, "--root", <prefix>, "--offline", "--locked", "--no-track",
-///    "--jobs", "<jobs>", <flags>...]`
-pub fn cargo_steps(
-    prefix: &str,
-    path: &str,
-    flags: &[String],
-    check_skip: &[String],
-    jobs: u32,
-    crates: &[(String, String, String)],
-) -> Vec<Step> {
+pub fn cargo_vendor_steps(crates: &[(String, String, String)]) -> Vec<Step> {
     let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
-    let mut steps = vec![
-        words(&["rm", "-rf", ".cargo"]),
-        words(&["mkdir", "-p", "/build/vendor", "/build/cargo-home"]),
-    ];
+    let mut steps = vec![words(&[
+        "mkdir",
+        "-p",
+        "/build/vendor",
+        "/build/cargo-home",
+    ])];
     for (name, version, sha256) in crates {
         let dir = format!("/build/vendor/{name}-{version}");
         steps.push(vec!["mkdir".to_string(), "-p".to_string(), dir.clone()]);
@@ -384,6 +367,32 @@ pub fn cargo_steps(
     ]);
     config.shrink_to_fit();
     steps.push(config);
+    steps
+}
+
+/// Steps of the `cargo` build kind, run in the unpacked source after the
+/// crates `(name, version, sha256)` are at `/build/crates/<name>-<version>.crate`.
+///
+/// 1. `["rm", "-rf", ".cargo"]`
+/// 2. per crate: unpack it to `/build/vendor/<name>-<version>` and write its
+///    `.cargo-checksum.json`
+/// 3. write `/build/cargo-home/config.toml`: the vendor directory replaces
+///    crates.io, the linker is `cc`, and programs link against the C
+///    library the linker chooses
+/// 4. `["env", "CARGO_HOME=/build/cargo-home", "cargo", "install", "--path",
+///    <path>, "--root", <prefix>, "--offline", "--locked", "--no-track",
+///    "--jobs", "<jobs>", <flags>...]`
+pub fn cargo_steps(
+    prefix: &str,
+    path: &str,
+    flags: &[String],
+    check_skip: &[String],
+    jobs: u32,
+    crates: &[(String, String, String)],
+) -> Vec<Step> {
+    let words = |words: &[&str]| -> Step { words.iter().map(|w| w.to_string()).collect() };
+    let mut steps = vec![words(&["rm", "-rf", ".cargo"])];
+    steps.extend(cargo_vendor_steps(crates));
     if !check_skip.is_empty() {
         let mut test = words(&[
             "env",

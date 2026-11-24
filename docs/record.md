@@ -361,6 +361,13 @@ modules and runtime closure. Set `build.pytest = true` and declare
 `pytest` and its plugins in `dependencies.build` to run the source
 suite against the installed wheel. Each field is optional.
 
+Set `build.cargo-lock = true` for a wheel built with Cargo. Declare the
+Rust toolchain in `dependencies.build` and include `Cargo.lock` at the
+source root. Vug fetches crates.io archives and verifies their lockfile
+checksums before running the backend in a sandbox with Cargo configured
+to use the vendored crates offline. Wheels from these builds can install
+ELF executables in the scripts directory.
+
 ### Build kind `commands`
 
 Runs the listed commands in order in the unpacked source. Each command is an
