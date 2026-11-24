@@ -99,6 +99,11 @@ skip = []
 Unknown keys and unknown tables are errors.
 
 A source file named `*.tar.lz` is decoded from lzip before tar extraction.
+A source URL ending in `.zip` is extracted by vug after SHA-256 verification,
+using `source.strip-components` and preserving Unix file permissions. vug checks
+entry paths and symlink targets before extraction. Symlink targets may start
+with parent components that stay within the stripped tree. Patches are applied
+in the build sandbox after extraction.
 `source.sha256` covers the downloaded, compressed file.
 
 ### Outputs and dependency selectors

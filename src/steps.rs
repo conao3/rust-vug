@@ -60,15 +60,19 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
     } else {
         vec!["cp".to_string(), archive.to_string(), name.to_string()]
     }];
-    for patch in patches {
-        steps.push(vec![
+    steps.extend(patch_steps(patches));
+    steps
+}
+
+pub fn patch_steps(patches: &[String]) -> impl Iterator<Item = Step> {
+    patches.iter().map(|patch| {
+        vec![
             "patch".to_string(),
             "-p1".to_string(),
             "-i".to_string(),
             patch.clone(),
-        ]);
-    }
-    steps
+        ]
+    })
 }
 
 pub fn go_command(goroot: &str, jobs: u32, proxy: &str) -> Step {

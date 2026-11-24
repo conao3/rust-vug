@@ -5,6 +5,7 @@ pub(crate) mod elf;
 mod go;
 mod node;
 mod outputs;
+mod source_zip;
 
 pub use cache::export_cache;
 
@@ -1057,7 +1058,6 @@ impl<'a> Builder<'a> {
         )?;
 
         let prefix = format!("{STORE}/{PLACEHOLDER_ID}");
-        let (archive, archive_dest) = prepare_archive(archive, file_name_of(&record.url), &work)?;
         let patches: Vec<String> = record
             .patches
             .iter()
@@ -1065,6 +1065,17 @@ impl<'a> Builder<'a> {
             .collect();
         let strip = u32::try_from(record.strip_components)
             .map_err(|_| "source.strip-components: out of range".to_owned())?;
+        let source_name = file_name_of(&record.url);
+        let archive = if source_name.ends_with(".zip") {
+            io(
+                "extract ZIP",
+                &archive,
+                source_zip::extract(&archive, &build_dir.join("src"), strip),
+            )?;
+            None
+        } else {
+            Some(prepare_archive(archive, source_name, &work)?)
+        };
         let mut cflags = Vec::new();
         let own_lib = if split { "lib/." } else { "lib" };
         let mut ldflags = vec![
@@ -1186,7 +1197,10 @@ impl<'a> Builder<'a> {
                 .map(|flag| expand_flag(flag, &prefix, &direct))
                 .collect()
         };
-        let mut script: Vec<Step> = steps::unpack_steps(&archive_dest, strip, &patches);
+        let mut script: Vec<Step> = match &archive {
+            Some((_, destination)) => steps::unpack_steps(destination, strip, &patches),
+            None => steps::patch_steps(&patches).collect(),
+        };
         if let BuildOptions::Autotools { path, .. } | BuildOptions::Meson { path, .. } =
             &record.build
             && path != "."
@@ -1412,9 +1426,11 @@ impl<'a> Builder<'a> {
             bind(&root_bin, "/bin", false),
             bind(&root_bin, "/usr/bin", false),
             bind(&build_dir, "/build", true),
-            bind(&archive, &archive_dest, false),
             bind(&out, &prefix, true),
         ];
+        if let Some((archive, destination)) = &archive {
+            binds.push(bind(archive, destination, false));
+        }
         if !record.patches.is_empty() {
             binds.push(bind(&package_dir.join("patches"), "/patches", false));
         }
