@@ -56,7 +56,7 @@ $ vug home collect-garbage --dry-run
 $ vug home collect-garbage
 ```
 
-`build-home` composes the record, resolves the greatest version of each selected package, and publishes a content-addressed output and a numbered generation. Resolution uses the user store's existing index and the [binary cache's signed keys and verified trees](cache.md#use). An unavailable package fails the command before a generation is recorded. The manifest records declared runtime dependencies and store references found in package files and symlink targets, including references to dynamic loaders.
+`build-home` composes the record, resolves the greatest version of each selected package, and publishes a content-addressed output and a numbered generation. Resolution uses the user store's existing index and the [binary cache's signed keys and verified trees](cache.md#use). Nix outputs are verified and acquired directly from the [Nix binary cache](build.md#nix-outputs). An unavailable package fails the command before a generation is recorded. The manifest records declared runtime dependencies and store references found in package files and symlink targets, including references to dynamic loaders.
 
 | Output | Contents |
 |---|---|
@@ -66,12 +66,13 @@ $ vug home collect-garbage
 | `commands/` | Launchers for the programs exported by selected packages in `sw/bin`. |
 | `environment/` | Literal variables, a shell profile, and a systemd environment file. |
 | `manifest/home.json` | Home name, package names mapped to store IDs, the transitive closure of store IDs, file destinations, unit targets, and logical secret names. |
+| `manifest/nix-closure.json` | When the generation uses Nix outputs, the deduplicated Nix store paths, signed NAR hashes and sizes, and references. |
 
 The output ID covers the public output tree, including the manifest. The build publishes its own directories and files with read-only permissions. Relative package links resolve in the local user store. The launchers mount the home package closure at its canonical paths for the duration of the command. Build a new generation to generate the launchers and user service environment files.
 
 The home commands share a dedicated user data directory (default `${XDG_DATA_HOME:-$HOME/.local/share}/vug/home`) and state directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/vug/home`). Use `--data-dir` and `--state-dir` to select a dedicated pair. Both directories must be owned by the caller and writable only by their owner. The state directory's `store` link points to the actual user store. The numbered links under `generations/` point into that same store. A build that produces the newest generation's output again returns the same number. The build's default JSON output gives its `Name`, `Id`, `Path` in the user store, and `Generation`.
 
-`delete-generations` keeps the newest `--keep` links (at least one) and the generation named by the state's `current` link, when present. `collect-garbage` retains every remaining generation and its closure. Both commands use the same locks as `build-home`. Run cleanup against the same state and data directories used for the build.
+`delete-generations` keeps the newest `--keep` links (at least one) and the generation named by the state's `current` link, when present. `collect-garbage` retains each remaining generation, its closure, and the closures of running launchers. It reclaims unreferenced vug-owned Nix paths in the user data directory along with unreferenced vug outputs. Generation operations share the profile lock with `build-home`. Garbage collection waits for builds and launcher startup. Run cleanup against the same state and data directories used for the build.
 
 ## Activating a generation
 
@@ -96,7 +97,7 @@ With the `home-login` service included in a Vug system, source its profile fragm
 
 The fragment runs in a non-root login shell. It loads the active generation's public variables and prepends its `commands/` directory to the login PATH. It uses the public profile link under `~/.config/vug/home/`. Start a fresh login shell after switching to load the new variables.
 
-The launcher uses `vug home run-program` and requires bubblewrap with unprivileged user namespaces enabled. Each launch keeps the system's store visible and mounts the selected user closure at `/vug/store/<id>` for that process. When an ID appears in both stores, the launcher verifies the content and uses the system's copy. The system store and the user store are mounted read-only inside the command.
+The launcher uses `vug home run-program` and requires bubblewrap with unprivileged user namespaces enabled. Each launch keeps the system's store visible and mounts the selected user closure at `/vug/store/<id>` for that process. When an ID appears in both stores, the launcher verifies the content and uses the system's copy. The system store and the user store are mounted read-only inside the command. When the user closure includes Nix outputs, the launcher also mounts its selected paths at `/nix/store` within the command’s namespace.
 
 An `ExecStart` whose executable starts with `{pkg:NAME}/` launches that file from the user generation with the same mechanism. For a command provided by the system, use its absolute path. Managed services pick up the new generation's public variables from an `EnvironmentFile`. Use an enable target appropriate to each service, timer, or socket. For a graphical session service, select the graphical session target that your desktop activates.
 

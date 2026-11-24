@@ -470,3 +470,69 @@ fn realizes_missing_nars_and_never_replaces_an_installed_path() {
     assert_eq!(fs::read(&dep).unwrap(), b"corrupt");
     fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+#[test]
+fn interrupted_acquisition_is_cleaned_before_retry() {
+    use std::fs;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const TEST: &str = "nix_cache::tests::interrupted_acquisition_is_cleaned_before_retry";
+    const CHILD_DIR: &str = "VUG_TEST_NIX_ACQUISITION_DIR";
+
+    let responses = fixture();
+    let closure = resolve_fixture(&responses, Limits::default()).unwrap();
+    if let Some(dir) = std::env::var_os(CHILD_DIR) {
+        let dir = Path::new(&dir);
+        store::realize(&closure, &dir.join("store"), |path| {
+            if path == ROOT_NAR {
+                fs::write(dir.join("ready"), []).unwrap();
+                loop {
+                    std::thread::park();
+                }
+            }
+            response(&responses, path)
+        })
+        .unwrap();
+        panic!("acquisition should have been interrupted");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store_path = dir.path().join("store");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST])
+        .env(CHILD_DIR, dir.path())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("ready").is_file() && Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("acquisition exited before reaching the interruption point: {status}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    assert!(dir.path().join("ready").is_file());
+    let staging = store_path.join(".vug-staging");
+    assert!(staging.is_dir());
+    let slot = store_path.join(".vug-path");
+    fs::create_dir(&slot).unwrap();
+    fs::write(slot.join("abandoned"), []).unwrap();
+    fs::set_permissions(&slot, fs::Permissions::from_mode(0o555)).unwrap();
+    store::realize(&closure, &store_path, |path| response(&responses, path)).unwrap();
+    assert!(!staging.exists());
+    assert!(!slot.exists());
+    let root = ROOT.parse().unwrap();
+    let dep = DEP.parse().unwrap();
+    assert_eq!(
+        store::collect(&store_path, &BTreeSet::from([root, dep]), true).unwrap(),
+        (2, Vec::new()),
+    );
+    assert_eq!(
+        store::collect(&store_path, &BTreeSet::new(), false).unwrap(),
+        (0, vec![DEP.to_owned(), ROOT.to_owned()]),
+    );
+    assert!(!staging.exists());
+}

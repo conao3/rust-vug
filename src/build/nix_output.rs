@@ -10,6 +10,7 @@ use vug::nix_cache::{Cache, Closure, Limits, NarInfo, StorePath};
 use vug::treehash;
 
 use super::{Built, NIX_CLOSURE_MANIFEST, Settings, io};
+use crate::nix_closure::Entry;
 use crate::record::NixOutput;
 
 #[derive(Serialize)]
@@ -18,27 +19,7 @@ struct Manifest<'a> {
     format: u32,
     build_key: &'a str,
     output: &'a str,
-    paths: Vec<Entry<'a>>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct Entry<'a> {
-    store_path: &'a str,
-    nar_hash: &'a str,
-    nar_size: u64,
-    references: Vec<&'a str>,
-}
-
-impl<'a> From<&'a NarInfo> for Entry<'a> {
-    fn from(info: &'a NarInfo) -> Self {
-        Self {
-            store_path: info.store_path().as_str(),
-            nar_hash: info.nar_hash(),
-            nar_size: info.nar_size(),
-            references: info.references().iter().map(StorePath::as_str).collect(),
-        }
-    }
+    paths: Vec<Entry>,
 }
 
 pub fn nix_store_dir(data_dir: &Path) -> PathBuf {

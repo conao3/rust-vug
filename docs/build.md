@@ -92,8 +92,7 @@ basename of a manifest store path to this directory to locate its
 installed copy. The dedicated store is root-owned with mode `0755`.
 Stored directories and executable files use mode `0555` and other files
 use `0444`. A lock named `.vug-store.lock` next to the store serializes
-acquisition. Verified paths are staged on the same filesystem and published
-with an atomic rename that preserves any existing path.
+acquisition and Nix path collection. Verified paths are staged on the same filesystem and published with an atomic rename that preserves any existing path. The next acquisition clears staging left by an interrupted acquisition before looking for missing paths. The store records each path that vug publishes in its `.vug-owned` directory so garbage collection can reclaim it when its last reference is gone.
 
 The output tree contains links at the selected output's `expose` paths
 with absolute targets in `/nix/store`. It also contains the canonical record

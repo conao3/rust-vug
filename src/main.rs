@@ -3,6 +3,7 @@ mod gc;
 mod home;
 mod merge;
 mod naming;
+mod nix_closure;
 mod provenance;
 mod record;
 mod secret;
@@ -1093,16 +1094,17 @@ fn run_export_cache(cli: &Cli, args: &CacheArgs) -> Result<i32, (i32, String)> {
 fn build_package(
     cli: &Cli,
     args: &BuildArgs,
-) -> Result<(build::Settings, build::Built), (i32, String)> {
+) -> Result<(build::Settings, build::Built, std::fs::File), (i32, String)> {
     let fail = |e: String| (version::failure_status(), e);
     let settings = settings_of(cli, args)?;
+    let transaction = gc::transaction(&settings.data_dir, false).map_err(fail)?;
     let built = build::Builder::new(&settings)
         .and_then(|mut builder| {
             builder.build_from_source(&args.build_from_source)?;
             builder.build(&args.name, args.package_version.as_deref())
         })
         .map_err(fail)?;
-    Ok((settings, built))
+    Ok((settings, built, transaction))
 }
 
 fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, String)> {
@@ -1314,13 +1316,14 @@ fn run_export_system(cli: &Cli, args: &ExportArgs) -> Result<i32, (i32, String)>
 }
 
 fn run_program(cli: &Cli, args: &RunArgs) -> Result<i32, (i32, String)> {
-    let (settings, built) = build_package(cli, &args.build)?;
-    let error = build::run_in_store(&settings, &built.id, &args.program, &args.arguments);
-    Err((version::failure_status(), error))
+    let (settings, built, _transaction) = build_package(cli, &args.build)?;
+    build::run_in_store(&settings, &built, &args.program, &args.arguments)
+        .map_err(|error| (version::failure_status(), error))?;
+    Ok(0)
 }
 
 fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
-    let (settings, built) = build_package(cli, args)?;
+    let (settings, built, _transaction) = build_package(cli, args)?;
     let path = format!("/vug/store/{}", built.id);
     let host_path = settings.data_dir.join("store").join(&built.id);
     match cli.output {

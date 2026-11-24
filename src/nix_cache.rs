@@ -15,6 +15,8 @@ use tempfile::TempDir;
 mod nar;
 mod store;
 
+pub use store::collect as collect_garbage;
+
 const ORIGIN: &str = "https://cache.nixos.org";
 const STORE: &str = "/nix/store";
 const KEY_NAME: &str = "cache.nixos.org-1";

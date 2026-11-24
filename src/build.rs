@@ -1019,10 +1019,8 @@ impl<'a> Builder<'a> {
                     "{name}:{output}: Nix outputs can only be run dependencies"
                 ));
             }
-            if self.cache_only {
-                if let Some(inventory) = &mut self.cache_inventory {
-                    inventory.missing = true;
-                }
+            if let Some(inventory) = &mut self.cache_inventory {
+                inventory.missing = true;
                 return Err(format!(
                     "{name}: nix-output is acquired directly from cache.nixos.org"
                 ));
@@ -1981,6 +1979,12 @@ pub fn valid_store_id(id: &str) -> bool {
 /// the host file system and the store at `/vug/store`. With `as_root` the
 /// caller appears as user 0, so every file it owns appears owned by root.
 pub fn store_command(settings: &Settings, as_root: bool) -> Result<Command, String> {
+    let mut command = store_namespace(settings, as_root)?;
+    command.arg("--");
+    Ok(command)
+}
+
+fn store_namespace(settings: &Settings, as_root: bool) -> Result<Command, String> {
     let mut command = Command::new("bwrap");
     if as_root {
         command.args(["--unshare-user", "--uid", "0", "--gid", "0"]);
@@ -2000,25 +2004,39 @@ pub fn store_command(settings: &Settings, as_root: bool) -> Result<Command, Stri
     command
         .arg("--ro-bind")
         .arg(settings.data_dir.join("store"))
-        .arg(STORE)
-        .arg("--");
+        .arg(STORE);
     Ok(command)
 }
 
 /// Replaces this process by `program` of the output `id`, in a mount
 /// namespace that shows the host file system and the store at `/vug/store`.
 /// Returns only when that fails, with the reason.
-pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[String]) -> String {
+pub fn run_in_store(
+    settings: &Settings,
+    built: &Built,
+    program: &str,
+    arguments: &[String],
+) -> Result<(), String> {
+    use crate::{gc, nix_closure};
     use std::os::unix::process::CommandExt;
 
-    let mut command = match store_command(settings, false) {
-        Ok(command) => command,
-        Err(error) => return error,
-    };
+    let mut command = store_namespace(settings, false)?;
+    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(
+        &settings.data_dir.join("store"),
+        built.closure(),
+    )?);
+    nix_closure::bind(&mut command, &nix_store_dir(&settings.data_dir), &nix_paths)?;
+    let _lease = gc::lease(
+        &mut command,
+        &settings.data_dir,
+        built.closure(),
+        !nix_paths.is_empty(),
+    )?;
     command
-        .arg(format!("{STORE}/{id}/{program}"))
+        .arg("--")
+        .arg(format!("{STORE}/{}/{program}", built.id))
         .args(arguments);
-    format!("bwrap: {}", command.exec())
+    Err(format!("bwrap: {}", command.exec()))
 }
 
 #[cfg(test)]

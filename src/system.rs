@@ -189,6 +189,11 @@ if [ "$($b id -u)" != 0 ]; then
   echo "vug: switch-to-system must run as root" >&2
   exit 1
 fi
+p=/vug/profiles
+$b mkdir -p $p
+exec 9>> "$p/.lock"
+$b flock -x 9
+old=$($b readlink /run/current-system)
 while IFS= read -r path; do
   if [ ! -d "$path" ]; then
     echo "vug: missing store path $path required by $self" >&2
@@ -206,10 +211,6 @@ if [ -x $self/bin/install-boot ] && ! $b mountpoint -q /boot; then
   echo "vug: /boot is not mounted; nothing was changed" >&2
   exit 1
 fi
-old=$($b readlink /run/current-system)
-
-p=/vug/profiles
-$b mkdir -p $p
 n=
 max=0
 for l in $p/system-*; do
@@ -266,11 +267,24 @@ if [ $live = 1 ] && [ "$old" != "$self" ]; then
   done
 fi
 
-if [ -n "$removed" ]; then $sc stop $removed || true; fi
+if [ -n "$removed" ]; then
+  $sc stop $removed || [ ! -s "$old/manifest/nix-closure.json" ]
+fi
+pin=
+if [ $live = 1 ] && [ -n "$changed" ] && [ -s "$old/manifest/nix-closure.json" ]; then
+  $b mkdir -p /run/vug-switch-pins
+  pin=/run/vug-switch-pins/${old##*/}
+  $b ln -snf "$old" "$pin"
+fi
 $self/activate switch
 if [ $live = 1 ]; then
   $sc daemon-reload
-  if [ -n "$changed" ]; then $sc try-restart --no-block $changed || true; fi
+  if [ -n "$pin" ]; then
+    $sc try-restart $changed
+    $b rm -f "$pin"
+  elif [ -n "$changed" ]; then
+    $sc try-restart --no-block $changed || true
+  fi
   for t in $($sc list-units --type=target --state=active --no-legend --plain | $b awk '{ print $1 }'); do
     if [ "$($sc show -p RefuseManualStart --value "$t")" = no ]; then
       $sc start --no-block "$t" || true
@@ -1097,6 +1111,11 @@ fn work_dir(settings: &Settings, what: &str) -> Result<PathBuf, String> {
 }
 
 pub fn build(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
+    let _transaction = crate::gc::transaction(&settings.data_dir, false)?;
+    assemble(settings, name)
+}
+
+fn assemble(settings: &Settings, name: &str) -> Result<BuiltSystem, String> {
     let record = load(&settings.root, name)?;
     build_with(settings, name, record, &mut Builder::new(settings)?)
 }
@@ -1361,6 +1380,7 @@ fn build_with(
     ] {
         write_file(&out.join("manifest").join(file), text.as_bytes(), 0o644)?;
     }
+    crate::nix_closure::write(&out, crate::nix_closure::for_outputs(&store_dir, &closure)?)?;
     for (path, text) in &record.texts {
         write_file(&out.join(".vug").join(path), text.as_bytes(), 0o644)?;
     }
@@ -1612,6 +1632,7 @@ pub fn build_image(
     image: &Path,
     size: &str,
 ) -> Result<BuiltSystem, String> {
+    let _transaction = crate::gc::transaction(&settings.data_dir, false)?;
     let record = load(&settings.root, name)?;
     image_with(
         settings,
@@ -1805,7 +1826,8 @@ pub fn export(
     archive: &Path,
     base: Option<&str>,
 ) -> Result<(BuiltSystem, usize), String> {
-    let system = build(settings, name)?;
+    let _transaction = crate::gc::transaction(&settings.data_dir, false)?;
+    let system = assemble(settings, name)?;
     let mut ids = system.closure.clone();
     if let Some(base) = base {
         let id = base.strip_prefix(&format!("{STORE}/")).unwrap_or(base);
@@ -1832,7 +1854,11 @@ pub fn export(
 pub fn switch(settings: &Settings, name: &str) -> String {
     use std::os::unix::process::CommandExt;
 
-    let system = match build(settings, name) {
+    let transaction = match crate::gc::transaction(&settings.data_dir, false) {
+        Ok(transaction) => transaction,
+        Err(error) => return error,
+    };
+    let system = match assemble(settings, name) {
         Ok(system) => system,
         Err(error) => return error,
     };
@@ -1841,6 +1867,9 @@ pub fn switch(settings: &Settings, name: &str) -> String {
         .join("store")
         .join(&system.id)
         .join("bin/switch-to-system");
+    if let Err(error) = crate::gc::inherit(&transaction) {
+        return error;
+    }
     format!(
         "{}: {}",
         program.display(),

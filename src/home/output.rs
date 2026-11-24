@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::build::{Builder, Settings, valid_store_id};
-use crate::{gc, system};
+use crate::{gc, nix_closure, system};
 use vug::treehash;
 
 use super::{HomeRecord, load};
@@ -596,6 +596,7 @@ pub(crate) fn build(settings: &Settings, state: &Path, name: &str) -> Result<Bui
     let record =
         load(&settings.root, name).map_err(|error| format!("{}: {}", error.path, error.message))?;
     let state = State::open(state, &settings.data_dir)?;
+    let _transaction = gc::transaction(&settings.data_dir, false)?;
     let generations = state.generations()?;
     let mut closure = BTreeSet::new();
     let mut packages = BTreeMap::new();
@@ -626,6 +627,10 @@ pub(crate) fn build(settings: &Settings, state: &Path, name: &str) -> Result<Bui
             .tempdir_in(&state.store),
     )?;
     render(&record, work.path(), &state.store, &packages, &closure)?;
+    nix_closure::write(
+        work.path(),
+        nix_closure::for_outputs(&state.store, &closure)?,
+    )?;
     let id = treehash::encode_base32(&io(work.path(), treehash::hash_tree(work.path()))?);
     let path = state.store.join(&id);
     match fs::symlink_metadata(&path) {
@@ -684,6 +689,7 @@ pub(crate) fn collect_garbage(
     dry_run: bool,
 ) -> Result<(usize, Vec<String>), String> {
     let state = State::open(state, data)?;
+    let _transaction = gc::transaction(data, true)?;
     let generations = state.generations()?;
     state.current(&generations)?;
     if generations.is_empty() {
@@ -707,7 +713,7 @@ pub(crate) fn collect_garbage(
         live.extend(manifest.closure);
         live.insert(id.clone());
     }
-    gc::sweep(&state.store, &live, dry_run)
+    gc::sweep_closures(data, live, dry_run)
 }
 
 #[cfg(test)]

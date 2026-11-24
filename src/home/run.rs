@@ -9,7 +9,8 @@ use std::process::Command;
 use serde::Deserialize;
 
 use super::output::io;
-use crate::build::valid_store_id;
+use crate::build::{nix_store_dir, valid_store_id};
+use crate::{gc, nix_closure};
 use vug::treehash;
 
 const SYSTEM_STORE: &str = "/vug/store";
@@ -25,8 +26,16 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
     if unsafe { libc::geteuid() } == 0 {
         return Err("run home programs as the owner of the user environment".to_owned());
     }
+    let resolved = io(output, output.canonicalize())?;
+    let store = resolved.parent().ok_or("home output has no parent store")?;
+    let data = store.parent().ok_or("home store has no data directory")?;
+    let _transaction = gc::transaction(data, false)?;
     let output = io(output, output.canonicalize())?;
-    let store = output.parent().ok_or("home output has no parent store")?;
+    let generation = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|id| valid_store_id(id) && output == store.join(id))
+        .ok_or("expected a home generation directory")?;
     let manifest_path = output.join("manifest/home.json");
     let manifest: Manifest = serde_json::from_slice(&io(&manifest_path, fs::read(&manifest_path))?)
         .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
@@ -112,6 +121,11 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         }
     }
 
+    let mut live = manifest.closure;
+    live.insert(generation.to_owned());
+    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(store, &live)?);
+    nix_closure::bind(&mut command, &nix_store_dir(data), &nix_paths)?;
+    let _lease = gc::lease(&mut command, data, &live, !nix_paths.is_empty())?;
     command
         .args(["--remount-ro", SYSTEM_STORE, "--"])
         .arg(program)

@@ -998,10 +998,12 @@ fn builds_which_from_the_public_nix_cache() {
         );
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
     };
-    let first = build();
-    let again = build();
-    assert_eq!(first["Built"], true);
-    assert_eq!(again["Built"], false);
+    let (first, again) = std::thread::scope(|scope| {
+        let first = scope.spawn(build);
+        let second = build();
+        (first.join().unwrap(), second)
+    });
+    assert_ne!(first["Built"], again["Built"]);
     assert_eq!(first["Path"], again["Path"]);
     let out = Path::new(first["HostPath"].as_str().unwrap());
     let link = std::fs::read_link(out.join("bin/which")).unwrap();
@@ -1040,6 +1042,37 @@ fn builds_which_from_the_public_nix_cache() {
         .unwrap()
         .is_file()
     );
+
+    tmp.write(
+        "homes/sample.toml",
+        "name = 'sample'\npackages = ['which']\n",
+    );
+    let state = tempfile::tempdir().unwrap();
+    let home_build = [
+        "home",
+        "build-home",
+        "--root",
+        tmp.path().to_str().unwrap(),
+        "--name",
+        "sample",
+        "--state-dir",
+        state.path().to_str().unwrap(),
+        "--data-dir",
+        data.path().to_str().unwrap(),
+    ];
+    let home = vug(&home_build);
+    assert!(
+        home.status.success(),
+        "{}",
+        String::from_utf8_lossy(&home.stderr)
+    );
+    let home: serde_json::Value = serde_json::from_slice(&home.stdout).unwrap();
+    let generation = Path::new(home["Path"].as_str().unwrap());
+    let closure: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(generation.join("manifest/nix-closure.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(&closure["paths"], &manifest["paths"]);
 
     fn make_dirs_writable(path: &Path) {
         use std::os::unix::fs::PermissionsExt;

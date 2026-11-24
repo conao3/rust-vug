@@ -144,7 +144,7 @@ says.
 | `init` | What the kernel starts: it mounts `/proc`, `/dev`, and `/run`, runs `activate`, and replaces itself by the `init` command of the record. |
 | `activate` | Makes this system the running one. |
 | `bin/switch-to-system` | Switches a running system to this one. |
-| `bin/busybox` | The busybox of the seed. The three scripts above use nothing else. |
+| `bin/busybox` | The seed’s BusyBox used by the boot, activation, and switch scripts. |
 | `kernel` | A link to the kernel image. |
 | `boot/entry`, `boot/loader`, `bin/install-boot` | With `[boot]`: the boot entry of this system (kernel, `root=`, `init=` of this system, and the arguments), a link to the loader, and the script that writes the boot entries. |
 | `boot/initrd.gz` | With `[boot.initrd]`: a reproducible gzip-compressed newc archive. |
@@ -152,6 +152,7 @@ says.
 | `etc/` | The link files. |
 | `seed/` | The seed files. |
 | `manifest/` | The managed files, seed modes, users, groups, home directories, and setuid programs. `closure` lists the system's own store path and the deduplicated store paths of the selected kernel and package outputs and their transitive runtime dependencies. |
+| `manifest/nix-closure.json` | When the generation uses Nix outputs, the deduplicated Nix store paths, signed NAR hashes and sizes, and references. |
 | `.vug/system.toml`, `.vug/services/<name>.toml` | Copies of the system record and of its service records. |
 
 Owners and permission bits other than the execute bit are not part of a store
@@ -271,14 +272,9 @@ Going back is switching to the earlier generation:
 # vug store collect-garbage
 ```
 
-`delete-generations` removes the generation links except the newest `--keep`,
-the default generation, and the running one, and then writes the boot
-entries again when the running system has them. `collect-garbage` removes
-every store path that no remaining generation (and not the running system)
-lists in its `manifest/closure`; `--dry-run` only lists them. It refuses to
-run where `--profiles` (default `/vug/profiles`) holds no generation. The
-index keeps the ids of removed outputs, so a later build takes them from a
-binary cache instead of building.
+`delete-generations` retains the newest `--keep` links, the default generation, and the running generation. Use `--keep 2` to retain the two newest generations for rollback. The command refreshes the boot entries when the running system has them.
+
+`collect-garbage` uses the closures of the retained generations, the running system, and active program leases. It waits for builds and switches, and retains the old closure while changed services restart. If the restart is interrupted or fails, the previous closure remains protected until reboot. Along with unreferenced vug outputs, GC reclaims Nix paths marked as owned by vug when it published them. Use `--dry-run` to list the paths that GC would remove. GC requires a generation in `--profiles` (default `/vug/profiles`) or a running generation in the selected system store. Entries in the build index allow a later build to look up removed vug outputs in the binary cache.
 
 ## Declaring a GPT layout
 

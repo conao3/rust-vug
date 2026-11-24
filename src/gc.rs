@@ -2,14 +2,160 @@
 //! (`docs/system.md`, "Cleaning up").
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::ErrorKind;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::{build, nix_closure};
 
 const STORE: &str = "/vug/store";
 
 fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, String> {
     result.map_err(|e| format!("{what} {}: {e}", path.display()))
+}
+
+fn lock_file(path: &Path, exclusive: bool) -> Result<File, String> {
+    let file = io(
+        "open",
+        path,
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path),
+    )?;
+    if !io("stat", path, file.metadata())?.is_file() {
+        return Err(format!("{}: expected a lock file", path.display()));
+    }
+    io(
+        "lock",
+        path,
+        if exclusive {
+            file.lock()
+        } else {
+            file.lock_shared()
+        },
+    )?;
+    Ok(file)
+}
+
+pub(crate) fn transaction(data: &Path, exclusive: bool) -> Result<File, String> {
+    io("create", data, fs::create_dir_all(data))?;
+    lock_file(&data.join(".gc-lock"), exclusive)
+}
+
+pub(crate) fn inherit(file: &File) -> Result<(), String> {
+    use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
+    let flags = fcntl_getfd(file).map_err(|error| error.to_string())?;
+    fcntl_setfd(file, flags - FdFlags::CLOEXEC).map_err(|error| error.to_string())
+}
+
+fn lease_directory(data: &Path, create: bool) -> Result<Option<PathBuf>, String> {
+    let dir = data.join(".gc-leases");
+    if create {
+        match fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => (),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => (),
+            Err(error) => return io("create", &dir, Err(error)),
+        }
+    }
+    let meta = match fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(error) if !create && error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return io("stat", &dir, Err(error)),
+    };
+    if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{}: expected a private lease directory",
+            dir.display()
+        ));
+    }
+    Ok(Some(dir))
+}
+
+pub(crate) fn lease(
+    command: &mut Command,
+    data: &Path,
+    live: &BTreeSet<String>,
+    nix_namespace: bool,
+) -> Result<File, String> {
+    let dir = lease_directory(data, true)?.unwrap();
+    let mut file = io(
+        "create lease",
+        &dir,
+        tempfile::Builder::new().prefix("run-").tempfile_in(&dir),
+    )?;
+    io("lock", file.path(), file.as_file().lock())?;
+    serde_json::to_writer(&mut file, live).map_err(|error| error.to_string())?;
+    let (file, _) = file
+        .keep()
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    inherit(&file)?;
+    if nix_namespace {
+        command.args(["--unshare-pid", "--proc", "/proc"]);
+    }
+    command.args(["--sync-fd", &file.as_raw_fd().to_string()]);
+    Ok(file)
+}
+
+fn lease_roots(data: &Path, dry_run: bool) -> Result<BTreeSet<String>, String> {
+    let mut live = BTreeSet::new();
+    let Some(dir) = lease_directory(data, false)? else {
+        return Ok(live);
+    };
+    for entry in io("read", &dir, fs::read_dir(&dir))? {
+        let entry = io("read", &dir, entry)?;
+        if !entry.file_name().as_encoded_bytes().starts_with(b"run-") {
+            continue;
+        }
+        let path = entry.path();
+        let file = io(
+            "open lease",
+            &path,
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&path),
+        )?;
+        if !io("stat", &path, file.metadata())?.is_file() {
+            return Err(format!("{}: expected a lease file", path.display()));
+        }
+        match file.try_lock() {
+            Ok(()) => {
+                if !dry_run {
+                    io("remove lease", &path, fs::remove_file(&path))?;
+                }
+            }
+            Err(TryLockError::WouldBlock) => {
+                let ids: BTreeSet<String> = serde_json::from_reader(file)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                live.extend(ids);
+            }
+            Err(TryLockError::Error(error)) => return io("lock", &path, Err(error)),
+        }
+    }
+    Ok(live)
+}
+
+pub(crate) fn sweep_closures(
+    data: &Path,
+    mut live: BTreeSet<String>,
+    dry_run: bool,
+) -> Result<(usize, Vec<String>), String> {
+    live.extend(lease_roots(data, dry_run)?);
+    let store = data.join("store");
+    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(&store, &live)?);
+    let (kept, mut removed) = sweep(&store, &live, dry_run)?;
+    let (nix_kept, nix_removed) =
+        vug::nix_cache::collect_garbage(&build::nix_store_dir(data), &nix_paths, dry_run)?;
+    removed.extend(nix_removed);
+    Ok((kept + nix_kept, removed))
 }
 
 fn id_of(path: &Path) -> Option<String> {
@@ -42,6 +188,7 @@ fn target_id(link: &Path) -> Option<String> {
 /// Removes every generation except the newest `keep`, the default one, and
 /// the one that is running. Returns the numbers removed.
 pub fn delete_generations(profiles: &Path, keep: usize) -> Result<Vec<u64>, String> {
+    let _profiles = lock_file(&profiles.join(".lock"), true)?;
     let all = generations(profiles)?;
     let default = fs::read_link(profiles.join("system"))
         .ok()
@@ -82,12 +229,39 @@ pub fn collect_garbage(
     profiles: &Path,
     dry_run: bool,
 ) -> Result<(usize, Vec<String>), String> {
+    let _transaction = transaction(data_dir, true)?;
+    if data_dir.join("home-state").is_symlink() {
+        return Err("collect a home store with home collect-garbage".to_owned());
+    }
+    let _profiles = lock_file(&profiles.join(".lock"), false)?;
     let store = data_dir.join("store");
-    let mut roots: Vec<String> = generations(profiles)?
-        .iter()
-        .filter_map(|(_, link)| target_id(link))
-        .collect();
-    roots.extend(target_id(Path::new("/run/current-system")));
+    let mut roots = BTreeSet::new();
+    for (_, link) in generations(profiles)? {
+        roots.insert(
+            target_id(&link)
+                .ok_or_else(|| format!("{}: invalid generation target", link.display()))?,
+        );
+    }
+    if data_dir
+        .canonicalize()
+        .is_ok_and(|path| path == Path::new("/vug"))
+    {
+        roots.extend(target_id(Path::new("/run/current-system")));
+        let pins = Path::new("/run/vug-switch-pins");
+        match fs::read_dir(pins) {
+            Ok(entries) => {
+                for entry in entries {
+                    let pin = io("read", pins, entry)?.path();
+                    roots.insert(
+                        target_id(&pin)
+                            .ok_or_else(|| format!("{}: invalid switch pin", pin.display()))?,
+                    );
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return io("read", pins, Err(error)),
+        }
+    }
     if roots.is_empty() {
         return Err(format!(
             "{}: no generation; refusing to remove every store path",
@@ -102,10 +276,10 @@ pub fn collect_garbage(
         }
         live.insert(root);
     }
-    sweep(&store, &live, dry_run)
+    sweep_closures(data_dir, live, dry_run)
 }
 
-pub fn sweep(
+fn sweep(
     store: &Path,
     live: &BTreeSet<String>,
     dry_run: bool,
@@ -129,4 +303,57 @@ pub fn sweep(
         removed.push(id);
     }
     Ok((kept, removed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn garbage_collection_protects_a_running_lease() {
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path();
+        let store = data.join("store");
+        let nix_store = build::nix_store_dir(data);
+        let path = format!("{}-running", "0".repeat(32));
+        let id = "a".repeat(32);
+        fs::create_dir_all(store.join(&id).join(".vug")).unwrap();
+        fs::create_dir_all(nix_store.join(".vug-owned")).unwrap();
+        fs::write(nix_store.join(".vug-owned").join(&path), []).unwrap();
+        fs::write(nix_store.join(&path), "running program").unwrap();
+        let absolute = format!("/nix/store/{path}");
+        let manifest = serde_json::json!({"format": 1, "paths": [{
+            "store-path": absolute,
+            "nar-hash": format!("sha256:{}", "0".repeat(52)),
+            "nar-size": 1,
+            "references": [],
+        }]});
+        fs::write(
+            store.join(&id).join(build::NIX_CLOSURE_MANIFEST),
+            manifest.to_string(),
+        )
+        .unwrap();
+
+        let transaction = transaction(data, false).unwrap();
+        let lease = lease(
+            &mut Command::new("bwrap"),
+            data,
+            &BTreeSet::from([id.clone()]),
+            true,
+        )
+        .unwrap();
+        drop(transaction);
+
+        assert_eq!(
+            sweep_closures(data, BTreeSet::new(), false).unwrap(),
+            (2, Vec::new())
+        );
+        assert!(nix_store.join(&path).exists());
+        drop(lease);
+        assert_eq!(
+            sweep_closures(data, BTreeSet::new(), false).unwrap(),
+            (0, vec![id, absolute])
+        );
+        assert!(!nix_store.join(&path).exists());
+    }
 }

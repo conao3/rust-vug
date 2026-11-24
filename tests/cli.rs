@@ -308,27 +308,53 @@ fn service_record_errors() {
 
 #[test]
 fn garbage_collection_keeps_what_generations_list() {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
     let root = tempfile::tempdir().expect("temporary directory");
-    let store = root.path().join("data/store");
-    let profiles = root.path().join("profiles");
-    for id in ["aaaa", "bbbb", "ssss", "tttt"] {
-        std::fs::create_dir_all(store.join(id).join("manifest")).expect("create");
-    }
-    std::fs::write(
-        store.join("ssss/manifest/closure"),
-        "/vug/store/ssss\n/vug/store/aaaa\n",
-    )
-    .expect("write");
-    std::fs::write(
-        store.join("tttt/manifest/closure"),
-        "/vug/store/tttt\n/vug/store/bbbb\n",
-    )
-    .expect("write");
-    std::fs::create_dir(&profiles).expect("create");
-    std::os::unix::fs::symlink("/vug/store/tttt", profiles.join("system-1")).expect("symlink");
-    std::os::unix::fs::symlink("/vug/store/ssss", profiles.join("system-2")).expect("symlink");
-    std::os::unix::fs::symlink("system-2", profiles.join("system")).expect("symlink");
     let data = root.path().join("data");
+    let store = data.join("store");
+    let nix_store = data.join("nix/store");
+    let profiles = root.path().join("profiles");
+    let systems = ['s', 't', 'u'].map(|letter| letter.to_string().repeat(32));
+    let dependencies = ['a', 'b', 'c'].map(|letter| letter.to_string().repeat(32));
+    let nix_paths =
+        ["old", "previous", "current", "foreign"].map(|name| format!("{}-{name}", "0".repeat(32)));
+    fs::create_dir_all(nix_store.join(".vug-owned")).unwrap();
+    fs::create_dir(&profiles).unwrap();
+    for (index, (system, dependency)) in systems.iter().zip(&dependencies).enumerate() {
+        let manifest = store.join(system).join("manifest");
+        fs::create_dir_all(&manifest).unwrap();
+        fs::create_dir_all(store.join(dependency).join(".vug")).unwrap();
+        fs::write(
+            manifest.join("closure"),
+            format!("/vug/store/{system}\n/vug/store/{dependency}\n"),
+        )
+        .unwrap();
+        let nix = serde_json::json!({"format": 1, "paths": [{
+            "store-path": format!("/nix/store/{}", nix_paths[index]),
+            "nar-hash": format!("sha256:{}", "0".repeat(52)),
+            "nar-size": 1,
+            "references": [],
+        }]});
+        let path = if index == 1 {
+            store.join(dependency).join(".vug/nix-closure.json")
+        } else {
+            manifest.join("nix-closure.json")
+        };
+        fs::write(path, nix.to_string()).unwrap();
+        symlink(
+            format!("/vug/store/{system}"),
+            profiles.join(format!("system-{}", index + 1)),
+        )
+        .unwrap();
+        fs::write(nix_store.join(".vug-owned").join(&nix_paths[index]), []).unwrap();
+    }
+    for path in &nix_paths {
+        fs::write(nix_store.join(path), "NAR contents").unwrap();
+    }
+    symlink("system-3", profiles.join("system")).unwrap();
+
     let args = |extra: &[&str]| {
         let mut words = vec![
             "store",
@@ -343,30 +369,53 @@ fn garbage_collection_keeps_what_generations_list() {
     };
 
     let dry = args(&["--dry-run"]);
-    assert_eq!(dry.status.code(), Some(0));
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
     let value: serde_json::Value = serde_json::from_slice(&dry.stdout).expect("JSON");
-    assert_eq!(value["Removed"].as_array().map(Vec::len), Some(0));
-    assert!(store.join("bbbb").exists());
+    assert_eq!(value["Removed"], serde_json::json!([]));
 
     let deleted = vug(&[
         "system",
         "delete-generations",
         "--keep",
-        "1",
+        "2",
         "--profiles",
         profiles.to_str().expect("path"),
     ]);
     assert_eq!(deleted.status.code(), Some(0), "{deleted:?}");
-    assert!(!profiles.join("system-1").exists());
-    assert!(profiles.join("system-2").symlink_metadata().is_ok());
+    assert!(!profiles.join("system-1").is_symlink());
+    assert!(profiles.join("system-2").is_symlink());
+    assert!(profiles.join("system-3").is_symlink());
 
-    assert_eq!(args(&[]).status.code(), Some(0));
-    assert!(store.join("ssss").exists() && store.join("aaaa").exists());
-    assert!(!store.join("tttt").exists() && !store.join("bbbb").exists());
+    let dry = args(&["--dry-run"]);
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    assert!(nix_store.join(&nix_paths[0]).is_file());
+    let actual = args(&[]);
+    assert_eq!(actual.status.code(), Some(0), "{actual:?}");
+    let json = |output: &std::process::Output| {
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(json(&dry)["Removed"], json(&actual)["Removed"]);
+    assert_eq!(
+        json(&actual)["Removed"],
+        serde_json::json!([
+            dependencies[0],
+            systems[0],
+            format!("/nix/store/{}", nix_paths[0])
+        ])
+    );
+    for (index, id) in systems.iter().zip(&dependencies).enumerate() {
+        assert_eq!(store.join(id.0).is_dir(), index != 0);
+        assert_eq!(store.join(id.1).is_dir(), index != 0);
+    }
+    for (index, path) in nix_paths.iter().enumerate() {
+        assert_eq!(nix_store.join(path).is_file(), index != 0);
+    }
 
-    std::fs::remove_file(profiles.join("system-2")).expect("remove");
+    for generation in ["system-2", "system-3"] {
+        fs::remove_file(profiles.join(generation)).unwrap();
+    }
     assert_ne!(args(&[]).status.code(), Some(0));
-    assert!(store.join("aaaa").exists());
+    assert!(store.join(&dependencies[1]).is_dir());
 }
 
 #[test]
