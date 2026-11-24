@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::outputs::{Manifest, Runtime};
-use super::{Settings, fetch, io, valid_store_id};
+use super::{PRIVATE_OUTPUT, Settings, fetch, io, single_output_index, valid_store_id};
 use crate::naming::model;
 
 pub(super) fn fetch_manifest(
@@ -28,6 +28,9 @@ pub(super) fn fetch_manifest(
         return Err(format!("{url}: not signed by the trusted key"));
     }
     let manifest = Manifest::parse(&bytes[..=json.len()], &url)?;
+    if manifest.private {
+        return Err(format!("{url}: private output manifest in binary cache"));
+    }
     manifest.validate(key, runtime, &url)?;
     Ok(Some(manifest))
 }
@@ -48,7 +51,7 @@ pub fn export_cache(
     let (mut keys, mut paths) = (0, 0);
     for version in index_files(&data_dir.join("index"))? {
         let line = io("read", &version, fs::read_to_string(&version))?;
-        let Some((key, id)) = line.trim_end().split_once(' ') else {
+        let Some((key, id, private)) = single_output_index(&line) else {
             continue;
         };
         if !valid_store_id(key) || !valid_store_id(id) {
@@ -57,7 +60,10 @@ pub fn export_cache(
                 version.display()
             ));
         }
-        if !write_archive(&store, &paths_dir, id, &mut paths)? {
+        if private
+            || private_output(&store, id)?
+            || !write_archive(&store, &paths_dir, id, &mut paths)?
+        {
             continue;
         }
         let mut answer = format!("{id}\n");
@@ -71,6 +77,15 @@ pub fn export_cache(
     for version in index_files(&data_dir.join("index-outputs"))? {
         let bytes = io("read", &version, fs::read(&version))?;
         let manifest = Manifest::parse(&bytes, &version.display().to_string())?;
+        if manifest.private {
+            continue;
+        }
+        let private = manifest.outputs.values().try_fold(false, |found, entry| {
+            private_output(&store, &entry.id).map(|private| found || private)
+        })?;
+        if private {
+            continue;
+        }
         let mut complete = true;
         for entry in manifest.outputs.values() {
             complete &= write_archive(&store, &paths_dir, &entry.id, &mut paths)?;
@@ -89,6 +104,15 @@ pub fn export_cache(
         }
     }
     Ok((keys, paths))
+}
+
+fn private_output(store: &Path, id: &str) -> Result<bool, String> {
+    let path = store.join(id).join(PRIVATE_OUTPUT);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("check {}: {error}", path.display())),
+    }
 }
 
 fn index_files(index: &Path) -> Result<Vec<PathBuf>, String> {
@@ -153,7 +177,7 @@ fn write_archive(
     Ok(true)
 }
 
-fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn publish(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut temp = cache_file(path.parent().unwrap())?;
     io("write", path, temp.write_all(bytes))?;
     temp.persist(path)
@@ -245,6 +269,7 @@ paths = ["include/**"]
             canonical: &canonical,
             runtime: &runtime,
             auto_rpaths: &BTreeSet::new(),
+            private: false,
         }
         .install(&key)
         .unwrap();

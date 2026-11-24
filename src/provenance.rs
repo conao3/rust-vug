@@ -74,7 +74,7 @@ struct Version {
 #[derive(Deserialize)]
 struct Source {
     url: String,
-    sha256: String,
+    sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -279,6 +279,15 @@ fn parse_origin(value: &str) -> Result<Url, String> {
 
 fn parse_origins(values: &[String]) -> Result<Vec<Url>, String> {
     values.iter().map(|value| parse_origin(value)).collect()
+}
+
+fn package_archive_origins(upstream: &Upstream) -> Result<Vec<Url>, String> {
+    upstream
+        .sources
+        .iter()
+        .filter(|value| !value.starts_with("git+ssh://"))
+        .map(|value| parse_origin(value))
+        .collect()
 }
 
 fn matches_origin(origin: &Url, url: &Url) -> bool {
@@ -623,7 +632,7 @@ impl<D: Downloads> Inspection<'_, D> {
         let mut origins = Vec::new();
         if let Some(oid) = base.get(&package_path) {
             let record: Package = self.git.record(oid, &package_path)?;
-            origins = parse_origins(&record.upstream.sources)?;
+            origins = package_archive_origins(&record.upstream)?;
         } else if let Some(sources) = self.policy.new_package_sources.get(package) {
             origins = parse_origins(sources)?;
         }
@@ -633,7 +642,7 @@ impl<D: Downloads> Inspection<'_, D> {
         let candidate_origins = candidate
             .map(|oid| self.git.record::<Package>(oid, &package_path))
             .transpose()?
-            .map(|record| parse_origins(&record.upstream.sources))
+            .map(|record| package_archive_origins(&record.upstream))
             .transpose()?
             .unwrap_or_default();
         let redirects = self
@@ -686,6 +695,16 @@ impl<D: Downloads> Inspection<'_, D> {
                     .into_iter()
                     .filter(|patch| directly_changed || changes.patches.contains(patch)),
             );
+            if version.source.url.starts_with("git+ssh://") {
+                note(
+                    Err(Issue::failed("private_git_source")),
+                    &mut status[0],
+                    3,
+                    path,
+                    findings,
+                );
+                continue;
+            }
             let allowed = parse_url(&version.source.url)
                 .map_err(|_| Issue::failed("invalid_source_url"))
                 .and_then(|url| {
@@ -698,7 +717,11 @@ impl<D: Downloads> Inspection<'_, D> {
                     if !origins.iter().any(|origin| matches_origin(origin, &url)) {
                         return Err(Issue::approval("source_origin_unapproved"));
                     }
-                    sources.push((path, url, version.source.sha256));
+                    let digest = version
+                        .source
+                        .sha256
+                        .ok_or_else(|| Issue::failed("invalid_source_sha256"))?;
+                    sources.push((path, url, digest));
                     Ok(())
                 });
             note(allowed, &mut status[0], 3, path, findings);

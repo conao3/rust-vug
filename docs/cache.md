@@ -29,6 +29,8 @@ archives already in the cache. It publishes a split manifest after every
 output it lists has an archive. `Keys` in the result counts key entries
 written across both formats. `Written` counts new archives.
 
+A Git over SSH source makes every output of its build private. Privacy propagates through build, runtime, and exposed dependencies, including dependencies of split outputs. Private output IDs and build keys stay local. `export-cache` skips their index entries and archives, and `list-cache` excludes these builds from the signed cache inventory. Use the exported directory as the input to the upload step.
+
 ## Use
 
 Pass `--binary-cache URL --trusted-key PUBLIC` to use a signed cache with

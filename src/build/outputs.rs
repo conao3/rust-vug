@@ -96,6 +96,8 @@ pub(super) struct Manifest {
     format: u32,
     pub(super) key: String,
     pub(super) outputs: BTreeMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) private: bool,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,7 +108,12 @@ pub(super) struct Entry {
 }
 
 impl Manifest {
-    fn new(key: &str, ids: &BTreeMap<String, String>, runtime: &BTreeMap<String, Runtime>) -> Self {
+    fn new(
+        key: &str,
+        ids: &BTreeMap<String, String>,
+        runtime: &BTreeMap<String, Runtime>,
+        private: bool,
+    ) -> Self {
         let outputs = runtime
             .iter()
             .map(|(name, runtime)| {
@@ -125,6 +132,7 @@ impl Manifest {
             format: 1,
             key: key.to_owned(),
             outputs,
+            private,
         }
     }
 
@@ -177,7 +185,7 @@ impl Manifest {
             .iter()
             .map(|(name, entry)| (name.clone(), entry.id.clone()))
             .collect();
-        if !ids.keys().eq(runtime.keys()) || *self != Self::new(key, &ids, runtime) {
+        if !ids.keys().eq(runtime.keys()) || *self != Self::new(key, &ids, runtime, self.private) {
             return Err(format!(
                 "{source}: output manifest disagrees with the record"
             ));
@@ -404,6 +412,7 @@ pub(super) struct SplitBuild<'a> {
     pub(super) canonical: &'a str,
     pub(super) runtime: &'a BTreeMap<String, Runtime>,
     pub(super) auto_rpaths: &'a BTreeSet<String>,
+    pub(super) private: bool,
 }
 
 impl SplitBuild<'_> {
@@ -423,6 +432,9 @@ impl SplitBuild<'_> {
             if output == "out" {
                 let path = meta.join("record.toml");
                 io("write", &path, fs::write(&path, self.canonical))?;
+            }
+            if self.private {
+                super::mark_private_output(&tree)?;
             }
             let runtime = &self.runtime[output];
             let relocation = Relocation {
@@ -444,7 +456,7 @@ impl SplitBuild<'_> {
                 install_tree(self.store, &tree, &relocation)?,
             );
         }
-        Ok(Manifest::new(key, &ids, self.runtime))
+        Ok(Manifest::new(key, &ids, self.runtime, self.private))
     }
 }
 
@@ -1102,6 +1114,7 @@ skip = []
             KEY,
             &BTreeMap::from([("out".into(), out.into()), ("lib".into(), LIB.into())]),
             &runtime(),
+            false,
         )
     }
 }

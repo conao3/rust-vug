@@ -2,6 +2,7 @@
 
 mod cache;
 pub(crate) mod elf;
+mod git_source;
 mod go;
 mod node;
 mod outputs;
@@ -22,8 +23,9 @@ use vug::wrapper::{COMPILER_WRAPPER, CPP_WRAPPER, TOOL_WRAPPER};
 use vug::{fetch, rewrite, treehash};
 
 use crate::naming::model;
-use crate::record::{self, BuildOptions};
+use crate::record::{self, BuildOptions, Source};
 
+const PRIVATE_OUTPUT: &str = ".vug/private-source";
 const STORE: &str = "/vug/store";
 const PLACEHOLDER_ID: &str = "00000000000000000000000000000000";
 const SOURCE_DATE_EPOCH: &str = "315532800";
@@ -112,6 +114,7 @@ pub struct Built {
     /// Ids that a build against this output sees as well: what it and its
     /// run-time dependencies expose.
     exposed: BTreeSet<String>,
+    private: bool,
 }
 
 fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, String> {
@@ -589,6 +592,16 @@ fn private_cxx_runtime(dir: &Path) -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
+fn mark_private_output(tree: &Path) -> Result<(), String> {
+    let marker = tree.join(PRIVATE_OUTPUT);
+    io(
+        "mark output private",
+        &marker,
+        fs::File::create_new(&marker),
+    )?;
+    Ok(())
+}
+
 pub fn install_output(store_dir: &Path, out: &Path) -> Result<String, String> {
     let id = treehash::encode_base32(&io("hash", out, treehash::hash_tree(out))?);
     io(
@@ -719,7 +732,7 @@ impl<'a> Builder<'a> {
     }
 
     pub fn require_output(&self, id: &str) -> Result<(), String> {
-        if self.ensure_output(id)? {
+        if self.ensure_output(id, false)? {
             return Ok(());
         }
         Err(format!(
@@ -727,11 +740,11 @@ impl<'a> Builder<'a> {
         ))
     }
 
-    fn ensure_output(&self, id: &str) -> Result<bool, String> {
+    fn ensure_output(&self, id: &str, private: bool) -> Result<bool, String> {
         let path = self.settings.data_dir.join("store").join(id);
         let metadata = match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !self.substitute(id)? {
+                if private || !self.substitute(id)? {
                     return Ok(false);
                 }
                 fs::symlink_metadata(&path)
@@ -784,7 +797,16 @@ impl<'a> Builder<'a> {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
-        verified_source(cache, &record.sha256)?;
+        match &record.source {
+            Source::Archive { sha256, .. } => {
+                verified_source(cache, sha256)?;
+            }
+            Source::Git { .. } => {
+                return Err(format!(
+                    "{name} {version}: Git sources require an online build"
+                ));
+            }
+        }
         for patch in &record.patches {
             offline_patch(cache, &directory.join("patches").join(patch))?;
         }
@@ -953,6 +975,11 @@ impl<'a> Builder<'a> {
                 "{name}:{output}: unknown output in version {version}"
             ));
         }
+        let git_source = matches!(&record.source, Source::Git { .. });
+        if git_source && let Some(inventory) = &mut self.cache_inventory {
+            inventory.missing = true;
+            return Err(format!("{name} {version}: private Git source"));
+        }
         let split = !record.outputs.is_empty();
         let selected_run = outputs::selected_run(&record, output);
         let mut dep_ids = BTreeSet::new();
@@ -1008,6 +1035,7 @@ impl<'a> Builder<'a> {
             resolved.entry(dep.as_str()).or_insert(built);
         }
 
+        let private = git_source || resolved.values().any(|built| built.private);
         let bindings = record.uses_output_keys().then(|| {
             record
                 .dependencies()
@@ -1042,7 +1070,11 @@ impl<'a> Builder<'a> {
             }
             _ => &canonical,
         };
-        let mut key_record = key_record.to_owned();
+        let mut key_record = if private {
+            format!("private-source=v1\n{key_record}")
+        } else {
+            key_record.to_owned()
+        };
         for patch in &record.patches {
             let path = package_dir.join("patches").join(patch);
             let digest = io("hash patch", &path, fetch::sha256_file(&path))?;
@@ -1071,6 +1103,7 @@ impl<'a> Builder<'a> {
                 fresh,
                 closure,
                 exposed: exposed.clone(),
+                private,
             }
         };
         let mut expected_manifest = None;
@@ -1083,10 +1116,15 @@ impl<'a> Builder<'a> {
             let from_cache = local.is_none();
             let manifest = match local {
                 Some(manifest) => Some(manifest),
-                None if self.build_from_source.contains(name) => None,
+                None if private || self.build_from_source.contains(name) => None,
                 None => cache::fetch_manifest(settings, &key, &runtime)?,
             };
             if let Some(manifest) = manifest {
+                if manifest.private != private {
+                    return Err(format!(
+                        "{name} {version}: output manifest privacy disagrees with the record"
+                    ));
+                }
                 let built = from_manifest(&manifest, false);
                 if let Some(inventory) = &mut self.cache_inventory {
                     inventory.objects.insert(format!("output-keys/{key}"));
@@ -1105,7 +1143,7 @@ impl<'a> Builder<'a> {
                     std::iter::once(output).chain(runtime[output].local.iter().map(String::as_str))
                 {
                     let id = &manifest.outputs[name].id;
-                    if !self.ensure_output(id)? {
+                    if !self.ensure_output(id, private)? {
                         missing = Some(id);
                         break;
                     }
@@ -1138,14 +1176,17 @@ impl<'a> Builder<'a> {
                     fresh: false,
                     closure: run_closure,
                     exposed,
+                    private,
                 });
             }
         } else {
             let mut known = fs::read_to_string(&index_path).ok().and_then(|line| {
-                let (found_key, id) = line.trim_end().split_once(' ')?;
-                (found_key == key && valid_store_id(id)).then(|| id.to_owned())
+                let (found_key, id, indexed_private) = single_output_index(&line)?;
+                (found_key == key && indexed_private == private && valid_store_id(id))
+                    .then(|| id.to_owned())
             });
             if known.is_none()
+                && !private
                 && !self.build_from_source.contains(name)
                 && let Some(id) = self.cached_key(&key)?
             {
@@ -1160,7 +1201,7 @@ impl<'a> Builder<'a> {
                 known = Some(id);
             }
             if let Some(id) = known
-                && (need == Need::Id || self.ensure_output(&id)?)
+                && (need == Need::Id || self.ensure_output(&id, private)?)
             {
                 run_closure.insert(id.clone());
                 return Ok(Built {
@@ -1170,6 +1211,7 @@ impl<'a> Builder<'a> {
                     fresh: false,
                     closure: run_closure,
                     exposed,
+                    private,
                 });
             }
         }
@@ -1189,6 +1231,7 @@ impl<'a> Builder<'a> {
             if built.id != expected.id
                 || built.closure != expected.closure
                 || built.exposed != expected.exposed
+                || built.private != expected.private
             {
                 return Err(format!(
                     "{dep}: output changed while resolving dependencies"
@@ -1196,16 +1239,55 @@ impl<'a> Builder<'a> {
             }
         }
         let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
-        let archive = fetch_source(settings, &record.url, &record.sha256)?;
-        let work = settings
-            .data_dir
-            .join("tmp")
-            .join(format!("{}-{name}", std::process::id()));
-        if work.exists() {
+        let tmp = settings.data_dir.join("tmp");
+        let private_work = if private {
+            io("create", &tmp, fs::create_dir_all(&tmp))?;
+            Some(io(
+                "create private build directory",
+                &tmp,
+                tempfile::tempdir_in(&tmp),
+            )?)
+        } else {
+            None
+        };
+        let work = private_work.as_ref().map_or_else(
+            || tmp.join(format!("{}-{name}", std::process::id())),
+            |dir| dir.path().to_path_buf(),
+        );
+        if !private && work.exists() {
             io("remove", &work, fs::remove_dir_all(&work))?;
         }
         let out = work.join("out");
         let build_dir = work.join("build");
+        let source_dir = build_dir.join("src");
+        io("create", &source_dir, fs::create_dir_all(&source_dir))?;
+        let (archive, strip) = match &record.source {
+            Source::Archive {
+                url,
+                sha256,
+                strip_components,
+            } => {
+                let archive = fetch_source(settings, url, sha256)?;
+                let strip = u32::try_from(*strip_components)
+                    .map_err(|_| "source.strip-components: out of range".to_owned())?;
+                let source_name = file_name_of(url);
+                let archive = if source_name.ends_with(".zip") {
+                    io(
+                        "extract ZIP",
+                        &archive,
+                        source_zip::extract(&archive, &source_dir, strip),
+                    )?;
+                    None
+                } else {
+                    Some(prepare_archive(archive, source_name, &work)?)
+                };
+                (archive, strip)
+            }
+            Source::Git { url, rev, nar_hash } => {
+                git_source::fetch(url, rev, nar_hash, &source_dir)?;
+                (None, 0)
+            }
+        };
         io("create", &out, fs::create_dir_all(&out))?;
         let root_bin = work.join("bin");
         io("create", &root_bin, fs::create_dir_all(&root_bin))?;
@@ -1217,11 +1299,6 @@ impl<'a> Builder<'a> {
                 &root_bin,
             )?;
         }
-        io(
-            "create",
-            &build_dir,
-            fs::create_dir_all(build_dir.join("src")),
-        )?;
 
         let prefix = format!("{STORE}/{PLACEHOLDER_ID}");
         let patches: Vec<String> = record
@@ -1229,19 +1306,6 @@ impl<'a> Builder<'a> {
             .iter()
             .map(|p| format!("/patches/{p}"))
             .collect();
-        let strip = u32::try_from(record.strip_components)
-            .map_err(|_| "source.strip-components: out of range".to_owned())?;
-        let source_name = file_name_of(&record.url);
-        let archive = if source_name.ends_with(".zip") {
-            io(
-                "extract ZIP",
-                &archive,
-                source_zip::extract(&archive, &build_dir.join("src"), strip),
-            )?;
-            None
-        } else {
-            Some(prepare_archive(archive, source_name, &work)?)
-        };
         let mut cflags = Vec::new();
         let own_lib = if split { "lib/." } else { "lib" };
         let mut ldflags = vec![
@@ -1863,6 +1927,7 @@ impl<'a> Builder<'a> {
                 canonical: &canonical,
                 runtime: &runtime,
                 auto_rpaths: &auto_rpaths,
+                private,
             }
             .install(&key)?;
             io("remove", &work, fs::remove_dir_all(&work))?;
@@ -1876,22 +1941,36 @@ impl<'a> Builder<'a> {
         }
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;
-        io(
-            "write",
-            &meta,
-            fs::write(meta.join("record.toml"), &canonical),
-        )?;
+        if private {
+            if !io(
+                "check private output metadata",
+                &meta,
+                fs::symlink_metadata(&meta),
+            )?
+            .is_dir()
+            {
+                return Err(format!(
+                    "{}: expected an output metadata directory",
+                    meta.display()
+                ));
+            }
+            mark_private_output(&out)?;
+            cache::publish(&meta.join("record.toml"), canonical.as_bytes())?;
+        } else {
+            io(
+                "write",
+                &meta,
+                fs::write(meta.join("record.toml"), &canonical),
+            )?;
+        }
         let id = install_output(&store_dir, &out)?;
         io("remove", &work, fs::remove_dir_all(&work))?;
 
         if let Some(parent) = index_path.parent() {
             io("create", parent, fs::create_dir_all(parent))?;
         }
-        io(
-            "write",
-            &index_path,
-            fs::write(&index_path, format!("{key} {id}\n")),
-        )?;
+        let privacy = if private { " private" } else { "" };
+        cache::publish(&index_path, format!("{key} {id}{privacy}\n").as_bytes())?;
         run_closure.insert(id.clone());
         Ok(Built {
             name: name.to_owned(),
@@ -1900,8 +1979,15 @@ impl<'a> Builder<'a> {
             fresh: true,
             closure: run_closure,
             exposed,
+            private,
         })
     }
+}
+
+fn single_output_index(line: &str) -> Option<(&str, &str, bool)> {
+    let (key, value) = line.trim_end().split_once(' ')?;
+    let private_id = value.strip_suffix(" private");
+    Some((key, private_id.unwrap_or(value), private_id.is_some()))
 }
 
 pub fn valid_store_id(id: &str) -> bool {
