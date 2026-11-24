@@ -159,6 +159,7 @@ pub(crate) enum BuildOptions {
     TreeSitter {
         path: String,
         language: String,
+        generate: bool,
     },
     Linux {
         defconfig: String,
@@ -616,7 +617,7 @@ fn parse_version(
             "tree-sitter" => {
                 unknown_keys(
                     build_table,
-                    &["kind", "path", "language"],
+                    &["kind", "path", "language", "generate"],
                     "build.",
                     &mut errors,
                 );
@@ -635,6 +636,9 @@ fn parse_version(
                 build = BuildOptions::TreeSitter {
                     path: source_path(build_table, &mut errors),
                     language,
+                    generate: build_table.contains_key("generate")
+                        && req_bool(build_table, "generate", "build.", &mut errors)
+                            .unwrap_or(false),
                 };
             }
             "linux" => {
@@ -1347,12 +1351,19 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "setup-flags", setup_flags);
             }
         }
-        BuildOptions::TreeSitter { path, language } => {
+        BuildOptions::TreeSitter {
+            path,
+            language,
+            generate,
+        } => {
             write_string_field(&mut out, "kind", "tree-sitter");
             if path != "." {
                 write_string_field(&mut out, "path", path);
             }
             write_string_field(&mut out, "language", language);
+            if *generate {
+                write_bool_field(&mut out, "generate", true);
+            }
         }
         BuildOptions::Linux {
             defconfig,

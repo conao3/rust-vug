@@ -430,7 +430,12 @@ grammar in a multi-grammar repository. `language` is the exported language
 identifier without the `tree_sitter_` prefix. It starts with a lowercase ASCII
 letter and may contain lowercase ASCII letters, digits, and underscores.
 
-The builder compiles the shipped `src/parser.c` and any `src/scanner.c` or
+Set `generate = true` to run `tree-sitter generate grammar.js` in the grammar
+directory before compilation. Declare the CLI and Node.js in
+`dependencies.build`. The command runs in the offline build sandbox. Ship any
+JavaScript modules imported by `grammar.js` with the source or a record patch.
+
+The builder compiles `src/parser.c` and any `src/scanner.c` or
 `src/scanner.cc`. It installs `lib/libtree-sitter-<language>.so`, a relative
 symlink at `parser/<language>.so`, and query files under
 `queries/<language>/`. It takes queries from the grammar directory when

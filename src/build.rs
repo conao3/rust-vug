@@ -1308,6 +1308,20 @@ impl<'a> Builder<'a> {
             );
             std::mem::take(&mut script)
         });
+        if let BuildOptions::TreeSitter {
+            path,
+            generate: true,
+            ..
+        } = &record.build
+        {
+            script.push(vec![
+                "sh".to_owned(),
+                "-ec".to_owned(),
+                "cd \"$1\"; exec tree-sitter generate grammar.js".to_owned(),
+                "tree-sitter-generate".to_owned(),
+                format!("./{path}"),
+            ]);
+        }
         let check_target = record
             .check_enabled
             .then(|| record.check_target.as_deref().unwrap_or("check"));
@@ -1365,7 +1379,7 @@ impl<'a> Builder<'a> {
                 &record.check_skip,
                 settings.jobs,
             ),
-            BuildOptions::TreeSitter { path, language } => vec![vec![
+            BuildOptions::TreeSitter { path, language, .. } => vec![vec![
                 "sh".to_owned(),
                 "-ec".to_owned(),
                 include_str!("build/tree-sitter.sh").to_owned(),

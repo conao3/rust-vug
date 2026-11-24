@@ -852,6 +852,13 @@ fn tree_sitter_grammar_record_round_trips() {
     let formatted: serde_json::Value = serde_json::from_slice(&formatted.stdout).unwrap();
     assert_eq!(formatted["Record"].as_str().unwrap(), record);
 
+    let generated = record.replace("language = \"tsx\"", "language = \"tsx\"\ngenerate = true");
+    std::fs::write(&version, &generated).unwrap();
+    let formatted = format_record(&version);
+    assert!(formatted.status.success());
+    let formatted: serde_json::Value = serde_json::from_slice(&formatted.stdout).unwrap();
+    assert_eq!(formatted["Record"].as_str().unwrap(), generated);
+
     std::fs::write(
         &version,
         record.replace("language = \"tsx\"", "language = \"../tsx\""),
