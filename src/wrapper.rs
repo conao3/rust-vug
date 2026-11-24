@@ -8,6 +8,9 @@
 /// of the one zig links statically, and turns the GNU and clang spellings that
 /// packages use into what zig accepts (`docs/build.md`, "The seed").
 pub const COMPILER_WRAPPER: &str = r#"#!/bin/sh
+if [ "$#" = 1 ] && [ "$1" = -v ]; then
+  exec /seed/zig/zig {tool} -target x86_64-linux-musl -v
+fi
 link=1
 asm=0
 dep=0

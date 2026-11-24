@@ -123,6 +123,19 @@ fn rpath_in_every_spelling() {
 }
 
 #[test]
+fn verbose_probe_does_not_link_dependencies() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let output = wrapper_command(directory.path(), "c++", "c++", Some("/runtime"))
+        .env("VUG_CFLAGS", "-I/dependency/include")
+        .env("VUG_LDFLAGS", "-L/dependency/lib")
+        .arg("-v")
+        .output()
+        .expect("run wrapper");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"c++\n-target\nx86_64-linux-musl\n-v\n");
+}
+
+#[test]
 fn linker_words_that_zig_rejects() {
     assert_eq!(
         translated(&[
