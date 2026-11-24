@@ -30,8 +30,20 @@ fn unpack_with_patches() {
         steps,
         vec![
             step(&["tar", "-xf", "a.tar.xz", "--strip-components=0"]),
-            step(&["patch", "-p1", "-i", "x.patch"]),
-            step(&["patch", "-p1", "-i", "y.patch"]),
+            step(&[
+                "sh",
+                "-c",
+                include_str!("../src/build/patch.sh"),
+                "sh",
+                "x.patch",
+            ]),
+            step(&[
+                "sh",
+                "-c",
+                include_str!("../src/build/patch.sh"),
+                "sh",
+                "y.patch",
+            ]),
         ]
     );
 }

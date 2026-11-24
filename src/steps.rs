@@ -43,7 +43,7 @@ pub struct Sandbox {
 /// 1. `["tar", "-xf", archive, "--strip-components=<strip>"]`, or, when the
 ///    file name has no `.tar` in it and does not end in `.tgz`, `.txz`, or
 ///    `.tbz2`, `["cp", archive, <file name>]`
-/// 2. for each patch, in order: `["patch", "-p1", "-i", patch]`
+/// 2. for each patch, in order: validate and apply the unified diff at strip level 1.
 pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> {
     let name = archive.rsplit('/').next().unwrap_or(archive);
     let is_archive = name.contains(".tar")
@@ -67,9 +67,10 @@ pub fn unpack_steps(archive: &str, strip: u32, patches: &[String]) -> Vec<Step> 
 pub fn patch_steps(patches: &[String]) -> impl Iterator<Item = Step> {
     patches.iter().map(|patch| {
         vec![
-            "patch".to_string(),
-            "-p1".to_string(),
-            "-i".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            include_str!("build/patch.sh").to_owned(),
+            "sh".to_string(),
             patch.clone(),
         ]
     })

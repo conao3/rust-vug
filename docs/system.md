@@ -195,6 +195,8 @@ files and the targets of their relative symbolic links. A missing file
 stops the build.
 
 ## The root file system
+The build commands use umask `022` when creating package outputs, system
+trees, and disk images.
 
 The root is an ordinary writable file system:
 

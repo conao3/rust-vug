@@ -333,6 +333,8 @@ and a fixed `PERL5LIB` containing the output and its runtime dependency closure.
 With `check.enabled = true`, the driver runs the upstream test suite and
 loads each module named in the optional `build.modules` array from the
 installed tree. Module names use Perl syntax, for example `"Try::Tiny"`.
+Set `check.skip` to project-relative test paths such as `"t/network.t"`
+to exclude individual files from the driver’s `t/*.t` suite.
 
 ### Build kind `python`
 

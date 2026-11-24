@@ -4,7 +4,9 @@ use Config;
 use CPAN::Meta;
 use File::Path qw(make_path);
 
-my ($out, $driver, $build, $runtime, $jobs, $checks, $modules) = @ARGV;
+my ($out, $driver, $build, $runtime, $jobs, $checks, $modules, @skip) = @ARGV;
+my %skip = map { $_ => 1 } @skip;
+my @tests = grep { !$skip{$_} } sort glob 't/*.t';
 my $abi = "$Config{version}:$Config{archname}";
 
 sub search_path {
@@ -69,12 +71,16 @@ $ENV{PERL5LIB} = $build_path;
 if ($driver eq 'make-maker') {
     run($^X, 'Makefile.PL', "INSTALL_BASE=$out", 'CC=cc', 'LD=cc');
     run('make', "-j$jobs");
-    run('make', 'test') if $checks eq 'true';
+    if ($checks eq 'true' && (!@skip || @tests)) {
+        run('make', 'test', @skip ? ("TEST_FILES=@tests") : ());
+    }
     run('make', 'install');
 } else {
     run($^X, 'Build.PL', '--install_base', $out, '--config', 'cc=cc', '--config', 'ld=cc');
     run($^X, 'Build', 'build');
-    run($^X, 'Build', 'test') if $checks eq 'true';
+    if ($checks eq 'true' && (!@skip || @tests)) {
+        run($^X, 'Build', 'test', map { ('--test_files', $_) } (@skip ? @tests : ()));
+    }
     run($^X, 'Build', 'install');
 }
 

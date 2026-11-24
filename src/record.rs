@@ -949,10 +949,22 @@ fn parse_version(
                 | BuildOptions::Cmake { .. }
                 | BuildOptions::Meson { .. }
                 | BuildOptions::Cargo { .. }
+                | BuildOptions::Perl { .. }
         ) {
             errors.push("check.skip: unsupported for this build kind".to_owned());
         }
         for name in &check_skip {
+            if matches!(build, BuildOptions::Perl { .. })
+                && (!name.ends_with(".t")
+                    || !name.split('/').all(|part| {
+                        !matches!(part, "" | "." | "..")
+                            && part
+                                .bytes()
+                                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+                    }))
+            {
+                errors.push(format!("check.skip: invalid Perl test path {name:?}"));
+            }
             if name.trim().is_empty() || name.chars().any(char::is_control) {
                 errors.push(
                     "check.skip: expected a nonempty test name without control characters"

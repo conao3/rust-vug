@@ -1269,6 +1269,18 @@ fn main() {
         let _ = e.print();
         std::process::exit(if success { 0 } else { version::usage_status() });
     });
+    if matches!(
+        &cli.command,
+        Commands::Package {
+            command: PackageCommands::BuildPackage(_),
+        } | Commands::System {
+            command: SystemCommands::BuildSystem(_)
+                | SystemCommands::BuildImage(_)
+                | SystemCommands::ExportSystem(_),
+        }
+    ) {
+        unsafe { libc::umask(0o022) };
+    }
     match run(cli) {
         Ok(code) => std::process::exit(code),
         Err((code, error)) => {

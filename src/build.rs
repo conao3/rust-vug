@@ -1385,19 +1385,24 @@ impl<'a> Builder<'a> {
                         .collect::<Vec<_>>()
                         .join(":")
                 };
-                vec![vec![
-                    format!("{perl}/bin/perl"),
-                    "-e".to_owned(),
-                    include_str!("build/perl.pl").to_owned(),
-                    "--".to_owned(),
-                    prefix.clone(),
-                    driver.name().to_owned(),
-                    paths(dep_ids.iter().cloned().collect()),
-                    paths(runtime),
-                    settings.jobs.to_string(),
-                    record.check_enabled.to_string(),
-                    modules.join(","),
-                ]]
+                vec![
+                    vec![
+                        format!("{perl}/bin/perl"),
+                        "-e".to_owned(),
+                        include_str!("build/perl.pl").to_owned(),
+                        "--".to_owned(),
+                        prefix.clone(),
+                        driver.name().to_owned(),
+                        paths(dep_ids.iter().cloned().collect()),
+                        paths(runtime),
+                        settings.jobs.to_string(),
+                        record.check_enabled.to_string(),
+                        modules.join(","),
+                    ]
+                    .into_iter()
+                    .chain(record.check_skip.iter().cloned())
+                    .collect(),
+                ]
             }
             BuildOptions::Python {
                 imports,
@@ -1493,7 +1498,14 @@ impl<'a> Builder<'a> {
             dest: dest.to_owned(),
             writable,
         };
+        let hosts = work.join("hosts");
+        io(
+            "write",
+            &hosts,
+            fs::write(&hosts, "127.0.0.1 localhost\n::1 localhost\n"),
+        )?;
         let mut binds = vec![
+            bind(&hosts, "/etc/hosts", false),
             bind(&seed_dir, "/seed", false),
             bind(&root_bin, "/bin", false),
             bind(&root_bin, "/usr/bin", false),
