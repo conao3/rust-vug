@@ -59,10 +59,11 @@ $ vug package build-package --root . --name hello --jobs 4
 }
 ```
 
-`build-package` builds a package and its dependencies in a sandbox that holds
-only the seed tools named in `seed.toml`, and moves the output to its store
-path (`docs/build.md`). The flake package puts `bwrap` (bubblewrap) on its `PATH`; a `vug` built
-with `cargo` needs `bwrap` on `PATH`.
+`build-package` builds a package with the seed tools and its declared
+dependencies, then moves its output to the content-addressed store. The build
+sandbox uses a fixed user, group, hostname, locale, and source date epoch.
+The flake package adds bubblewrap to `PATH`. A build made with Cargo needs
+`bwrap` on `PATH`. See [the build documentation](docs/build.md).
 
 ```console
 $ vug package run-package --root . --name slang --program bin/slsh --arguments --version

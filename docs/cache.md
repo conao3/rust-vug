@@ -11,7 +11,8 @@ outputs instead of building them.
 | `output-keys/<key>` | For a split build, a line of canonical JSON containing `format` (currently 1), `key`, and `outputs`. Each output name maps to an `id` and a sorted `run` list of direct runtime dependency IDs. When signed, the second line contains the hex Ed25519 signature of the JSON bytes excluding the newline. |
 | `paths/<id>.cpio.zst` | The contents of `/vug/store/<id>` as a cpio archive in the "newc" format, compressed with zstd. |
 
-The key is the build key from the corresponding local index. See
+The key is the build key from the corresponding local index. It includes
+the content digests of the patches used by the build. See
 [Building packages](build.md).
 
 ```console

@@ -38,6 +38,7 @@ fn builds_with_verified_bytes_and_rejects_missing_or_corrupt_sources_before_sand
     ] {
         seed_hash.update(wrapper.as_bytes());
     }
+    seed_hash.update(b"seed-layout=2");
     let seed_id =
         treehash::encode_base32(seed_hash.finalize().as_bytes()[..20].try_into().unwrap());
     fs::create_dir_all(data.join("seed").join(seed_id).join("bin")).unwrap();

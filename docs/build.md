@@ -86,14 +86,17 @@ url = "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
 sha256 = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
 ```
 
-The seed is assembled once per content of `seed.toml` and bound read-only at
+The seed is assembled once per seed configuration and tool layout and bound read-only at
 `/seed`:
 
 - `bin/busybox` and one link per busybox applet (`sh`, `tar`, `sed`, ...).
 - `zig/`, the unpacked zig distribution.
+- `bin/gcc` and `bin/g++` point to `cc` and `c++`.
+- `bin/head` accepts `--bytes` as an alias for `-c`. `bin/diff --version`
+  reports the BusyBox version.
 - `bin/cc` and `bin/c++` run `zig cc` and `zig c++` for
   `x86_64-linux-musl`. They turn the spellings that packages use into what
-  zig accepts:
+  zig accepts. The C driver links an unwinder for hosted links.
   - `--target=...` and `-mtune=generic` are dropped.
   - `-isystem <dir>` becomes `-I<dir>`: zig searches its own C library and
     kernel headers before every `-isystem` directory, so a package could not
@@ -228,7 +231,9 @@ lists their `bin` directories before `/bin`.
 
 The dependencies of a build are first only resolved to ids. Their files are
 put into the store (from a binary cache, `docs/cache.md`, or by building)
-when the build runs, and the seed is fetched and assembled then.
+when the build runs, and the seed is fetched and assembled then. The sandbox
+uses hostname `vug`, UID 1000, GID 100, a matching passwd and group entry,
+the C locale, and UTC.
 
 A single-output build is recorded in `index/<name>/<version>` as
 `<key> <id>`. When the key matches and the requested output is available,
@@ -237,6 +242,8 @@ the builder returns the recorded ID.
 A record with neither output tables nor an explicit output selector uses the
 BLAKE3 hash of the concatenated canonical record, seed ID, build rules
 revision, and sorted IDs of the dependencies visible in the build root.
+The record input to either key format includes the SHA-256 of each patch in
+application order.
 
 Output declarations and explicit selectors select a versioned key format.
 It uses the BLAKE3 derive-key context `vug build key for selected outputs v1`.

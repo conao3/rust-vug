@@ -117,6 +117,7 @@ fn rpath_in_every_spelling() {
         arguments.extend(&given);
         let mut wanted = vec!["a.c", "-o", "a"];
         wanted.extend(&expected);
+        wanted.push("-lunwind");
         assert_eq!(translated(&arguments), wanted, "{given:?}");
     }
 }
@@ -130,15 +131,15 @@ fn linker_words_that_zig_rejects() {
             "a",
             "-Wl,-stats,-lc,-shared,-Map,a.map,-h,x.so.1"
         ]),
-        ["a.c", "-o", "a", "-Wl,-soname,x.so.1"]
+        ["a.c", "-o", "a", "-Wl,-soname,x.so.1", "-lunwind"]
     );
     assert_eq!(
         translated(&["a.c", "-o", "a", "-Wl,--allow-multiple-definition"]),
-        ["a.c", "-o", "a"]
+        ["a.c", "-o", "a", "-lunwind"]
     );
     assert_eq!(
         translated(&["a.c", "-shared", "-Wl,--default-symver,-soname,liba.so.1"]),
-        ["a.c", "-shared", "-Wl,-soname,liba.so.1"]
+        ["a.c", "-shared", "-Wl,-soname,liba.so.1", "-lunwind"]
     );
 }
 
@@ -364,7 +365,7 @@ fn shared_cxx_runtime_replaces_the_static_one() {
     );
     assert_eq!(
         cxx("cc", "c", Some("/r"), &["a.o", "-o", "a"]),
-        ["a.o", "-o", "a"]
+        ["a.o", "-o", "a", "-lunwind"]
     );
 }
 

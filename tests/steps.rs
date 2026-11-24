@@ -337,6 +337,10 @@ fn bwrap_full() {
         bwrap_args(&sandbox),
         owned(&[
             "--unshare-all",
+            "--uid",
+            "1000",
+            "--gid",
+            "100",
             "--hostname",
             "vug",
             "--die-with-parent",
@@ -382,6 +386,10 @@ fn bwrap_minimal() {
         bwrap_args(&sandbox),
         owned(&[
             "--unshare-all",
+            "--uid",
+            "1000",
+            "--gid",
+            "100",
             "--hostname",
             "vug",
             "--die-with-parent",
@@ -513,7 +521,7 @@ fn meson_kind() {
                 "-Dtests=disabled"
             ]),
             step(&["meson", "compile", "-C", "build", "-j", "3"]),
-            step(&["meson", "test", "-C", "build", "--no-rebuild"]),
+            step(&["meson", "test", "-C", "build"]),
             step(&["mkdir", "-p", "/build/dest"]),
             step(&[
                 "meson",
@@ -535,7 +543,7 @@ fn meson_skip_passes_names_to_the_selector() {
     let steps = vug::steps::meson_steps("/out", &[], true, &owned(&["suite case"]), 3);
     assert_eq!(
         &steps[2][3..],
-        step(&["meson", "test", "-C", "build", "--no-rebuild", "suite case"])
+        step(&["meson", "test", "-C", "build", "suite case"])
     );
 }
 

@@ -123,6 +123,7 @@ pub(crate) enum BuildOptions {
         install_flags: Vec<String>,
         build_targets: Vec<String>,
         install_targets: Vec<String>,
+        install_dirs: Vec<String>,
     },
     Cmake {
         path: String,
@@ -138,6 +139,7 @@ pub(crate) enum BuildOptions {
     },
     Go {
         targets: Vec<(String, String)>,
+        ldflags: Vec<String>,
     },
     Perl {
         driver: PerlDriver,
@@ -563,6 +565,7 @@ fn parse_version(
                         "install-flags",
                         "build-targets",
                         "install-targets",
+                        "install-dirs",
                     ],
                     "build.",
                     &mut errors,
@@ -570,11 +573,16 @@ fn parse_version(
                 let list = |key: &str, errors: &mut Errors| {
                     opt_string_array(build_table, key, "build.", errors).unwrap_or_default()
                 };
+                let install_dirs = list("install-dirs", &mut errors);
+                for dir in &install_dirs {
+                    check_install_path("build.install-dirs", dir, &mut errors);
+                }
                 build = BuildOptions::Make {
                     make_flags: list("make-flags", &mut errors),
                     install_flags: list("install-flags", &mut errors),
                     build_targets: list("build-targets", &mut errors),
                     install_targets: list("install-targets", &mut errors),
+                    install_dirs,
                 };
             }
             "cmake" => {
@@ -738,7 +746,12 @@ fn parse_version(
                 };
             }
             "go" => {
-                unknown_keys(build_table, &["kind", "targets"], "build.", &mut errors);
+                unknown_keys(
+                    build_table,
+                    &["kind", "targets", "ldflags"],
+                    "build.",
+                    &mut errors,
+                );
                 let mut targets = Vec::new();
                 let mut bins = std::collections::BTreeSet::new();
                 if let Some(items) = build_table.get("targets").and_then(toml::Value::as_array) {
@@ -789,7 +802,9 @@ fn parse_version(
                 if targets.is_empty() {
                     errors.push("build.targets: expected at least one Go main package".to_owned());
                 }
-                build = BuildOptions::Go { targets };
+                let ldflags = opt_string_array(build_table, "ldflags", "build.", &mut errors)
+                    .unwrap_or_default();
+                build = BuildOptions::Go { targets, ldflags };
             }
             "perl" => {
                 unknown_keys(
@@ -1318,6 +1333,7 @@ fn canonical_version(record: &VersionRecord) -> String {
             install_flags,
             build_targets,
             install_targets,
+            install_dirs,
         } => {
             write_string_field(&mut out, "kind", "make");
             if !make_flags.is_empty() {
@@ -1331,6 +1347,9 @@ fn canonical_version(record: &VersionRecord) -> String {
             }
             if !install_targets.is_empty() {
                 write_array(&mut out, "install-targets", install_targets);
+            }
+            if !install_dirs.is_empty() {
+                write_array(&mut out, "install-dirs", install_dirs);
             }
         }
         BuildOptions::Cmake { path, setup_flags } => {
@@ -1400,7 +1419,7 @@ fn canonical_version(record: &VersionRecord) -> String {
                 write_array(&mut out, "musl-executables", musl_executables);
             }
         }
-        BuildOptions::Go { targets } => {
+        BuildOptions::Go { targets, ldflags } => {
             write_string_field(&mut out, "kind", "go");
             out.push_str("targets = [\n");
             for (path, bin) in targets {
@@ -1411,6 +1430,9 @@ fn canonical_version(record: &VersionRecord) -> String {
                 out.push_str(" },\n");
             }
             out.push_str("]\n");
+            if !ldflags.is_empty() {
+                write_array(&mut out, "ldflags", ldflags);
+            }
         }
         BuildOptions::Perl { driver, modules } => {
             write_string_field(&mut out, "kind", "perl");

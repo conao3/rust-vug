@@ -31,7 +31,7 @@ const SOURCE_DATE_EPOCH: &str = "315532800";
 /// Part of every index key. Increase it whenever the steps, flags, or
 /// environment that a build receives change, so that outputs recorded under
 /// the previous rules are built again.
-const BUILD_RULES: &str = "9";
+const BUILD_RULES: &str = "10";
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 struct OutputBinding<'a> {
@@ -156,9 +156,37 @@ fn run_sandbox(sandbox: &Sandbox) -> Result<(), String> {
         .as_fd()
         .try_clone_to_owned()
         .map_err(|e| format!("stderr: {e}"))?;
+    let identity = tempfile::tempdir().map_err(|e| format!("sandbox identity: {e}"))?;
+    let passwd = identity.path().join("passwd");
+    let group = identity.path().join("group");
+    io(
+        "write",
+        &passwd,
+        fs::write(
+            &passwd,
+            "root:x:0:0:root:/root:/bin/sh\nvug:x:1000:100:vug:/build:/bin/sh\n",
+        ),
+    )?;
+    io(
+        "write",
+        &group,
+        fs::write(&group, "root:x:0:\nvug:x:100:\n"),
+    )?;
+    let mut args = steps::bwrap_args(sandbox);
+    args.splice(
+        1..1,
+        [
+            "--ro-bind".to_owned(),
+            passwd.to_string_lossy().into_owned(),
+            "/etc/passwd".to_owned(),
+            "--ro-bind".to_owned(),
+            group.to_string_lossy().into_owned(),
+            "/etc/group".to_owned(),
+        ],
+    );
     let mut command = Command::new("bwrap");
     command
-        .args(steps::bwrap_args(sandbox))
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stderr));
     // A build must not see which signals the caller of vug ignores (`nohup`
@@ -185,6 +213,10 @@ fn build_env(path: String, extra: &[(&str, String)]) -> Vec<(String, String)> {
     [
         ("PATH", path.as_str()),
         ("HOME", "/build"),
+        ("USER", "vug"),
+        ("LOGNAME", "vug"),
+        ("LC_ALL", "C"),
+        ("TZ", "UTC"),
         ("SOURCE_DATE_EPOCH", SOURCE_DATE_EPOCH),
         ("build_alias", "x86_64-unknown-linux-musl"),
         ("ZIG_GLOBAL_CACHE_DIR", "/tmp/zig-global"),
@@ -288,6 +320,7 @@ fn read_seed(settings: &Settings) -> Result<(toml::Table, String), String> {
     hasher.update(COMPILER_WRAPPER.as_bytes());
     hasher.update(TOOL_WRAPPER.as_bytes());
     hasher.update(CPP_WRAPPER.as_bytes());
+    hasher.update(b"seed-layout=2");
     let hash: [u8; 20] = hasher.finalize().as_bytes()[..20]
         .try_into()
         .map_err(|_| "seed hash".to_owned())?;
@@ -349,6 +382,44 @@ fn ensure_seed(settings: &Settings, table: &toml::Table, id: &str) -> Result<Pat
         }
     }
 
+    for (name, script) in [
+        (
+            "head",
+            r#"#!/bin/sh
+for arg; do
+  shift
+  if [ "${operands:-0}" = 1 ]; then
+    set -- "$@" "$arg"
+    continue
+  fi
+  case "$arg" in
+    --bytes=*) set -- "$@" -c "${arg#--bytes=}" ;;
+    --bytes) set -- "$@" -c ;;
+    --) operands=1; set -- "$@" "$arg" ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+exec /seed/bin/busybox head "$@"
+"#,
+        ),
+        (
+            "diff",
+            r#"#!/bin/sh
+if [ "$#" = 1 ] && [ "$1" = --version ]; then
+  /seed/bin/busybox | /seed/bin/busybox head -n 1
+  exit
+fi
+exec /seed/bin/busybox diff "$@"
+"#,
+        ),
+    ] {
+        let path = bin.join(name);
+        if path.symlink_metadata().is_ok() {
+            io("remove", &path, fs::remove_file(&path))?;
+        }
+        write_executable(&path, script)?;
+    }
+
     for tool in ["cc", "c++"] {
         write_executable(
             &bin.join(tool),
@@ -367,6 +438,9 @@ fn ensure_seed(settings: &Settings, table: &toml::Table, id: &str) -> Result<Pat
     write_executable(&cpp, CPP_WRAPPER)?;
     let gcc = bin.join("gcc");
     io("symlink", &gcc, std::os::unix::fs::symlink("cc", &gcc))?;
+
+    let gxx = bin.join("g++");
+    io("symlink", &gxx, std::os::unix::fs::symlink("c++", &gxx))?;
 
     run_sandbox(&Sandbox {
         binds: vec![
@@ -968,7 +1042,13 @@ impl<'a> Builder<'a> {
             }
             _ => &canonical,
         };
-        let key = build_key(key_record, &self.seed_id, &dep_ids, bindings.as_ref());
+        let mut key_record = key_record.to_owned();
+        for patch in &record.patches {
+            let path = package_dir.join("patches").join(patch);
+            let digest = io("hash patch", &path, fetch::sha256_file(&path))?;
+            key_record.push_str(&format!("\npatch-sha256={digest}"));
+        }
+        let key = build_key(&key_record, &self.seed_id, &dep_ids, bindings.as_ref());
 
         let store_dir = settings.data_dir.join("store");
         let index_dir = if split { "index-outputs" } else { "index" };
@@ -1356,14 +1436,23 @@ impl<'a> Builder<'a> {
                 install_flags,
                 build_targets,
                 install_targets,
-            } => steps::make_steps(
-                &expand(make_flags)?,
-                &expand(install_flags)?,
-                build_targets,
-                install_targets,
-                check_target,
-                settings.jobs,
-            ),
+                install_dirs,
+            } => {
+                let mut steps = steps::make_steps(
+                    &expand(make_flags)?,
+                    &expand(install_flags)?,
+                    build_targets,
+                    install_targets,
+                    check_target,
+                    settings.jobs,
+                );
+                if !install_dirs.is_empty() {
+                    let mut mkdir = vec!["mkdir".to_owned(), "-p".to_owned()];
+                    mkdir.extend(install_dirs.iter().map(|dir| format!("{prefix}/{dir}")));
+                    steps.insert(steps.len() - 1, mkdir);
+                }
+                steps
+            }
             BuildOptions::Cmake { path, setup_flags } => steps::cmake_steps(
                 &prefix,
                 path,
@@ -1650,7 +1739,7 @@ impl<'a> Builder<'a> {
                 workdir: "/build/src".to_owned(),
                 command: ["sh", "/build/build.sh"].map(str::to_owned).to_vec(),
             })?;
-        } else if let BuildOptions::Go { targets } = &record.build {
+        } else if let BuildOptions::Go { targets, ldflags } = &record.build {
             let go = direct
                 .get("go")
                 .filter(|_| record.deps_build.iter().any(|dep| dep == "go"))
@@ -1680,6 +1769,7 @@ impl<'a> Builder<'a> {
                         &prefix,
                         &goroot,
                         targets,
+                        ldflags,
                         vendor,
                         record.check_enabled,
                         settings.jobs,

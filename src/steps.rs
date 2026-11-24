@@ -103,6 +103,7 @@ pub fn go_steps(
     prefix: &str,
     goroot: &str,
     targets: &[(String, String)],
+    ldflags: &[String],
     vendor: bool,
     check: bool,
     jobs: u32,
@@ -130,6 +131,9 @@ pub fn go_steps(
     };
     for (path, bin) in targets {
         let mut step = go("build");
+        if !ldflags.is_empty() {
+            step.extend(["-ldflags".to_owned(), ldflags.join(" ")]);
+        }
         let output = format!("{prefix}/bin/{bin}");
         step.extend(["-o".to_owned(), output.clone(), path.clone()]);
         steps.push(step);
@@ -436,7 +440,7 @@ pub fn cargo_steps(
 /// 1. `["meson", "setup", "build", "--prefix=<prefix>", "--libdir=lib",
 ///    "--buildtype=release", <setup_flags>...]`
 /// 2. `["meson", "compile", "-C", "build", "-j", "<jobs>"]`
-/// 3. only when `check`: `["meson", "test", "-C", "build", "--no-rebuild"]`
+/// 3. only when `check`: `["meson", "test", "-C", "build"]`
 /// 4. `["meson", "install", "-C", "build", "--no-rebuild", "--destdir",
 ///    "/build/dest"]`
 /// 5. Copy the staged prefix to the output and the remaining files to
@@ -459,7 +463,7 @@ pub fn meson_steps(
     compile.push(jobs.to_string());
     steps.push(compile);
     if check {
-        let mut test = words(&["meson", "test", "-C", "build", "--no-rebuild"]);
+        let mut test = words(&["meson", "test", "-C", "build"]);
         if !check_skip.is_empty() {
             test.splice(..0, words(&["python3", "-c", MESON_CHECK]));
             test.extend(check_skip.iter().cloned());
@@ -485,7 +489,7 @@ import json
 import subprocess
 import sys
 
-command, skip = sys.argv[1:6], set(sys.argv[6:])
+command, skip = sys.argv[1:5], set(sys.argv[5:])
 tests = json.loads(subprocess.check_output(["meson", "introspect", "--tests", "build"]))
 names = {test["name"] for test in tests}
 missing = skip - names
@@ -706,7 +710,7 @@ pub fn shell_quote(word: &str) -> String {
 ///
 /// In this order:
 ///
-/// 1. `--unshare-all`, `--die-with-parent`, `--clearenv`
+/// 1. `--unshare-all`, fixed uid and gid, `--hostname`, `--die-with-parent`, `--clearenv`
 /// 2. `--proc`, `/proc`, `--dev`, `/dev`, `--tmpfs`, `/tmp`
 /// 3. for each bind in order: `--bind` (writable) or `--ro-bind`, source, dest
 /// 4. for each env pair in order: `--setenv`, name, value
@@ -717,6 +721,10 @@ pub fn shell_quote(word: &str) -> String {
 pub fn bwrap_args(sandbox: &Sandbox) -> Vec<String> {
     let mut args = vec![
         "--unshare-all".to_string(),
+        "--uid".to_string(),
+        "1000".to_string(),
+        "--gid".to_string(),
+        "100".to_string(),
         "--hostname".to_string(),
         "vug".to_string(),
         "--die-with-parent".to_string(),

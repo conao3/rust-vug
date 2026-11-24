@@ -127,10 +127,12 @@ for a; do
     -shared) shared=1; set -- "$@" "$a" ;;
     -v) verbose=1; set -- "$@" "$a" ;;
     -T) linker_script=1; set -- "$@" "$a" ;;
+    -nodefaultlibs | -r | -ffreestanding) no_unwind=1; set -- "$@" "$a" ;;
     -nostdlib) nostdlib=1; set -- "$@" "$a" ;;
     -nostdlib++) nostdlibcxx=1; set -- "$@" "$a" ;;
     -nostdinc++) nostdinccxx=1; set -- "$@" "$a" ;;
     -lc++ | -lstdc++ | -lc++abi | -lunwind)
+      if [ "$a" = -lunwind ]; then no_unwind=1; fi
       if [ -n "${VUG_LIBCXX-}" ]; then cxx_libs=1; else set -- "$@" "$a"; fi
       ;;
     -fsyntax-only) link=0 ;;
@@ -279,6 +281,10 @@ if [ "$link" = 1 ]; then
     set -- "$@" "-Wl,$retain_option,$retain_script"
   fi
   set -- "$@" ${VUG_LDFLAGS-}
+  if [ "{lang}" = c ] && [ "${nostdlib:-0}${no_unwind:-0}${cxx_libs:-0}" = 000 ] &&
+     [ "${objects_given:-0}${stdin:-0}" != 00 ]; then
+    set -- "$@" -lunwind
+  fi
   if [ "${verbose:-0}" = 1 ]; then
     diagnostics=$(mktemp) || exit
     /seed/zig/zig {tool} -target x86_64-linux-musl -fno-sanitize=undefined -UNDEBUG "$@" 2>"$diagnostics"

@@ -230,6 +230,7 @@ make-flags = [
 | `build.install-flags` | array of strings, order kept | empty |
 | `build.build-targets` | array of strings, order kept: targets of the first `make` | empty (the default target) |
 | `build.install-targets` | array of strings, order kept: targets of the last `make` | `install` |
+| `build.install-dirs` | relative directories to create under the output prefix before installation | empty |
 
 ### Build kind `cargo`
 
@@ -254,6 +255,9 @@ linker is `cc`, and programs link against the C library of the build
 | `build.flags` | array of strings, order kept | empty |
 
 ### Build kind `go`
+
+Optional `build.ldflags` strings are joined with spaces and passed as one
+`go build -ldflags` value.
 
 Use `dependencies.build = ["go"]` and declare the main packages and installed executable names.
 
@@ -400,7 +404,8 @@ store paths of the dependencies the record lists.
 Set `build.path` to the relative source directory containing the build definition. It defaults to `"."`.
 
 Runs `meson setup build --prefix=<output> --libdir=lib --buildtype=release
-<setup-flags>`, `meson compile`, `meson test` (when `check.enabled`), and
+<setup-flags>`, `meson compile`, `meson test` (when `check.enabled`, including the rebuild
+of targets needed by the selected tests), and
 `meson install`. The record needs `meson`, `python`, and a ninja
 implementation (`samurai`) among its build dependencies.
 
