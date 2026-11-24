@@ -245,6 +245,9 @@ struct BuildArgs {
     /// Directory for fetched sources (default: $XDG_CACHE_HOME/vug).
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+    /// Read SHA-256 verified sources and patches exclusively from this directory.
+    #[arg(long)]
+    source_cache_dir: Option<PathBuf>,
     /// Parallel build jobs.
     #[arg(long, default_value_t = 1)]
     jobs: u32,
@@ -293,6 +296,8 @@ struct ProvenanceArgs {
     input: String,
     #[arg(long, help = "Trusted JSON provenance policy (or file://PATH)")]
     policy: String,
+    #[arg(long, help = "Write verified sources and patches by SHA-256")]
+    source_cache_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -671,7 +676,13 @@ fn run_verify_provenance(cli: &Cli, args: &ProvenanceArgs) -> Result<i32, (i32, 
     let input_failure = |e| (version::failure_status(), e);
     let input = resolve(&args.input).map_err(input_failure)?;
     let policy = resolve(&args.policy).map_err(input_failure)?;
-    let report = provenance::verify(&args.root, &input, &policy).map_err(input_failure)?;
+    let report = provenance::verify(
+        &args.root,
+        &input,
+        &policy,
+        args.source_cache_dir.as_deref(),
+    )
+    .map_err(input_failure)?;
     match cli.output {
         Output::Json => print_json(
             &serde_json::to_value(report).map_err(|e| (version::other_status(), e.to_string()))?,
@@ -950,6 +961,7 @@ fn run_list_cache(cli: &Cli, args: &CacheInventoryArgs) -> Result<i32, (i32, Str
         root: args.root.clone(),
         data_dir: PathBuf::new(),
         cache_dir: PathBuf::new(),
+        source_cache_dir: None,
         jobs: 1,
         binary_cache: Some(args.binary_cache.clone()),
         trusted_key: Some(args.trusted_key.clone()),
@@ -1031,11 +1043,22 @@ fn settings_of(cli: &Cli, args: &BuildArgs) -> Result<build::Settings, (i32, Str
         );
     }
     let absolute = |dir: &Path| std::path::absolute(dir).map_err(|e| fail(e.to_string()));
-    let (binary_cache, trusted_key) = cache_source(&args.cache)?;
+    let source_cache_dir = args.source_cache_dir.as_deref().map(absolute).transpose()?;
+    let (binary_cache, trusted_key) = if source_cache_dir.is_some() {
+        if args.cache.binary_cache.is_some() || args.cache.trusted_key.is_some() {
+            return Err(fail(
+                "--source-cache-dir cannot be combined with a binary cache".into(),
+            ));
+        }
+        (None, None)
+    } else {
+        cache_source(&args.cache)?
+    };
     Ok(build::Settings {
         root: absolute(&args.root)?,
         data_dir: absolute(&data_dir)?,
         cache_dir: absolute(&cache_dir)?,
+        source_cache_dir,
         jobs: args.jobs,
         binary_cache,
         trusted_key,
@@ -1064,6 +1087,7 @@ fn run_build_home(cli: &Cli, args: &BuildHomeArgs) -> Result<i32, (i32, String)>
         root: args.home.root.clone(),
         data_dir,
         cache_dir: PathBuf::new(),
+        source_cache_dir: None,
         jobs: 1,
         binary_cache,
         trusted_key,

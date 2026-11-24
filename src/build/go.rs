@@ -177,6 +177,7 @@ pub(super) fn prepare(
     targets: &[(String, String)],
     check: bool,
     jobs: u32,
+    offline: bool,
 ) -> Result<bool, String> {
     let source = build_dir.join("src");
     let manifest_path = source.join("go.mod");
@@ -191,7 +192,12 @@ pub(super) fn prepare(
     let sum_path = source.join("go.sum");
     let sum = read_sum(&sum_path)?;
     let modules = modules(&sum)?;
-    populate_proxy(&build_dir.join("go-proxy"), &modules)?;
+    if offline && !modules.is_empty() {
+        return Err("offline sources: Go module dependencies must be vendored".into());
+    }
+    if !offline {
+        populate_proxy(&build_dir.join("go-proxy"), &modules)?;
+    }
     let go = steps::go_command(goroot, jobs, "file:///build/go-proxy");
     let mut script = Vec::new();
     let archives: Vec<_> = modules

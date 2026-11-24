@@ -3,7 +3,11 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 use std::{collections::BTreeMap, fs, path::Path};
 
-pub(super) fn fetch_locked(build_dir: &Path, cache: &Path) -> Result<Vec<String>, String> {
+pub(super) fn fetch_locked(
+    build_dir: &Path,
+    cache: &Path,
+    offline: bool,
+) -> Result<Vec<String>, String> {
     let lock_path = build_dir.join("src/package-lock.json");
     if !fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.is_file()) {
         return Err("package-lock.json: expected a regular file".to_owned());
@@ -62,6 +66,11 @@ pub(super) fn fetch_locked(build_dir: &Path, cache: &Path) -> Result<Vec<String>
         locked.entry(digest).or_insert(url);
     }
 
+    if offline && !locked.is_empty() {
+        return Err(
+            "offline sources: npm registry tarballs were not verified by provenance".into(),
+        );
+    }
     let dir = build_dir.join("npm-tarballs");
     fs::create_dir_all(&dir).map_err(|e| format!("npm tarballs: {e}"))?;
     let mut archives = Vec::new();

@@ -307,6 +307,7 @@ $ vug package build-package --root . --name hello
 | `--package-version VERSION` | Version to build. Default: the greatest version record. |
 | `--data-dir DIR` | Holds `store/`, `index/`, `index-outputs/`, and `seed/`. Default: `/vug` when `/vug/store` exists, else `$XDG_DATA_HOME/vug`, or `~/.local/share/vug`. |
 | `--cache-dir DIR` | Holds `sources/`. Default: `/var/cache/vug` when `/vug/store` exists, else `$XDG_CACHE_HOME/vug`, or `~/.cache/vug`. |
+| `--source-cache-dir DIR` | Read build inputs exclusively from SHA-256-named files in DIR. |
 | `--jobs N` | Parallel jobs for `make`. Default: 1. |
 | `--binary-cache URL` | A binary cache to take outputs from (`docs/cache.md`). |
 
@@ -334,3 +335,10 @@ A build sees its dependencies bound to their `/vug/store/<id>` paths, and
 `run-package` sees the whole store at `/vug/store`. On a machine that runs a
 system, `/vug/store` is a directory of the root file system
 (`docs/system.md`).
+
+
+### Verified source directory
+
+Pass `--source-cache-dir DIR` to `vug package build-package` to use a prepared source directory. Before resolving builds, vug checks the SHA-256 of the seed inputs, the archives for the requested package and its recursive dependencies, and the blobs matching their patch files. A missing or corrupt file stops the command. The offline build reads archives and patch bytes from this directory. Keep it read-only for the duration of the build. This option disables binary cache access and bypasses the ordinary download cache.
+
+Cargo registry crates must also exist in DIR under their lockfile SHA-256. Vendored Go modules can come from the verified source archive. A Go build that needs the public module proxy fails in this mode. Node builds fail when the lockfile needs registry tarballs. Python and Perl use dependency packages resolved from the same source directory. Unavailable language dependencies fail during build preparation without a network fetch. Build and test commands continue to run in the network-isolated sandbox.

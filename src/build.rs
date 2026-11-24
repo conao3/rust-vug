@@ -92,6 +92,7 @@ pub struct Settings {
     pub data_dir: PathBuf,
     /// Directory holding `sources/`.
     pub cache_dir: PathBuf,
+    pub source_cache_dir: Option<PathBuf>,
     pub jobs: u32,
     /// Base URL of a binary cache (`docs/cache.md`).
     pub binary_cache: Option<String>,
@@ -117,7 +118,25 @@ fn io<T>(what: &str, path: &Path, result: std::io::Result<T>) -> Result<T, Strin
     result.map_err(|e| format!("{what} {}: {e}", path.display()))
 }
 
+fn verified_source(cache: &Path, sha256: &str) -> Result<PathBuf, String> {
+    if !crate::merge::is_hex(sha256, 64) {
+        return Err("expected a lowercase SHA-256 source digest".into());
+    }
+    let path = cache.join(sha256);
+    let actual = io("verify offline source", &path, fetch::sha256_file(&path))?;
+    if actual != sha256 {
+        return Err(format!(
+            "offline source {}: expected {sha256}, got {actual}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 fn fetch_source(settings: &Settings, url: &str, sha256: &str) -> Result<PathBuf, String> {
+    if let Some(cache) = &settings.source_cache_dir {
+        return verified_source(cache, sha256);
+    }
     fetch::fetch(url, sha256, &settings.cache_dir.join("sources")).map_err(|e| match e {
         fetch::FetchError::Http(message) => format!("fetch {url}: {message}"),
         fetch::FetchError::HashMismatch { expected, actual } => {
@@ -125,6 +144,11 @@ fn fetch_source(settings: &Settings, url: &str, sha256: &str) -> Result<PathBuf,
         }
         fetch::FetchError::Io(e) => format!("fetch {url}: {e}"),
     })
+}
+
+fn offline_patch(cache: &Path, patch: &Path) -> Result<PathBuf, String> {
+    let digest = io("hash patch", patch, fetch::sha256_file(patch))?;
+    verified_source(cache, &digest)
 }
 
 fn run_sandbox(sandbox: &Sandbox) -> Result<(), String> {
@@ -639,7 +663,55 @@ impl<'a> Builder<'a> {
         if !model::valid_name(package) || !model::valid_name(output) {
             return Err(format!("{name:?}: not a valid package or output selector"));
         }
+        if let Some(cache) = &self.settings.source_cache_dir {
+            for tool in ["busybox", "zig"] {
+                verified_source(cache, &seed_field(&self.seed, tool, "sha256")?)?;
+            }
+            self.preflight_sources(cache, package, requested, &mut BTreeSet::new())?;
+        }
         self.resolve(name, requested, Need::Runtime)
+    }
+
+    fn preflight_sources(
+        &self,
+        cache: &Path,
+        name: &str,
+        requested: Option<&str>,
+        visited: &mut BTreeSet<(String, String)>,
+    ) -> Result<(), String> {
+        let directory = self.settings.root.join(model::package_dir(name));
+        let version = match requested {
+            Some(version) if model::valid_version(version) => version.to_owned(),
+            Some(version) => return Err(format!("{version:?}: not a valid version")),
+            None => record::current_version(&directory.join("versions"))?,
+        };
+        if !visited.insert((name.into(), version.clone())) {
+            return Ok(());
+        }
+        let file = self.settings.root.join(model::version_path(name, &version));
+        let (record, _) = record::load_version(&file).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        verified_source(cache, &record.sha256)?;
+        for patch in &record.patches {
+            offline_patch(cache, &directory.join("patches").join(patch))?;
+        }
+        for (_, dependency) in record
+            .dependencies()
+            .filter(|(_, dep)| !dep.starts_with(':'))
+        {
+            self.preflight_sources(
+                cache,
+                record::dependency_output(dependency).0,
+                None,
+                visited,
+            )?;
+        }
+        Ok(())
     }
 
     /// Resolves the selector, materializing its runtime closure or its
@@ -1432,7 +1504,20 @@ impl<'a> Builder<'a> {
             binds.push(bind(archive, destination, false));
         }
         if !record.patches.is_empty() {
-            binds.push(bind(&package_dir.join("patches"), "/patches", false));
+            let original = package_dir.join("patches");
+            let directory = if let Some(cache) = &settings.source_cache_dir {
+                let directory = work.join("patches");
+                io("create", &directory, fs::create_dir(&directory))?;
+                for patch in &record.patches {
+                    let source = offline_patch(cache, &original.join(patch))?;
+                    let destination = directory.join(patch);
+                    io("copy", &destination, fs::copy(source, &destination))?;
+                }
+                directory
+            } else {
+                original
+            };
+            binds.push(bind(&directory, "/patches", false));
         }
         let mut path = String::new();
         for id in &dep_ids {
@@ -1499,6 +1584,7 @@ impl<'a> Builder<'a> {
                 targets,
                 record.check_enabled,
                 settings.jobs,
+                settings.source_cache_dir.is_some(),
             )?;
             io(
                 "write",
@@ -1548,7 +1634,11 @@ impl<'a> Builder<'a> {
                     ]);
                 }
             }
-            let archives = node::fetch_locked(&build_dir, &settings.cache_dir)?;
+            let archives = node::fetch_locked(
+                &build_dir,
+                &settings.cache_dir,
+                settings.source_cache_dir.is_some(),
+            )?;
             io(
                 "write",
                 &script_path,
@@ -1735,6 +1825,7 @@ mod tests {
             root: directory.path().to_owned(),
             data_dir: directory.path().join("data"),
             cache_dir: directory.path().join("cache"),
+            source_cache_dir: None,
             jobs: 1,
             binary_cache: None,
             trusted_key: None,

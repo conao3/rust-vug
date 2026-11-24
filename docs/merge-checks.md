@@ -49,7 +49,7 @@ Exit status 0 means the command computed a report. Read `Decision` to determine 
 ## Source and patch provenance
 
 ```console
-vug record verify-provenance --root /path/to/repository --input file://candidate.json --policy file://policy.json
+vug record verify-provenance --root /path/to/repository --input file://candidate.json --policy file://policy.json --source-cache-dir verified-sources
 ```
 
 The command reads Git objects under `--root`. The input contains `schema_version: 1` and the same `identity` object as `decide-merge`. The caller authenticates the base and head commits, the candidate tree and the policy. The command checks their Git object types and verifies that the lowercase SHA-256 of the policy JSON bytes equals `identity.policy_digest`.
@@ -74,3 +74,6 @@ Use an empty object for a map with no entries. The policy publisher checks the f
 The package diff determines the affected records. A changed version selects its referenced patches. A changed patch selects versions that reference it. A changed package record selects all its candidate versions. Check 4 runs after Check 3 passes for the package. Check 5 runs after Check 4 passes. A package without applicable inputs for a check passes that check when its prerequisites pass.
 
 Copy the JSON report's `Results` array into `decide-merge`'s `results` alongside the other required checks. Each row carries the candidate identity, package target, check number and status. `Findings` gives the affected path and reason code. Exit status 0 means the command produced a report. Invalid input, policy data or object data exits 254.
+
+
+With `--source-cache-dir`, the command writes each matched source archive and patch to the named directory as a file named by its lowercase SHA-256. The files are published individually after verification. Use the directory for a build only after checking that the required provenance results passed and supplying verified seed and dependency inputs. Pass the directory to `vug package build-package --source-cache-dir`.

@@ -4,6 +4,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 use ureq::Agent;
@@ -509,12 +510,27 @@ fn redirect_url(url: &Url, location: &str) -> Option<Url> {
     parse_url(joined.as_str()).ok()
 }
 
+fn cache_blob(mut reader: impl Read, digest: &str, cache: Option<&Path>) -> io::Result<bool> {
+    let Some(cache) = cache else {
+        return Ok(sha256_reader(reader)? == digest);
+    };
+    fs::create_dir_all(cache)?;
+    let mut file = tempfile::NamedTempFile::new_in(cache)?;
+    io::copy(&mut reader, &mut file)?;
+    if vug::fetch::sha256_file(file.path())? != digest {
+        return Ok(false);
+    }
+    file.persist(cache.join(digest))?;
+    Ok(true)
+}
+
 fn check_hash(
     downloads: &impl Downloads,
     url: Url,
     allowed: &[Url],
     redirects: &[Url],
     digest: &str,
+    cache: Option<&Path>,
 ) -> Result<(), Issue> {
     if !is_hex(digest, 64) {
         return Err(Issue::failed("invalid_source_hash"));
@@ -529,8 +545,7 @@ fn check_hash(
         },
         SOURCE_LIMIT,
     )?;
-    let actual = sha256_reader(reader).map_err(|_| Issue::incomplete("source_read_failed"))?;
-    if actual != digest {
+    if !cache_blob(reader, digest, cache).map_err(|_| Issue::incomplete("source_read_failed"))? {
         return Err(Issue::failed("source_hash_mismatch"));
     }
     Ok(())
@@ -542,6 +557,7 @@ fn check_patch(
     origins: &[Url],
     path: &str,
     candidate: &[u8],
+    cache: Option<&Path>,
 ) -> Result<(), Issue> {
     let origin = policy
         .patch_origins
@@ -558,6 +574,11 @@ fn check_patch(
         .map_err(|_| Issue::incomplete("patch_read_failed"))?;
     if candidate != bytes {
         return Err(Issue::failed("patch_bytes_mismatch"));
+    }
+    if let Some(cache) = cache {
+        let digest = sha256_reader(bytes.as_slice()).expect("in-memory read");
+        cache_blob(bytes.as_slice(), &digest, Some(cache))
+            .map_err(|_| Issue::incomplete("patch_cache_write_failed"))?;
     }
     Ok(())
 }
@@ -584,6 +605,7 @@ struct Inspection<'a, D> {
     identity: Identity,
     policy: Policy,
     downloads: D,
+    cache: Option<&'a Path>,
 }
 
 impl<D: Downloads> Inspection<'_, D> {
@@ -684,7 +706,14 @@ impl<D: Downloads> Inspection<'_, D> {
         if status[0] == Status::Passed {
             for (path, url, digest) in sources {
                 note(
-                    check_hash(&self.downloads, url, &origins, &redirects, &digest),
+                    check_hash(
+                        &self.downloads,
+                        url,
+                        &origins,
+                        &redirects,
+                        &digest,
+                        self.cache,
+                    ),
                     &mut status[1],
                     4,
                     path,
@@ -704,9 +733,14 @@ impl<D: Downloads> Inspection<'_, D> {
             for path in changes.patches.union(&referenced_patches) {
                 let result = match tree.get(path) {
                     Some(oid) => match self.git.blob(oid, PATCH_LIMIT) {
-                        Ok(bytes) => {
-                            check_patch(&self.downloads, &self.policy, &origins, path, &bytes)
-                        }
+                        Ok(bytes) => check_patch(
+                            &self.downloads,
+                            &self.policy,
+                            &origins,
+                            path,
+                            &bytes,
+                            self.cache,
+                        ),
                         Err(_) => Err(Issue::failed("invalid_candidate_patch")),
                     },
                     None if !referenced_patches.contains(path) => continue,
@@ -727,7 +761,12 @@ impl<D: Downloads> Inspection<'_, D> {
     }
 }
 
-pub(crate) fn verify(root: &Path, input: &str, policy: &str) -> Result<Report, String> {
+pub(crate) fn verify(
+    root: &Path,
+    input: &str,
+    policy: &str,
+    cache: Option<&Path>,
+) -> Result<Report, String> {
     let config = Agent::config_builder()
         .https_only(true)
         .proxy(None)
@@ -740,7 +779,7 @@ pub(crate) fn verify(root: &Path, input: &str, policy: &str) -> Result<Report, S
         DefaultConnector::default(),
         PublicResolver::default(),
     );
-    verify_with(root, input, policy, downloads)
+    verify_with(root, input, policy, downloads, cache)
 }
 
 fn verify_with(
@@ -748,6 +787,7 @@ fn verify_with(
     input: &str,
     policy: &str,
     downloads: impl Downloads,
+    cache: Option<&Path>,
 ) -> Result<Report, String> {
     let request: Request = serde_json::from_str(input).map_err(|e| e.to_string())?;
     if request.schema_version != 1 {
@@ -766,6 +806,7 @@ fn verify_with(
         identity: request.identity,
         policy,
         downloads,
+        cache,
     };
     let mut report = Report {
         schema_version: 1,
@@ -893,6 +934,15 @@ mod tests {
         }
 
         fn verify(&self, policy: &Value, downloads: DownloadsFixture) -> Report {
+            self.verify_to(policy, downloads, None)
+        }
+
+        fn verify_to(
+            &self,
+            policy: &Value,
+            downloads: DownloadsFixture,
+            cache: Option<&Path>,
+        ) -> Report {
             let policy = policy.to_string();
             let identity = Identity {
                 base_sha: self.base.clone(),
@@ -901,7 +951,7 @@ mod tests {
                 policy_digest: sha256_reader(policy.as_bytes()).unwrap(),
             };
             let input = json!({"schema_version": 1, "identity": identity}).to_string();
-            let report = verify_with(self.root.path(), &input, &policy, downloads).unwrap();
+            let report = verify_with(self.root.path(), &input, &policy, downloads, cache).unwrap();
             let roundtrip = serde_json::to_value(&report).unwrap();
             let results =
                 serde_json::from_value::<Vec<CheckResult>>(roundtrip["Results"].clone()).unwrap();
@@ -991,8 +1041,17 @@ mod tests {
             redirects: BTreeMap::from([(SOURCE, CANONICAL_SOURCE)]),
         };
         let policy = policy();
-        let report = fixture.verify(&policy, downloads(b"source bytes", b"patch bytes"));
+        let cache = tempfile::tempdir().unwrap();
+        let report = fixture.verify_to(
+            &policy,
+            downloads(b"source bytes", b"patch bytes"),
+            Some(cache.path()),
+        );
         assert_eq!(statuses(&report), [Status::Passed; 3]);
+        for bytes in [b"source bytes".as_slice(), b"patch bytes".as_slice()] {
+            let digest = sha256_reader(bytes).unwrap();
+            assert_eq!(fs::read(cache.path().join(digest)).unwrap(), bytes);
+        }
         let report = fixture.verify(&policy, downloads(b"other source", b"patch bytes"));
         assert_eq!(
             statuses(&report),

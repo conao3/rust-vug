@@ -191,6 +191,7 @@ pub fn run(settings: &Settings, name: &str, path: &Path, apply: bool) -> Result<
         data_dir: work.path().join("data"),
         root: settings.root.clone(),
         cache_dir: settings.cache_dir.clone(),
+        source_cache_dir: settings.source_cache_dir.clone(),
         jobs: settings.jobs,
         binary_cache: settings.binary_cache.clone(),
         trusted_key: settings.trusted_key.clone(),
