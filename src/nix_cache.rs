@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 mod nar;
+mod store;
 
 const ORIGIN: &str = "https://cache.nixos.org";
 const STORE: &str = "/nix/store";
@@ -237,7 +238,7 @@ impl NarInfo {
     }
 }
 
-fn parse_hash(value: &str) -> Result<String, String> {
+pub fn parse_hash(value: &str) -> Result<String, String> {
     let hash = value.strip_prefix("sha256:").unwrap_or_default().as_bytes();
     if hash.len() == 52 && matches!(hash[0], b'0' | b'1') && hash.iter().all(|b| NIX32.contains(b))
     {
@@ -341,6 +342,10 @@ impl Cache {
     pub fn fetch(&self, closure: &Closure, parent: &Path) -> Result<TempDir, String> {
         fetch(closure, parent, |path| self.get(path))
     }
+
+    pub fn realize(&self, closure: &Closure, store: &Path) -> Result<(), String> {
+        store::realize(closure, store, |path| self.get(path))
+    }
 }
 
 fn check_status(status: u16) -> Result<(), String> {
@@ -429,6 +434,15 @@ fn fetch<R: Read>(
     if parent.starts_with(STORE) {
         return Err("NAR staging parent must be outside /nix/store".into());
     }
+    fetch_entries(closure.entries.iter(), closure.limits, &parent, get)
+}
+
+fn fetch_entries<'a, R: Read>(
+    entries: impl IntoIterator<Item = &'a NarInfo>,
+    limits: Limits,
+    parent: &Path,
+    get: impl Fn(&str) -> Result<R, String>,
+) -> Result<TempDir, String> {
     let staging = tempfile::Builder::new()
         .prefix("vug-nix-")
         .tempdir_in(parent)
@@ -439,9 +453,9 @@ fn fetch<R: Read>(
         Mode::empty(),
     )
     .map_err(|e| format!("open NAR staging directory: {e}"))?;
-    let mut remaining = closure.limits.total_file_bytes;
-    for info in &closure.entries {
-        let transfer_limit = remaining.min(closure.limits.file_bytes);
+    let mut remaining = limits.total_file_bytes;
+    for info in entries {
+        let transfer_limit = remaining.min(limits.file_bytes);
         if info.file_size.is_some_and(|size| size > transfer_limit) {
             return Err(format!(
                 "{}: NAR exceeds remaining transfer size limit",

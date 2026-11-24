@@ -872,3 +872,184 @@ fn tree_sitter_grammar_record_round_trips() {
     .unwrap();
     assert_invalid(&check_record(&version), "build.path");
 }
+
+const WHICH_NIX_RECORD: &str = r#"version = "2.25"
+
+[build]
+kind = "nix-output"
+system = "x86_64-linux"
+nixpkgs-rev = "2786a2a72088ecf32aea5b3ec52099e6a7cff78f"
+attribute = "which"
+
+[build.nix-outputs.out]
+store-path = "/nix/store/jv5kdlkwx0l8a7jdpg21g934ff30s319-which-2.25"
+nar-hash = "sha256:0sgl66vyp75kspr2qkkg5z54jqrfdqbmd2pww1aqvlvh6c26b6rg"
+expose = [
+  "bin/which",
+]
+
+[dependencies]
+build = []
+run = []
+
+[check]
+enabled = false
+skip = []
+"#;
+
+#[test]
+fn checks_nix_output_records_and_dependency_roles() {
+    let tmp = TmpDir::new("nix-output-record");
+    let which_dir = package_dir(&tmp, "which");
+    let which = which_dir.join("versions/2.25.toml");
+    std::fs::write(&which, WHICH_NIX_RECORD).unwrap();
+    assert!(check_record(&which).status.success());
+    assert!(check_tree(tmp.path()).status.success());
+
+    for (old, new, field) in [
+        ("x86_64-linux", "x86_64", "build.system"),
+        (
+            "2786a2a72088ecf32aea5b3ec52099e6a7cff78f",
+            "master",
+            "build.nixpkgs-rev",
+        ),
+        (
+            "attribute = \"which\"",
+            "attribute = \".which\"",
+            "build.attribute",
+        ),
+        ("/nix/store/", "/tmp/", "store-path"),
+        ("sha256:0sgl", "sha256:zsgl", "nar-hash"),
+        ("bin/which", "lib/libc.so", "expose"),
+        ("bin/which", "bin/../which", "expose"),
+        ("bin/which", "bin/which\", \"bin/which/other", "expose"),
+        ("enabled = false", "enabled = true", "check"),
+    ] {
+        std::fs::write(&which, WHICH_NIX_RECORD.replace(old, new)).unwrap();
+        assert_invalid(&check_record(&which), field);
+    }
+    std::fs::write(
+        &which,
+        WHICH_NIX_RECORD.replace("bin/which", "share/doc/which\", \"bin/which"),
+    )
+    .unwrap();
+    assert_invalid(&check_record(&which), "canonical");
+    let formatted = format_record(&which);
+    assert!(formatted.status.success());
+    let stdout: serde_json::Value = serde_json::from_slice(&formatted.stdout).unwrap();
+    let canonical = stdout["Record"].as_str().unwrap();
+    assert!(canonical.contains("  \"bin/which\",\n  \"share/doc/which\","));
+    std::fs::write(&which, WHICH_NIX_RECORD).unwrap();
+
+    let user = package_dir(&tmp, "user").join("versions/1.toml");
+    let native = version_toml("1");
+    for field in ["build", "expose"] {
+        let dependency = if field == "build" {
+            native.replace("build = []", "build = [\n  \"which\",\n]")
+        } else {
+            native.replace("run = []", "run = []\nexpose = [\n  \"which:out\",\n]")
+        };
+        std::fs::write(&user, dependency).unwrap();
+        assert_invalid(&check_tree(tmp.path()), &format!("dependencies.{field}"));
+    }
+    std::fs::write(
+        &user,
+        native.replace("run = []", "run = [\n  \"which\",\n]"),
+    )
+    .unwrap();
+    assert!(check_tree(tmp.path()).status.success());
+    std::fs::write(
+        &which,
+        WHICH_NIX_RECORD.replace("nix-outputs.out", "nix-outputs.bin"),
+    )
+    .unwrap();
+    assert_invalid(&check_tree(tmp.path()), "unknown output");
+}
+
+#[test]
+#[ignore = "requires access to cache.nixos.org"]
+fn builds_which_from_the_public_nix_cache() {
+    let tmp = TmpDir::new("nix-output-which");
+    let which = package_dir(&tmp, "which").join("versions/2.25.toml");
+    std::fs::write(which, WHICH_NIX_RECORD).unwrap();
+    tmp.write("seed.toml", "");
+    let data = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let args = [
+        "package",
+        "build-package",
+        "--root",
+        tmp.path().to_str().unwrap(),
+        "--name",
+        "which",
+        "--jobs",
+        "2",
+        "--data-dir",
+        data.path().to_str().unwrap(),
+        "--cache-dir",
+        cache.path().to_str().unwrap(),
+    ];
+    let build = || {
+        let output = vug(&args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let first = build();
+    let again = build();
+    assert_eq!(first["Built"], true);
+    assert_eq!(again["Built"], false);
+    assert_eq!(first["Path"], again["Path"]);
+    let out = Path::new(first["HostPath"].as_str().unwrap());
+    let link = std::fs::read_link(out.join("bin/which")).unwrap();
+    assert_eq!(
+        link,
+        Path::new("/nix/store/jv5kdlkwx0l8a7jdpg21g934ff30s319-which-2.25/bin/which")
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join(".vug/nix-closure.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], 1);
+    assert_eq!(manifest["output"], "out");
+    assert_eq!(manifest["build-key"].as_str().unwrap().len(), 32);
+    let paths = manifest["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 5);
+    assert!(paths.iter().any(|entry| {
+        entry["store-path"] == "/nix/store/jv5kdlkwx0l8a7jdpg21g934ff30s319-which-2.25"
+            && entry["nar-hash"] == "sha256:0sgl66vyp75kspr2qkkg5z54jqrfdqbmd2pww1aqvlvh6c26b6rg"
+    }));
+    for entry in paths {
+        let path = entry["store-path"].as_str().unwrap();
+        let local = data
+            .path()
+            .join("nix/store")
+            .join(Path::new(path).file_name().unwrap());
+        assert!(std::fs::symlink_metadata(local).is_ok());
+        for reference in entry["references"].as_array().unwrap() {
+            assert!(paths.iter().any(|entry| &entry["store-path"] == reference));
+        }
+    }
+    assert!(
+        std::fs::metadata(
+            data.path()
+                .join("nix/store")
+                .join(link.strip_prefix("/nix/store").unwrap())
+        )
+        .unwrap()
+        .is_file()
+    );
+
+    fn make_dirs_writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if std::fs::symlink_metadata(path).unwrap().is_dir() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            for entry in std::fs::read_dir(path).unwrap() {
+                make_dirs_writable(&entry.unwrap().path());
+            }
+        }
+    }
+    make_dirs_writable(&data.path().join("nix/store"));
+}

@@ -226,6 +226,28 @@ pub(super) fn check_tree(
 ) {
     let mut latest = BTreeMap::new();
     let mut reported = BTreeSet::new();
+    for (path, record) in versions {
+        for (field, dep) in record.dependencies() {
+            let (package, output) = dependency_output(dep);
+            if package.is_empty() {
+                continue;
+            }
+            if let Ok(target) = resolve_target(root, &mut latest, package)
+                && let Some(target) = versions.get(target)
+                && matches!(target.build, super::BuildOptions::NixOutput(_))
+            {
+                let message =
+                    if matches!(field.as_str(), "dependencies.build" | "dependencies.expose") {
+                        format!("{field}: {dep:?} is a Nix output and can only be a run dependency")
+                    } else if !record.uses_output_keys() && !target.has_output(output) {
+                        format!("{field}: unknown output {dep:?}")
+                    } else {
+                        continue;
+                    };
+                errors.push(error_at(path, message));
+            }
+        }
+    }
     for (path, record) in versions
         .iter()
         .filter(|(_, record)| record.uses_output_keys())
@@ -252,11 +274,7 @@ pub(super) fn check_tree(
             if package.is_empty() {
                 continue;
             }
-            let selected = latest.entry(package).or_insert_with(|| {
-                let dir = root.join(model::package_dir(package)).join("versions");
-                current_version(&dir)
-                    .map(|version| root.join(model::version_path(package, &version)))
-            });
+            let selected = resolve_target(root, &mut latest, package);
             let message = match selected {
                 Err(error) => format!("{field}: cannot resolve {dep:?}: {error}"),
                 Ok(selected) => {
@@ -283,4 +301,18 @@ pub(super) fn check_tree(
             }
         }
     }
+}
+
+fn resolve_target<'a>(
+    root: &Path,
+    latest: &'a mut BTreeMap<String, Result<PathBuf, String>>,
+    package: &str,
+) -> &'a Result<PathBuf, String> {
+    if !latest.contains_key(package) {
+        let dir = root.join(model::package_dir(package)).join("versions");
+        let selected =
+            current_version(&dir).map(|version| root.join(model::version_path(package, &version)));
+        latest.insert(package.to_owned(), selected);
+    }
+    &latest[package]
 }

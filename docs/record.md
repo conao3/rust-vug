@@ -82,8 +82,8 @@ skip = []
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `version` | string | yes | Must equal the file name without `.toml`. |
-| `source.url` | string | yes | `https://` URL. Must start with one of `upstream.sources`. |
-| `source.sha256` | string | yes | 64 lowercase hex characters: SHA-256 of the fetched file. |
+| `source.url` | string | for source and archive builds | `https://` URL. Must start with one of `upstream.sources`. |
+| `source.sha256` | string | for source and archive builds | 64 lowercase hex characters: SHA-256 of the fetched file. |
 | `source.strip-components` | integer | no (default 1) | Leading path components removed when the archive is unpacked. |
 | `patches` | array of strings | no (default empty) | File names in `patches/`, applied in order with `-p1`. Order is kept. |
 | `build.kind` | string | yes | One of the build kinds below. |
@@ -484,6 +484,59 @@ Unpacks the source archive and copies files into the output.
 `from` is a path relative to the unpacked source. `to` is a path relative to
 the output. Neither may be absolute or contain a `..` component.
 
+### Build kind `nix-output`
+
+A `nix-output` record selects named Nix outputs from the signed cache at
+`https://cache.nixos.org`. Each selection produces a vug output with links
+at the listed paths. The record has no `[source]` table.
+
+```toml
+version = "2.25"
+
+[build]
+kind = "nix-output"
+system = "x86_64-linux"
+nixpkgs-rev = "2786a2a72088ecf32aea5b3ec52099e6a7cff78f"
+attribute = "which"
+
+[build.nix-outputs.out]
+store-path = "/nix/store/jv5kdlkwx0l8a7jdpg21g934ff30s319-which-2.25"
+nar-hash = "sha256:0sgl66vyp75kspr2qkkg5z54jqrfdqbmd2pww1aqvlvh6c26b6rg"
+expose = [
+  "bin/which",
+]
+
+[dependencies]
+build = []
+run = []
+
+[check]
+enabled = false
+skip = []
+```
+
+- `system` is the Nix system used to evaluate the attribute, in
+  `architecture-os` form. `nixpkgs-rev` is its full 40-character lowercase
+  commit SHA. `attribute` is the dot-separated nixpkgs attribute path.
+- Declare at least one `[build.nix-outputs.<name>]` table. The names follow
+  the package name syntax and are sorted in canonical records. A bare
+  package selector requires an `out` entry. A named selector selects the
+  matching Nix output.
+- Each table pins an absolute `/nix/store/<hash>-<name>` path and a
+  `sha256:` hash in Nix32. The same path always has the same hash within
+  a record.
+- `expose` lists literal relative file paths under `bin/` or `share/` in the
+  selected Nix output. The paths are sorted and unique and cannot overlap
+  at a parent and child. At acquisition, symlinks on an exposed path must
+  resolve to a file within the signed reference closure. A `bin/` path
+  must resolve to an executable file.
+- The record uses empty `dependencies.build`, `dependencies.run`, and
+  `check.skip` arrays and `check.enabled = false`. Omit `dependencies.expose`
+  and the source-build fields `patches`, `outputs`, `links`, and `wrappers`.
+  Other records can select Nix outputs in runtime dependencies.
+- Record validation is offline. The build verifies the signed closure
+  and all pinned root hashes as described in [Building a package](build.md#nix-outputs).
+
 ## Links
 
 ```toml
@@ -520,7 +573,7 @@ identical files.
 - No comments.
 - Top-level keys first, then tables, each in the order of the tables above
   (`package.toml`: `name`, `license`, `[upstream]`; version files: `version`,
-  `patches`, `[source]`, `[build]`, `[dependencies]`, `[outputs.*]`,
+  `patches`, `[source]`, `[build]`, `[build.nix-outputs.*]`, `[dependencies]`, `[outputs.*]`,
   `[check]`, `[links]`,
   `[wrappers]`). Keys inside a
   table follow the order of the tables above; `build.kind` comes first in

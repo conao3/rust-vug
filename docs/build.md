@@ -1,7 +1,7 @@
 # Building a package
 
 `vug package build-package` turns one version record into one store path.
-The build runs in an empty root that holds only the seed, the dependencies,
+A source or archive build runs in an empty root that holds only the seed, the dependencies,
 and the source.
 
 ## Store paths
@@ -70,6 +70,67 @@ autoconf takes it as the system it builds on and for. Its own guess is
 `...-linux-gnu`, because the guess looks for a mark that the C library's
 `stdarg.h` leaves and the compiler's own `stdarg.h` comes first; packages
 then choose code paths for another C library.
+
+## Nix outputs
+
+`vug package build-package` with a [`nix-output` record](record.md#build-kind-nix-output)
+resolves the union of the signed reference closures of all declared Nix
+outputs at `https://cache.nixos.org`. It compares each root's signed
+`NarHash` to the record and verifies the NAR contents and size. It downloads
+missing NARs and verifies already installed paths. An installed path with
+different contents produces an error. The build acquires Nix outputs
+directly, including when a vug binary cache is configured. vug cache
+inventory and exports cover native vug outputs.
+
+`build::nix_store_dir(data_dir)` returns the physical directory holding
+the Nix closure. On a dedicated running vug system, root using the system
+data directory `/vug` acquires into `/nix/store`. The running system is
+identified by its `/run/current-system` symlink into `/vug/store` and the
+absence of a Nix database at `/nix/var/nix/db`. On other hosts and for user
+data directories, the directory is `<data-dir>/nix/store`. Append the
+basename of a manifest store path to this directory to locate its
+installed copy. The dedicated store is root-owned with mode `0755`.
+Stored directories and executable files use mode `0555` and other files
+use `0444`. A lock named `.vug-store.lock` next to the store serializes
+acquisition. Verified paths are staged on the same filesystem and published
+with an atomic rename that preserves any existing path.
+
+The output tree contains links at the selected output's `expose` paths
+with absolute targets in `/nix/store`. It also contains the canonical record
+and `.vug/nix-closure.json` with the following fields.
+
+| Field | Contents |
+|---|---|
+| `format` | Manifest version, currently `1`. |
+| `build-key` | The kind-specific build key. |
+| `output` | The selected output name from `build.nix-outputs`. |
+| `paths` | An array sorted by `store-path`, covering every declared root and its transitive references. |
+| `paths[].store-path` | Absolute Nix store path. |
+| `paths[].nar-hash` | Signed `NarHash` as `sha256:` followed by Nix32. |
+| `paths[].nar-size` | Signed uncompressed NAR size in bytes. |
+| `paths[].references` | Sorted array of absolute Nix store paths from the signed narinfo. Entries can reference themselves. |
+
+The build key uses BLAKE3 derive-key mode with the context
+`vug nix-output build key v1`. Its inputs are the canonical record followed
+by each `store-path` and `nar-hash` pair in path order. Each string is prefixed
+with its byte length as a little-endian u64. The first 20 bytes of the digest
+are encoded like a store ID. The vug output ID is the normal tree hash of
+the manifest, record and links.
+
+Executing the links with an isolated store requires exposing the closure
+at `/nix/store` in the program's mount namespace. System image assembly,
+generation tracking and garbage collection of Nix paths are separate from
+package acquisition.
+
+To test real acquisition into a temporary data directory, run
+`cargo test --test record builds_which_from_the_public_nix_cache -- --ignored`.
+To verify compatibility with the existing package corpus, extract
+`packages/` and `seed.toml` from vug-packages commit
+`a61c2f4316cad0d30ca4362eb00ad09f2f72f97e` into a temporary directory, then run
+`VUG_LEGACY_RECORDS=<directory> cargo test --bin vug legacy_corpus_preserves_canonical_bytes_and_keys -- --ignored`.
+The regression test uses the corpus seed and patches with deterministic test
+dependency IDs and compares the canonical records and build keys to their
+baseline digests.
 
 ## The seed
 

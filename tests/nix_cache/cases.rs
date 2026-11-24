@@ -400,3 +400,73 @@ fn accepts_legacy_bzip2_with_no_compression_field() {
         b"legacy"
     );
 }
+
+#[test]
+fn realizes_missing_nars_and_never_replaces_an_installed_path() {
+    use std::fs;
+
+    let responses = fixture();
+    let closure = resolve_fixture(&responses, Limits::default()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("nix/store");
+    let root = dir.join(ROOT.rsplit('/').next().unwrap());
+    let dep = dir.join(DEP.rsplit('/').next().unwrap());
+
+    let get = |path: &str| response(&responses, path);
+    let missing_dep = store::realize(&closure, &dir, |path| {
+        if path == DEP_NAR {
+            Err("missing dependency NAR".into())
+        } else {
+            get(path)
+        }
+    });
+    assert!(missing_dep.is_err());
+    assert!(!root.exists());
+    assert!(!dep.exists());
+
+    let missing_root = store::realize(&closure, &dir, |path| {
+        if path == ROOT_NAR {
+            Err("missing root NAR".into())
+        } else {
+            get(path)
+        }
+    });
+    assert!(missing_root.is_err());
+    assert!(!root.exists());
+    assert!(!dep.exists());
+
+    let requests = std::sync::atomic::AtomicUsize::new(0);
+    let counted = |path: &str| {
+        requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        get(path)
+    };
+    std::thread::scope(|scope| {
+        let install = || store::realize(&closure, &dir, counted).unwrap();
+        let first = scope.spawn(install);
+        let second = scope.spawn(install);
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+    assert_eq!(requests.into_inner(), 2);
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o555
+    );
+    assert_eq!(
+        fs::metadata(root.join("bin")).unwrap().permissions().mode() & 0o777,
+        0o555
+    );
+    assert_eq!(
+        fs::metadata(&dep).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
+    store::realize::<Cursor<Vec<u8>>>(&closure, &dir, |_| panic!("already realized")).unwrap();
+
+    fs::set_permissions(&dep, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&dep, b"corrupt").unwrap();
+    fs::set_permissions(&dep, fs::Permissions::from_mode(0o444)).unwrap();
+    let error = store::realize(&closure, &dir, get).unwrap_err();
+    assert!(error.contains("NarHash"), "{error}");
+    assert_eq!(fs::read(&dep).unwrap(), b"corrupt");
+    fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
+}

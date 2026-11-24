@@ -1,7 +1,10 @@
+use std::ffi::OsStr;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::{ffi::OsStr, fs::File};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 use rustix::fs::{Mode, OFlags, fchmod, mkdirat, openat, symlinkat};
 
@@ -160,4 +163,103 @@ impl<R: Read> Nar<R> {
             previous = name;
         }
     }
+}
+
+pub(super) fn dump(path: &Path, output: &mut impl Write) -> io::Result<()> {
+    write_string(output, b"nix-archive-1")?;
+    let mut remaining = MAX_NODES;
+    dump_node(path, output, 0, &mut remaining)
+}
+
+fn write_string(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    let len = bytes.len() as u64;
+    output.write_all(&len.to_le_bytes())?;
+    output.write_all(bytes)?;
+    write_padding(output, len)
+}
+
+fn write_padding(output: &mut impl Write, len: u64) -> io::Result<()> {
+    output.write_all(&[0; 7][..((8 - len % 8) % 8) as usize])
+}
+
+fn dump_node(
+    path: &Path,
+    output: &mut impl Write,
+    depth: usize,
+    remaining: &mut usize,
+) -> io::Result<()> {
+    if depth > MAX_DEPTH || *remaining == 0 {
+        return Err(invalid("installed NAR exceeds tree limits"));
+    }
+    *remaining -= 1;
+    let metadata = fs::symlink_metadata(path)?;
+    let mode = metadata.permissions().mode() & 0o7777;
+    write_string(output, b"(")?;
+    write_string(output, b"type")?;
+    if metadata.is_file() && matches!(mode, 0o444 | 0o555) {
+        write_string(output, b"regular")?;
+        if mode == 0o555 {
+            write_string(output, b"executable")?;
+            write_string(output, b"")?;
+        }
+        write_string(output, b"contents")?;
+        let file = File::open(path)?;
+        let len = metadata.len();
+        output.write_all(&len.to_le_bytes())?;
+        if io::copy(&mut file.take(len.saturating_add(1)), output)? != len {
+            return Err(invalid("file size changed while verifying installed NAR"));
+        }
+        write_padding(output, len)?;
+    } else if metadata.is_symlink() {
+        write_string(output, b"symlink")?;
+        write_string(output, b"target")?;
+        write_string(output, fs::read_link(path)?.as_os_str().as_bytes())?;
+    } else if metadata.is_dir() && mode == 0o555 {
+        write_string(output, b"directory")?;
+        let mut entries = fs::read_dir(path)?
+            .take(*remaining + 1)
+            .collect::<io::Result<Vec<_>>>()?;
+        if entries.len() > *remaining {
+            return Err(invalid("installed NAR exceeds node limit"));
+        }
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            write_string(output, b"entry")?;
+            write_string(output, b"(")?;
+            write_string(output, b"name")?;
+            write_string(output, entry.file_name().as_bytes())?;
+            write_string(output, b"node")?;
+            dump_node(&entry.path(), output, depth + 1, remaining)?;
+            write_string(output, b")")?;
+        }
+    } else {
+        return Err(invalid(
+            "unexpected file type or permissions in installed NAR",
+        ));
+    }
+    write_string(output, b")")
+}
+
+pub(super) fn freeze(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            freeze(&entry?.path())?;
+        }
+    }
+    let mode = metadata.permissions().mode() & 0o555;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+pub(super) fn make_dirs_writable(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        for entry in fs::read_dir(path)? {
+            make_dirs_writable(&entry?.path())?;
+        }
+    }
+    Ok(())
 }

@@ -3,11 +3,13 @@
 mod cache;
 pub(crate) mod elf;
 mod go;
+mod nix_output;
 mod node;
 mod outputs;
 mod source_zip;
 
 pub use cache::export_cache;
+pub use nix_output::nix_store_dir;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -23,6 +25,8 @@ use vug::{fetch, rewrite, treehash};
 
 use crate::naming::model;
 use crate::record::{self, BuildOptions};
+
+pub const NIX_CLOSURE_MANIFEST: &str = ".vug/nix-closure.json";
 
 const STORE: &str = "/vug/store";
 const PLACEHOLDER_ID: &str = "00000000000000000000000000000000";
@@ -83,6 +87,57 @@ fn build_key(
         }
     }
     treehash::encode_base32(hasher.finalize().as_bytes().first_chunk().unwrap())
+}
+
+fn native_build_key<'a>(
+    record: &'a record::VersionRecord,
+    canonical: &str,
+    package_dir: &Path,
+    seed_id: &str,
+    dep_ids: &BTreeSet<String>,
+    dependency_id: impl Fn(&str) -> &'a str,
+) -> Result<String, String> {
+    let bindings = record.uses_output_keys().then(|| {
+        record
+            .dependencies()
+            .filter_map(|(role, dep)| {
+                let (package, output) = record::dependency_output(dep);
+                (!package.is_empty()).then(|| OutputBinding {
+                    role,
+                    package,
+                    output,
+                    id: dependency_id(dep),
+                })
+            })
+            .collect()
+    });
+    let kind_key;
+    let key_record = match &record.build {
+        BuildOptions::Python { .. } => {
+            kind_key = format!("python-build-rules=v1\n{canonical}");
+            &kind_key
+        }
+        BuildOptions::Node { .. } => {
+            kind_key = format!("node-build-rules=v1\n{canonical}");
+            &kind_key
+        }
+        BuildOptions::Go { .. } => {
+            kind_key = format!("go-build-rules=v2\n{canonical}");
+            &kind_key
+        }
+        BuildOptions::Perl { .. } => {
+            kind_key = format!("perl-build-rules=v1\n{canonical}");
+            &kind_key
+        }
+        _ => canonical,
+    };
+    let mut key_record = key_record.to_owned();
+    for patch in &record.patches {
+        let path = package_dir.join("patches").join(patch);
+        let digest = io("hash patch", &path, fetch::sha256_file(&path))?;
+        key_record.push_str(&format!("\npatch-sha256={digest}"));
+    }
+    Ok(build_key(&key_record, seed_id, dep_ids, bindings.as_ref()))
 }
 
 pub struct Settings {
@@ -637,7 +692,7 @@ pub struct Builder<'a> {
 struct CacheInventory {
     objects: BTreeSet<String>,
     missing: bool,
-    resolved: BTreeMap<(String, Option<String>), Option<Built>>,
+    resolved: BTreeMap<(String, Option<String>, bool), Option<Built>>,
 }
 
 pub fn list_cache(settings: &Settings) -> Result<BTreeSet<String>, String> {
@@ -659,7 +714,7 @@ pub fn list_cache(settings: &Settings) -> Result<BTreeSet<String>, String> {
             }
             let inventory = builder.cache_inventory.as_mut().unwrap();
             inventory.missing = false;
-            if let Err(error) = builder.resolve(name, None, Need::Id)
+            if let Err(error) = builder.resolve(name, None, Need::Id, false)
                 && !builder.cache_inventory.as_ref().unwrap().missing
             {
                 return Err(error);
@@ -757,7 +812,7 @@ impl<'a> Builder<'a> {
             }
             self.preflight_sources(cache, package, requested, &mut BTreeSet::new())?;
         }
-        self.resolve(name, requested, Need::Runtime)
+        self.resolve(name, requested, Need::Runtime, false)
     }
 
     fn preflight_sources(
@@ -784,6 +839,11 @@ impl<'a> Builder<'a> {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
+        if matches!(record.build, BuildOptions::NixOutput(_)) {
+            return Err(format!(
+                "{name}: nix-output requires access to cache.nixos.org"
+            ));
+        }
         verified_source(cache, &record.sha256)?;
         for patch in &record.patches {
             offline_patch(cache, &directory.join("patches").join(patch))?;
@@ -809,6 +869,7 @@ impl<'a> Builder<'a> {
         spec: &str,
         requested: Option<&str>,
         need: Need,
+        as_build_input: bool,
     ) -> Result<Built, String> {
         let (name, output) = record::dependency_output(spec);
         if self.in_progress.iter().any(|n| n == name) {
@@ -817,10 +878,13 @@ impl<'a> Builder<'a> {
                 self.in_progress.join(" -> ")
             ));
         }
-        let lookup = self
-            .cache_inventory
-            .is_some()
-            .then(|| (spec.to_owned(), requested.map(str::to_owned)));
+        let lookup = self.cache_inventory.is_some().then(|| {
+            (
+                spec.to_owned(),
+                requested.map(str::to_owned),
+                as_build_input,
+            )
+        });
         if let Some(lookup) = &lookup
             && let Some(inventory) = &mut self.cache_inventory
             && let Some(built) = inventory.resolved.get(lookup)
@@ -834,7 +898,7 @@ impl<'a> Builder<'a> {
             };
         }
         self.in_progress.push(name.to_owned());
-        let result = self.build_inner(name, output, requested, need);
+        let result = self.build_inner(name, output, requested, need, as_build_input);
         self.in_progress.pop();
         if let Some(lookup) = lookup
             && let Some(inventory) = &mut self.cache_inventory
@@ -930,6 +994,7 @@ impl<'a> Builder<'a> {
         output: &str,
         requested: Option<&str>,
         need: Need,
+        as_build_input: bool,
     ) -> Result<Built, String> {
         let settings = self.settings;
         let package_dir = settings.root.join(model::package_dir(name));
@@ -948,6 +1013,27 @@ impl<'a> Builder<'a> {
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
+        if let BuildOptions::NixOutput(nix) = &record.build {
+            if as_build_input {
+                return Err(format!(
+                    "{name}:{output}: Nix outputs can only be run dependencies"
+                ));
+            }
+            if self.cache_only {
+                if let Some(inventory) = &mut self.cache_inventory {
+                    inventory.missing = true;
+                }
+                return Err(format!(
+                    "{name}: nix-output is acquired directly from cache.nixos.org"
+                ));
+            }
+            if !record.has_output(output) {
+                return Err(format!(
+                    "{name}:{output}: unknown output in version {version}"
+                ));
+            }
+            return nix_output::build(settings, name, version, output, nix, &canonical);
+        }
         if !record.has_output(output) {
             return Err(format!(
                 "{name}:{output}: unknown output in version {version}"
@@ -987,6 +1073,7 @@ impl<'a> Builder<'a> {
                 } else {
                     Need::Id
                 },
+                record.deps_build.iter().any(|input| input == dep),
             )?;
             dep_ids.extend(built.closure.iter().cloned());
             dep_ids.extend(built.exposed.iter().cloned());
@@ -1001,54 +1088,25 @@ impl<'a> Builder<'a> {
             resolved.insert(dep, built);
         }
         for dep in &record.deps_expose {
-            let built =
-                self.resolve(dep, None, if need == Need::Build { need } else { Need::Id })?;
+            let built = self.resolve(
+                dep,
+                None,
+                if need == Need::Build { need } else { Need::Id },
+                true,
+            )?;
             exposed.extend(built.closure.iter().cloned());
             exposed.extend(built.exposed.iter().cloned());
             resolved.entry(dep.as_str()).or_insert(built);
         }
 
-        let bindings = record.uses_output_keys().then(|| {
-            record
-                .dependencies()
-                .filter_map(|(role, dep)| {
-                    let (package, output) = record::dependency_output(dep);
-                    (!package.is_empty()).then(|| OutputBinding {
-                        role,
-                        package,
-                        output,
-                        id: &resolved[dep].id,
-                    })
-                })
-                .collect()
-        });
-        let kind_key;
-        let key_record = match &record.build {
-            BuildOptions::Python { .. } => {
-                kind_key = format!("python-build-rules=v1\n{canonical}");
-                &kind_key
-            }
-            BuildOptions::Node { .. } => {
-                kind_key = format!("node-build-rules=v1\n{canonical}");
-                &kind_key
-            }
-            BuildOptions::Go { .. } => {
-                kind_key = format!("go-build-rules=v2\n{canonical}");
-                &kind_key
-            }
-            BuildOptions::Perl { .. } => {
-                kind_key = format!("perl-build-rules=v1\n{canonical}");
-                &kind_key
-            }
-            _ => &canonical,
-        };
-        let mut key_record = key_record.to_owned();
-        for patch in &record.patches {
-            let path = package_dir.join("patches").join(patch);
-            let digest = io("hash patch", &path, fetch::sha256_file(&path))?;
-            key_record.push_str(&format!("\npatch-sha256={digest}"));
-        }
-        let key = build_key(&key_record, &self.seed_id, &dep_ids, bindings.as_ref());
+        let key = native_build_key(
+            &record,
+            &canonical,
+            &package_dir,
+            &self.seed_id,
+            &dep_ids,
+            |dep| &resolved[dep].id,
+        )?;
 
         let store_dir = settings.data_dir.join("store");
         let index_dir = if split { "index-outputs" } else { "index" };
@@ -1184,7 +1242,12 @@ impl<'a> Builder<'a> {
         }
 
         for dep in dep_names {
-            let built = self.resolve(dep, None, Need::Build)?;
+            let built = self.resolve(
+                dep,
+                None,
+                Need::Build,
+                record.deps_build.iter().any(|input| input == dep),
+            )?;
             let expected = &resolved[dep];
             if built.id != expected.id
                 || built.closure != expected.closure
@@ -1195,6 +1258,8 @@ impl<'a> Builder<'a> {
                 ));
             }
         }
+        dep_ids.retain(|id| !store_dir.join(id).join(NIX_CLOSURE_MANIFEST).is_file());
+        build_run_closure.retain(|id| dep_ids.contains(id));
         let seed_dir = ensure_seed(settings, &self.seed, &self.seed_id)?;
         let archive = fetch_source(settings, &record.url, &record.sha256)?;
         let work = settings
@@ -1511,7 +1576,7 @@ impl<'a> Builder<'a> {
                 let mut runtime = Vec::new();
                 for dep in &all_run {
                     let id = &resolved[dep].id;
-                    if !runtime.contains(id) {
+                    if dep_ids.contains(id) && !runtime.contains(id) {
                         runtime.push(id.clone());
                     }
                 }
@@ -1558,7 +1623,7 @@ impl<'a> Builder<'a> {
                 let mut runtime = Vec::new();
                 for dep in &all_run {
                     let built = &resolved[dep];
-                    if !runtime.contains(&built.id) {
+                    if dep_ids.contains(&built.id) && !runtime.contains(&built.id) {
                         runtime.push(built.id.clone());
                     }
                 }
@@ -1602,6 +1667,7 @@ impl<'a> Builder<'a> {
                 .map(|words| expand(words))
                 .collect::<Result<Vec<_>, _>>()?,
             BuildOptions::Prebuilt { install } => steps::prebuilt_steps(&prefix, install),
+            BuildOptions::NixOutput(_) => unreachable!(),
         });
         for (path, target) in &record.links {
             let link = format!("{prefix}/{path}");
@@ -1961,6 +2027,108 @@ mod tests {
     use super::{Builder, Settings, fs, model, record};
     use std::collections::BTreeSet;
     use vug::treehash;
+
+    #[test]
+    #[ignore = "requires the pinned vug-packages record corpus"]
+    fn legacy_corpus_preserves_canonical_bytes_and_keys() {
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        let root = PathBuf::from(
+            std::env::var_os("VUG_LEGACY_RECORDS")
+                .expect("set VUG_LEGACY_RECORDS to the extracted corpus"),
+        );
+        let settings = Settings {
+            root: root.clone(),
+            data_dir: PathBuf::new(),
+            cache_dir: PathBuf::new(),
+            source_cache_dir: None,
+            jobs: 2,
+            binary_cache: None,
+            trusted_key: None,
+        };
+        let (_, seed_id) = super::read_seed(&settings).unwrap();
+        let directories = |path: &std::path::Path| {
+            fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<BTreeSet<_>>()
+        };
+        let mut canonical_digest = blake3::Hasher::new();
+        let mut key_digest = blake3::Hasher::new();
+        let mut counts = [0, 0];
+        for shard in directories(&root.join("packages")) {
+            for package in directories(&shard) {
+                let file = package.join("package.toml");
+                let check = record::check_file(&file, None)
+                    .unwrap_or_else(|errors| panic!("{}: {}", file.display(), errors[0].message));
+                canonical_digest.update(
+                    file.strip_prefix(&root)
+                        .unwrap()
+                        .as_os_str()
+                        .as_encoded_bytes(),
+                );
+                canonical_digest.update(&[0]);
+                canonical_digest.update(check.canonical.as_bytes());
+                counts[0] += 1;
+                let versions = package.join("versions");
+                if !versions.is_dir() {
+                    continue;
+                }
+                for file in directories(&versions) {
+                    let (record, canonical) =
+                        record::load_version(&file).unwrap_or_else(|errors| {
+                            panic!("{}: {}", file.display(), errors[0].message)
+                        });
+                    let path = file
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .as_os_str()
+                        .as_encoded_bytes();
+                    canonical_digest.update(path);
+                    canonical_digest.update(&[0]);
+                    canonical_digest.update(canonical.as_bytes());
+                    let ids = record
+                        .dependencies()
+                        .filter(|(_, dep)| !dep.starts_with(':'))
+                        .map(|(_, dep)| {
+                            let (name, output) = record::dependency_output(dep);
+                            let hash = blake3::hash(format!("{name}:{output}").as_bytes());
+                            (
+                                dep,
+                                treehash::encode_base32(hash.as_bytes().first_chunk().unwrap()),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>();
+                    let dep_ids = ids.values().cloned().collect();
+                    let key = super::native_build_key(
+                        &record,
+                        &canonical,
+                        &package,
+                        &seed_id,
+                        &dep_ids,
+                        |dep| &ids[dep],
+                    )
+                    .unwrap();
+                    key_digest.update(path);
+                    key_digest.update(&[0]);
+                    key_digest.update(key.as_bytes());
+                    counts[1] += 1;
+                }
+            }
+        }
+        let canonical_digest = canonical_digest.finalize().to_hex();
+        let key_digest = key_digest.finalize().to_hex();
+        assert_eq!(counts, [1127, 1158]);
+        assert_eq!(
+            canonical_digest.as_str(),
+            "cd1a35fd0da6fd4d3bb7aec91200d9cebe454d0947cc66d45d72f1229c12c4ad"
+        );
+        assert_eq!(
+            key_digest.as_str(),
+            "6f046d48095f85eb7452847e844df59747f478742d0d4c8def0c63fee2c8291b"
+        );
+    }
 
     #[test]
     fn legacy_key_uses_the_original_concatenation() {

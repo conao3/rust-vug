@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use crate::naming::model;
 use crate::version;
 
+mod nix_output;
 mod output;
+
+pub(crate) use nix_output::NixOutput;
 
 /// A validation or tree error: the file it belongs to and what is expected.
 #[derive(Clone)]
@@ -97,7 +100,10 @@ impl VersionRecord {
     }
 
     pub(crate) fn has_output(&self, name: &str) -> bool {
-        name == "out" || self.outputs.contains_key(name)
+        match &self.build {
+            BuildOptions::NixOutput(record) => record.outputs.contains_key(name),
+            _ => name == "out" || self.outputs.contains_key(name),
+        }
     }
 }
 
@@ -106,6 +112,7 @@ pub(crate) fn dependency_output(spec: &str) -> (&str, &str) {
 }
 
 pub(crate) enum BuildOptions {
+    NixOutput(NixOutput),
     Autotools {
         path: String,
         autoreconf: bool,
@@ -437,7 +444,17 @@ fn parse_version(
     }
 
     let (mut url, mut sha256, mut strip_components) = (String::new(), String::new(), 1);
-    if let Some(source) = req_table(map, "source", "", &mut errors) {
+    let nix_output = map
+        .get("build")
+        .and_then(toml::Value::as_table)
+        .and_then(|build| build.get("kind"))
+        .and_then(toml::Value::as_str)
+        == Some("nix-output");
+    if nix_output {
+        if map.contains_key("source") {
+            errors.push("source: unsupported for nix-output".to_owned());
+        }
+    } else if let Some(source) = req_table(map, "source", "", &mut errors) {
         unknown_keys(
             source,
             &["url", "sha256", "strip-components"],
@@ -899,6 +916,9 @@ fn parse_version(
                 }
                 build = BuildOptions::Commands { commands };
             }
+            "nix-output" => {
+                build = BuildOptions::NixOutput(nix_output::parse(build_table, &mut errors));
+            }
             "prebuilt" => {
                 unknown_keys(build_table, &["kind", "install"], "build.", &mut errors);
                 build = BuildOptions::Prebuilt {
@@ -907,7 +927,7 @@ fn parse_version(
             }
             _ => {
                 errors.push(
-                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"node\", \"perl\", \"prebuilt\", \"python\", or \"tree-sitter\""
+                    "build.kind: expected \"autotools\", \"bootstrap-make\", \"cargo\", \"cmake\", \"commands\", \"go\", \"linux\", \"make\", \"meson\", \"nix-output\", \"node\", \"perl\", \"prebuilt\", \"python\", or \"tree-sitter\""
                         .to_owned(),
                 );
             }
@@ -977,6 +997,29 @@ fn parse_version(
         check_enabled = req_bool(check, "enabled", "check.", &mut errors).unwrap_or(true);
         check_skip = req_string_array(check, "skip", "check.", &mut errors).unwrap_or_default();
         check_unique("skip", "check.", &check_skip, &mut errors);
+    }
+    if nix_output {
+        for field in ["patches", "outputs", "links", "wrappers"] {
+            if map.contains_key(field) {
+                errors.push(format!("{field}: unsupported for nix-output"));
+            }
+        }
+        if !deps_build.is_empty() || !deps_run.is_empty() || !deps_expose.is_empty() {
+            errors
+                .push("dependencies: nix-output uses the signed Nix reference closure".to_owned());
+        }
+        if check_enabled
+            || private_cxx_runtime
+            || !check_skip.is_empty()
+            || map
+                .get("check")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|check| {
+                    check.contains_key("target") || check.contains_key("private-cxx-runtime")
+                })
+        {
+            errors.push("check: nix-output requires enabled = false and skip = []".to_owned());
+        }
     }
     if let Some(target) = check_target.as_deref() {
         if !matches!(
@@ -1281,15 +1324,18 @@ fn canonical_version(record: &VersionRecord) -> String {
         write_array(&mut out, "patches", &record.patches);
     }
     out.push('\n');
-    out.push_str("[source]\n");
-    write_string_field(&mut out, "url", &record.url);
-    write_string_field(&mut out, "sha256", &record.sha256);
-    if record.strip_components != 1 {
-        write_int_field(&mut out, "strip-components", record.strip_components);
+    if !matches!(record.build, BuildOptions::NixOutput(_)) {
+        out.push_str("[source]\n");
+        write_string_field(&mut out, "url", &record.url);
+        write_string_field(&mut out, "sha256", &record.sha256);
+        if record.strip_components != 1 {
+            write_int_field(&mut out, "strip-components", record.strip_components);
+        }
+        out.push('\n');
     }
-    out.push('\n');
     out.push_str("[build]\n");
     match &record.build {
+        BuildOptions::NixOutput(record) => nix_output::write(&mut out, record),
         BuildOptions::Autotools {
             path,
             autoreconf,
