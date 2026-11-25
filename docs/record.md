@@ -51,7 +51,7 @@ sources = [
 | `name` | string | yes | Must equal the directory name. |
 | `license` | string | yes | SPDX license expression. |
 | `upstream.homepage` | string | no | Project home page. |
-| `upstream.sources` | array of strings | yes, non-empty | URL prefixes that source URLs of this package may start with. Each is an `https://` URL ending with `/`. Sorted, no duplicates. |
+| `upstream.sources` | array of strings | yes, non-empty | URL prefixes that source URLs of this package may start with. Each is an `https://` or `git+ssh://` URL ending with `/`. Sorted, no duplicates. |
 
 ## `versions/<version>.toml`
 
@@ -82,9 +82,11 @@ skip = []
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `version` | string | yes | Must equal the file name without `.toml`. |
-| `source.url` | string | for source and archive builds | `https://` URL. Must start with one of `upstream.sources`. |
-| `source.sha256` | string | for source and archive builds | 64 lowercase hex characters: SHA-256 of the fetched file. |
-| `source.strip-components` | integer | no (default 1) | Leading path components removed when the archive is unpacked. |
+| `source.url` | string | for source and archive builds | `https://` archive URL or `git+ssh://` repository URL. Must start with one of `upstream.sources`. |
+| `source.sha256` | string | for HTTPS | 64 lowercase hex characters representing the SHA-256 of the fetched file. |
+| `source.strip-components` | integer | optional for HTTPS (default 1) | Leading path components removed when the archive is unpacked. |
+| `source.rev` | string | for Git over SSH | Full Git commit ID as 40 lowercase hexadecimal characters. |
+| `source.nar-hash` | string | for Git over SSH | SHA-256 of the fetched source tree in NAR format, encoded as an SRI string (`sha256-<base64>`). |
 | `patches` | array of strings | no (default empty) | File names in `patches/`, applied in order with `-p1`. Order is kept. |
 | `build.kind` | string | yes | One of the build kinds below. |
 | `build.*` | | | Options of that kind. Unknown options are rejected. |
@@ -105,6 +107,14 @@ entry paths and symlink targets before extraction. Symlink targets may start
 with parent components that stay within the stripped tree. Patches are applied
 in the build sandbox after extraction.
 `source.sha256` covers the downloaded, compressed file.
+
+### Git over SSH
+
+Set the repository URL in `source.url` and put the full commit ID and the expected tree hash in `source.rev` and `source.nar-hash`. Use a repository path and, if needed, an SSH user or port in the URL. The revision and hash belong in their own fields. A checkout containing submodules is rejected. Git LFS files are kept as their committed pointer files. Relative symlinks must stay within the tree.
+
+Nix's `builtins.fetchGit` selects a Git tree with `rev` and supports fetching private repositories over SSH. Submodules and LFS are opt-in in Nix. A Nix flake accepts `git+ssh` inputs and locks both the commit in `rev` and the expected filesystem contents in `narHash`. vug uses the same SHA-256 NAR hash. Use the hash reported by `nix flake prefetch --json` for the pinned input with submodules and LFS disabled. [Nix fetchGit](https://nix.dev/manual/nix/2.35/language/builtins.html#builtins-fetchGit) · [Git flake references](https://nix.dev/manual/nix/2.35/command-ref/new-cli/nix3-flake.html#types) · [Flake lock files](https://nix.dev/manual/nix/2.35/command-ref/new-cli/nix3-flake.html#lock-files) · [Nix Archive format](https://nix.dev/manual/nix/2.34/protocols/nix-archive/)
+
+Packages with Git over SSH sources and their dependents use the local store. See [binary cache export](cache.md#layout).
 
 ### Outputs and dependency selectors
 

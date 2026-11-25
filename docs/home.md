@@ -99,7 +99,7 @@ With the `home-login` service included in a Vug system, source its profile fragm
 
 The fragment runs in a non-root login shell. It loads the active generation's public variables and prepends its `commands/` directory to the login PATH. It uses the public profile link under `~/.config/vug/home/`. Start a fresh login shell after switching to load the new variables.
 
-The launcher uses `vug home run-program` and requires bubblewrap with unprivileged user namespaces enabled. Each launch keeps the system's store visible and mounts the selected user closure at `/vug/store/<id>` for that process. When an ID appears in both stores, the launcher verifies the content and uses the system's copy. The system store and the user store are mounted read-only inside the command. When the user closure includes Nix outputs, the launcher also mounts its selected paths at `/nix/store` within the command’s namespace.
+The launcher uses `vug home run-program` and requires bubblewrap with unprivileged user namespaces enabled. Each launch keeps the system's store visible and mounts the selected user closure at `/vug/store/<id>` for that process. When an ID appears in both stores, the launcher verifies the content and uses the system's copy. The system store and the user store are mounted read-only inside the command.
 
 When that generation includes a Nix closure, the launcher also mounts a private read-only `/nix/store` containing only the Nix paths declared by the selected generation's package outputs and their runtime dependencies. The original absolute store paths resolve inside the launcher's mount namespace.
 

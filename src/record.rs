@@ -53,9 +53,7 @@ pub(crate) struct PackageRecord {
 pub(crate) struct VersionRecord {
     pub(crate) version: String,
     pub(crate) patches: Vec<String>,
-    pub(crate) url: String,
-    pub(crate) sha256: String,
-    pub(crate) strip_components: i64,
+    pub(crate) source: Source,
     pub(crate) build: BuildOptions,
     pub(crate) deps_build: Vec<String>,
     pub(crate) deps_run: Vec<String>,
@@ -70,6 +68,20 @@ pub(crate) struct VersionRecord {
     /// (path in the output, command the program at that path runs),
     /// ascending by path.
     pub(crate) wrappers: Vec<(String, Vec<String>)>,
+}
+
+pub(crate) enum Source {
+    NixOutput,
+    Archive {
+        url: String,
+        sha256: String,
+        strip_components: i64,
+    },
+    Git {
+        url: String,
+        rev: String,
+        nar_hash: String,
+    },
 }
 
 impl VersionRecord {
@@ -359,11 +371,82 @@ fn check_unique(key: &str, prefix: &str, items: &[String], errors: &mut Errors) 
     }
 }
 
-fn check_https_slash(key: &str, prefix: &str, url: &str, errors: &mut Errors) {
-    if !url.starts_with("https://") {
-        errors.push(format!("{prefix}{key}: expected an \"https://\" URL"));
-    } else if !url.ends_with('/') {
-        errors.push(format!("{prefix}{key}: expected a URL ending in \"/\""));
+fn valid_git_url(value: &str) -> bool {
+    value.starts_with("git+ssh://")
+        && !value
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control() || b == b'\\')
+        && url::Url::parse(value).is_ok_and(|url| {
+            url.host_str().is_some_and(|host| !host.is_empty())
+                && url.path().starts_with('/')
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+}
+
+fn parse_source(
+    map: &toml::Table,
+    upstream_sources: Option<&[String]>,
+    errors: &mut Errors,
+) -> Source {
+    let Some(source) = req_table(map, "source", "", errors) else {
+        return Source::Archive {
+            url: String::new(),
+            sha256: String::new(),
+            strip_components: 1,
+        };
+    };
+    let url = req_string(source, "url", "source.", errors).unwrap_or_default();
+    let git = url.starts_with("git+ssh:");
+    if git && (!valid_git_url(&url) || url.ends_with('/')) {
+        errors.push("source.url: expected a git+ssh URL with a repository path".to_owned());
+    } else if !git && !url.starts_with("https://") {
+        errors.push("source.url: expected an \"https://\" URL or a git+ssh URL".to_owned());
+    } else {
+        match upstream_sources {
+            None => errors.push(
+                "source.url: cannot check upstream.sources (no readable package.toml)".to_owned(),
+            ),
+            Some(sources) if !sources.iter().any(|prefix| url.starts_with(prefix)) => errors.push(
+                "source.url: expected a URL starting with one of upstream.sources".to_owned(),
+            ),
+            Some(_) => {}
+        }
+    }
+    if git {
+        unknown_keys(source, &["url", "rev", "nar-hash"], "source.", errors);
+        let rev = req_string(source, "rev", "source.", errors).unwrap_or_default();
+        if !crate::merge::is_hex(&rev, 40) {
+            errors.push("source.rev: expected a 40-character lowercase Git commit ID".to_owned());
+        }
+        let nar_hash = req_string(source, "nar-hash", "source.", errors).unwrap_or_default();
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        if !nar_hash
+            .strip_prefix("sha256-")
+            .and_then(|digest| STANDARD.decode(digest).ok())
+            .is_some_and(|digest| digest.len() == 32)
+        {
+            errors.push("source.nar-hash: expected a SHA-256 SRI hash".to_owned());
+        }
+        Source::Git { url, rev, nar_hash }
+    } else {
+        unknown_keys(
+            source,
+            &["url", "sha256", "strip-components"],
+            "source.",
+            errors,
+        );
+        let sha256 = req_string(source, "sha256", "source.", errors).unwrap_or_default();
+        if !crate::merge::is_hex(&sha256, 64) {
+            errors.push("source.sha256: expected 64 lowercase hex characters".to_owned());
+        }
+        let strip_components = opt_int(source, "strip-components", "source.", errors).unwrap_or(1);
+        Source::Archive {
+            url,
+            sha256,
+            strip_components,
+        }
     }
 }
 
@@ -392,7 +475,11 @@ fn parse_package(map: &toml::Table, dir_name: Option<&str>) -> (PackageRecord, E
             errors.push("upstream.sources: expected a non-empty array".to_owned());
         }
         for source in &sources {
-            check_https_slash("sources", "upstream.", source, &mut errors);
+            if !source.starts_with("https://") && !valid_git_url(source) {
+                errors.push("upstream.sources: expected an https or git+ssh URL".into());
+            } else if !source.ends_with('/') {
+                errors.push("upstream.sources: expected a URL ending in \"/\"".into());
+            }
         }
         check_unique("sources", "upstream.", &sources, &mut errors);
     }
@@ -443,53 +530,20 @@ fn parse_version(
         check_patch_name(&version, patch, &mut errors);
     }
 
-    let (mut url, mut sha256, mut strip_components) = (String::new(), String::new(), 1);
     let nix_output = map
         .get("build")
         .and_then(toml::Value::as_table)
         .and_then(|build| build.get("kind"))
         .and_then(toml::Value::as_str)
         == Some("nix-output");
-    if nix_output {
+    let source = if nix_output {
         if map.contains_key("source") {
             errors.push("source: unsupported for nix-output".to_owned());
         }
-    } else if let Some(source) = req_table(map, "source", "", &mut errors) {
-        unknown_keys(
-            source,
-            &["url", "sha256", "strip-components"],
-            "source.",
-            &mut errors,
-        );
-        url = req_string(source, "url", "source.", &mut errors).unwrap_or_default();
-        if !url.starts_with("https://") {
-            errors.push("source.url: expected an \"https://\" URL".to_owned());
-        } else {
-            match &upstream_sources {
-                None => errors.push(
-                    "source.url: cannot check upstream.sources (no readable package.toml)"
-                        .to_owned(),
-                ),
-                Some(sources) => {
-                    if !sources.iter().any(|p| url.starts_with(p.as_str())) {
-                        errors.push(
-                            "source.url: expected a URL starting with one of upstream.sources"
-                                .to_owned(),
-                        );
-                    }
-                }
-            }
-        }
-        sha256 = req_string(source, "sha256", "source.", &mut errors).unwrap_or_default();
-        if !(sha256.len() == 64
-            && sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        {
-            errors.push("source.sha256: expected 64 lowercase hex characters".to_owned());
-        }
-        strip_components = opt_int(source, "strip-components", "source.", &mut errors).unwrap_or(1);
-    }
+        Source::NixOutput
+    } else {
+        parse_source(map, upstream_sources.as_deref(), &mut errors)
+    };
 
     let mut build = BuildOptions::Autotools {
         path: ".".to_owned(),
@@ -1150,9 +1204,7 @@ fn parse_version(
         VersionRecord {
             version,
             patches,
-            url,
-            sha256,
-            strip_components,
+            source,
             build,
             deps_build,
             deps_run,
@@ -1324,14 +1376,28 @@ fn canonical_version(record: &VersionRecord) -> String {
         write_array(&mut out, "patches", &record.patches);
     }
     out.push('\n');
-    if !matches!(record.build, BuildOptions::NixOutput(_)) {
-        out.push_str("[source]\n");
-        write_string_field(&mut out, "url", &record.url);
-        write_string_field(&mut out, "sha256", &record.sha256);
-        if record.strip_components != 1 {
-            write_int_field(&mut out, "strip-components", record.strip_components);
+    match &record.source {
+        Source::NixOutput => {}
+        Source::Archive {
+            url,
+            sha256,
+            strip_components,
+        } => {
+            out.push_str("[source]\n");
+            write_string_field(&mut out, "url", url);
+            write_string_field(&mut out, "sha256", sha256);
+            if *strip_components != 1 {
+                write_int_field(&mut out, "strip-components", *strip_components);
+            }
+            out.push('\n');
         }
-        out.push('\n');
+        Source::Git { url, rev, nar_hash } => {
+            out.push_str("[source]\n");
+            write_string_field(&mut out, "url", url);
+            write_string_field(&mut out, "rev", rev);
+            write_string_field(&mut out, "nar-hash", nar_hash);
+            out.push('\n');
+        }
     }
     out.push_str("[build]\n");
     match &record.build {
@@ -2048,9 +2114,12 @@ sources = [
         VersionRecord {
             version: "2.12.2".to_owned(),
             patches: Vec::new(),
-            url: "https://ftp.gnu.org/gnu/hello/hello-2.12.2.tar.gz".to_owned(),
-            sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
-            strip_components: 1,
+            source: Source::Archive {
+                url: "https://ftp.gnu.org/gnu/hello/hello-2.12.2.tar.gz".to_owned(),
+                sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab"
+                    .to_owned(),
+                strip_components: 1,
+            },
             build: BuildOptions::Autotools {
                 path: ".".to_owned(),
                 autoreconf: false,
@@ -2162,9 +2231,12 @@ skip = []
         let record = VersionRecord {
             version: "0.9".to_owned(),
             patches: vec!["0.9-fix.patch".to_owned()],
-            url: "https://dl.example.org/xfetch/xfetch-0.9.tar.gz".to_owned(),
-            sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab".to_owned(),
-            strip_components: 0,
+            source: Source::Archive {
+                url: "https://dl.example.org/xfetch/xfetch-0.9.tar.gz".to_owned(),
+                sha256: "5a9a996dc292cc24dcf411cee87e92f6aae5b8d13bd9c6819b4c7a9dce0818ab"
+                    .to_owned(),
+                strip_components: 0,
+            },
             build: BuildOptions::Prebuilt {
                 install: vec![("bin/xfetch".to_owned(), "bin/xfetch".to_owned())],
             },

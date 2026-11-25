@@ -44,8 +44,7 @@ Checking a store path reverses step 3 and compares the hash with the id.
 
 ## Steps of a build
 
-1. Fetch `source.url` into the cache directory, keyed by `source.sha256`. A
-   file whose SHA-256 differs from the record is rejected.
+1. For an HTTPS source, fetch `source.url` into the cache directory and verify its file hash against `source.sha256`. For a Git over SSH source, run Git before starting the sandbox with the invoking user's SSH configuration and agent. Fetch the pinned commit into a temporary repository and verify the checked-out tree against `source.nar-hash`. The remote must serve the requested commit by its full ID. The build receives the verified tree at `/build/src`.
 2. Decode a `.tar.lz` source into a temporary tar file with vug's built-in
    lzip decoder. Create the build root: the seed tools, each dependency at its store path,
    the source archive, the patches, and an empty output directory at the
@@ -54,8 +53,7 @@ Checking a store path reverses step 3 and compares the hash with the id.
    host file system, a root that is read-only outside the build directory,
    `/tmp`, and the output, and only the environment variables `PATH`, `HOME`,
    `SOURCE_DATE_EPOCH`, `build_alias`, `ZIG_GLOBAL_CACHE_DIR`, and `ZIG_LOCAL_CACHE_DIR`.
-4. Unpack with `tar -xf <archive> --strip-components=<n>` and apply the
-   patches with `patch -p1`. An incomplete or rejected hunk fails the build. A source whose file name has no `.tar` in it
+4. Unpack tar archives with `tar -xf <archive> --strip-components=<n>`. Apply the patches to the source tree with `patch -p1`. An incomplete or rejected hunk fails the build. A source whose file name has no `.tar` in it
    and does not end in `.tgz`, `.txz`, or `.tbz2` is not an archive: it is
    copied into the source directory under its name.
 5. Run the steps of the build kind (`docs/record.md`). For an autotools
@@ -298,13 +296,13 @@ the C locale, and UTC.
 
 A single-output build is recorded in `index/<name>/<version>` as
 `<key> <id>`. When the key matches and the requested output is available,
-the builder returns the recorded ID.
+the builder returns the recorded ID. Private builds append ` private` to the index line.
 
 A record with neither output tables nor an explicit output selector uses the
 BLAKE3 hash of the concatenated canonical record, seed ID, build rules
 revision, and sorted IDs of the dependencies visible in the build root.
 The record input to either key format includes the SHA-256 of each patch in
-application order.
+application order. Git source records contribute their pinned commit and NAR hash through the canonical record. Private builds also prefix the record input with `private-source=v1` followed by a newline.
 
 Output declarations and explicit selectors select a versioned key format.
 It uses the BLAKE3 derive-key context `vug build key for selected outputs v1`.
@@ -346,7 +344,7 @@ The tree hash includes each output's `.vug/output` name marker and uses the
 placeholder for that output's own path. `out` also holds `.vug/record.toml`.
 Each output lives at `store/<id>`. After installing the whole set, the builder
 atomically publishes a JSON manifest at `index-outputs/<name>/<version>`.
-The manifest has `format` (currently `1`), `key`, and `outputs` fields.
+The manifest has `format` (currently `1`), `key`, and `outputs` fields. Private builds also set `private` to `true` and write `.vug/private-source` in every output tree. Single-output private builds write the same tree marker.
 `outputs` maps each output name to its `id` and sorted list of direct
 runtime dependency IDs in `run`. The builder checks the manifest against the
 record and the resolved runtime dependencies. Concurrent publications for
@@ -407,6 +405,6 @@ system, `/vug/store` is a directory of the root file system
 
 ### Verified source directory
 
-Pass `--source-cache-dir DIR` to `vug package build-package` to use a prepared source directory. Before resolving builds, vug checks the SHA-256 of the seed inputs, the archives for the requested package and its recursive dependencies, and the blobs matching their patch files. A missing or corrupt file stops the command. The offline build reads archives and patch bytes from this directory. Keep it read-only for the duration of the build. This option disables binary cache access and bypasses the ordinary download cache.
+Pass `--source-cache-dir DIR` to `vug package build-package` to use a prepared source directory. Before resolving builds, vug checks the SHA-256 of the seed inputs, the archives for the requested package and its recursive dependencies, and the blobs matching their patch files. A missing or corrupt file stops the command. The offline build reads archives and patch bytes from this directory. Keep it read-only for the duration of the build. This option disables binary cache access and bypasses the ordinary download cache. Git over SSH sources require the SSH fetch path, so the offline source directory rejects builds that need them.
 
 Cargo registry crates must also exist in DIR under their lockfile SHA-256. Vendored Go modules can come from the verified source archive. A Go build that needs the public module proxy fails in this mode. Node builds fail when the lockfile needs registry tarballs. Python and Perl use dependency packages resolved from the same source directory. Unavailable language dependencies fail during build preparation without a network fetch. Build and test commands continue to run in the network-isolated sandbox.

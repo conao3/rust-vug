@@ -18,7 +18,7 @@ fn portable(path: &Path) -> bool {
     !bytes.is_empty() && !bytes.iter().any(|byte| matches!(byte, 0 | b'\\' | b':'))
 }
 
-fn safe_target(path: &Path, target: &Path) -> bool {
+pub(super) fn safe_target(path: &Path, target: &Path) -> bool {
     if !portable(target) {
         return false;
     }

@@ -75,5 +75,6 @@ The package diff determines the affected records. A changed version selects its 
 
 Copy the JSON report's `Results` array into `decide-merge`'s `results` alongside the other required checks. Each row carries the candidate identity, package target, check number and status. `Findings` gives the affected path and reason code. Exit status 0 means the command produced a report. Invalid input, policy data or object data exits 254.
 
+The provenance gate verifies public HTTPS sources. A Git over SSH source in a version under review produces a `private_git_source` finding and requires a local build with the user's SSH credentials.
 
 With `--source-cache-dir`, the command writes each matched source archive and patch to the named directory as a file named by its lowercase SHA-256. The files are published individually after verification. Use the directory for a build only after checking that the required provenance results passed and supplying verified seed and dependency inputs. Pass the directory to `vug package build-package --source-cache-dir`.

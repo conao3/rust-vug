@@ -60,7 +60,12 @@
             postInstall = ''
               wrapProgram $out/bin/vug \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]} \
-                --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.gitMinimal ]}
+                --suffix PATH : ${
+                  pkgs.lib.makeBinPath [
+                    pkgs.gitMinimal
+                    pkgs.openssh
+                  ]
+                }
             '';
             meta = {
               mainProgram = "vug";
