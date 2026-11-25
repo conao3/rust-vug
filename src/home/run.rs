@@ -65,8 +65,14 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
     };
     let mut command = Command::new(bwrap);
     command.args(["--unshare-user", "--die-with-parent"]);
+    let mut live = manifest.closure.clone();
+    live.insert(generation.to_owned());
+    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(store, &live)?);
     for entry in io(Path::new("/"), fs::read_dir("/"))? {
         let path = entry.map_err(|error| error.to_string())?.path();
+        if !nix_paths.is_empty() && path == Path::new("/nix") {
+            continue;
+        }
         let flag = if path == Path::new("/dev") {
             "--dev-bind"
         } else {
@@ -96,12 +102,6 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         command.arg("--ro-bind").arg(&path).arg(&path);
     }
     for id in &manifest.closure {
-        if !valid_store_id(id) {
-            return Err(format!(
-                "{}: invalid closure ID {id:?}",
-                manifest_path.display()
-            ));
-        }
         let source = store.join(id);
         let destination = system.join(id);
         if !io(&source, fs::symlink_metadata(&source))?.is_dir() {
@@ -121,9 +121,6 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         }
     }
 
-    let mut live = manifest.closure;
-    live.insert(generation.to_owned());
-    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(store, &live)?);
     nix_closure::bind(&mut command, &nix_store_dir(data), &nix_paths)?;
     let _lease = gc::lease(&mut command, data, &live, !nix_paths.is_empty())?;
     command

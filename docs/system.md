@@ -350,6 +350,10 @@ $ qemu-system-x86_64 -enable-kvm -m 1024 -nographic \
 | `switch-system` | The system in the store, then its `bin/switch-to-system` runs. For a machine that runs a vug system. |
 | `export-system --archive FILE [--base SYSTEM]` | Also a cpio archive ("newc") of the store paths of the system, without those of the system `SYSTEM` (an id or a store path in the same store). |
 
+An image with [Nix output records](record.md#build-kind-nix-output) contains their complete runtime closure at `/nix/store`. The image builder copies the closure from the vug-managed store and preserves its symlinks and file permissions. In the booted system, services can run programs through `{pkg:NAME}/bin/PROGRAM`, and login shells can find the selected executables on the system PATH. Use native vug outputs for the kernel, kernel modules and initrd programs.
+
+To smoke-test a system in QEMU, add a `which` Nix output record to the system's package list and add a service with `Type=oneshot` and `ExecStart={pkg:which}/bin/which --version`, enabled at boot. Build the image with `vug system build-image` and boot it with the configured kernel or EFI loader. Check the service journal for `GNU which v2.25` and a successful exit. Run `which --version` in a guest login shell and check that `/nix/store` contains the paths declared by the selected packages' Nix closure manifests.
+
 All four take the parameters of `vug package build-package` and build what
 is missing. `StorePaths` is the number of store paths of the system.
 
