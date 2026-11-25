@@ -1078,15 +1078,280 @@ fn builds_and_runs_which_from_the_public_nix_cache() {
     );
     assert!(String::from_utf8_lossy(&which.stdout).contains("GNU which v2.25"));
 
-    fn make_dirs_writable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
+    make_dirs_writable(&data.path().join("nix/store"));
+}
 
-        if std::fs::symlink_metadata(path).unwrap().is_dir() {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            for entry in std::fs::read_dir(path).unwrap() {
-                make_dirs_writable(&entry.unwrap().path());
-            }
+fn make_dirs_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if std::fs::symlink_metadata(path).unwrap().is_dir() {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for entry in std::fs::read_dir(path).unwrap() {
+            make_dirs_writable(&entry.unwrap().path());
         }
     }
+}
+
+const FHS_FD_RECORD: &str = r#"version = "10.3.0"
+
+[source]
+url = "https://github.com/sharkdp/fd/releases/download/v10.3.0/fd-v10.3.0-ARCH-unknown-linux-gnu.tar.gz"
+sha256 = "ARCH_SHA256"
+
+[build]
+kind = "prebuilt"
+install = [
+  { from = "fd", to = "bin/fd" },
+]
+
+[dependencies]
+build = []
+run = []
+
+[check]
+enabled = false
+skip = []
+
+[fhs]
+program = "bin/fd"
+runtime-x86_64 = [
+  { output = "gcc:out", from = "lib/libgcc_s.so.1", to = "usr/lib64/libgcc_s.so.1" },
+  { output = "glibc:out", from = "lib", to = "usr/lib64" },
+]
+graphics = false
+"#;
+
+const I686_FD_RUNTIME: &str = r#"runtime-i686 = [
+  { output = "gcc-i686:out", from = "lib/libgcc_s.so.1", to = "usr/lib32/libgcc_s.so.1" },
+  { output = "glibc-i686:out", from = "lib", to = "usr/lib32" },
+]
+"#;
+
+fn fd_record(arch: &str) -> String {
+    let (sha, runtime) = match arch {
+        "x86_64" => (
+            "c3c2bc79f838e780173fc8f18b337ec273e7ba17c7ff8f551be29fc3c19b7916",
+            "",
+        ),
+        "i686" => (
+            "8bb29df8b6dae820bd4aa9e0c508f458faf988f3353e9d2ceed3fc9d0628c9f7",
+            I686_FD_RUNTIME,
+        ),
+        _ => unreachable!(),
+    };
+    FHS_FD_RECORD
+        .replace("ARCH_SHA256", sha)
+        .replace("ARCH", arch)
+        .replace("graphics = false", &format!("{runtime}graphics = false"))
+}
+
+fn fd_package_dir(tmp: &TmpDir) -> PathBuf {
+    let dir = package_dir(tmp, "fd");
+    std::fs::write(
+        dir.join("package.toml"),
+        package_toml("fd").replace(
+            "https://example.org/dist/",
+            "https://github.com/sharkdp/fd/releases/download/",
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn checks_fhs_records() {
+    let tmp = TmpDir::new("fhs-record");
+    let path = fd_package_dir(&tmp).join("versions/10.3.0.toml");
+    let record = fd_record("i686");
+    for (old, new, field) in [
+        ("bin/fd\"\nruntime", "../fd\"\nruntime", "fhs.program"),
+        ("gcc:out", "gcc", "output"),
+        ("from = \"lib\"", "from = \"/lib\"", "from"),
+        ("usr/lib32", "lib32", "to"),
+        ("usr/lib64", "usr/lib32", "to"),
+        ("graphics = false", "graphics = 1", "fhs.graphics"),
+    ] {
+        std::fs::write(&path, record.replace(old, new)).unwrap();
+        assert_invalid(&check_record(&path), field);
+    }
+    std::fs::write(&path, record.replace("graphics = false\n", "")).unwrap();
+    let formatted = format_record(&path);
+    assert!(formatted.status.success(), "{formatted:?}");
+    let output: serde_json::Value = serde_json::from_slice(&formatted.stdout).unwrap();
+    assert_eq!(output["Record"].as_str().unwrap(), record);
+    std::fs::write(&path, &record).unwrap();
+    assert!(check_record(&path).status.success());
+    assert_invalid(&check_tree(tmp.path()), "fhs.runtime-x86_64");
+    let glibc_i686 = package_dir(&tmp, "glibc-i686").join("versions/2.25.toml");
+    std::fs::write(glibc_i686, WHICH_NIX_RECORD).unwrap();
+    assert_invalid(
+        &check_tree(tmp.path()),
+        "expected a nix-output for i686-linux",
+    );
+}
+
+#[test]
+#[ignore = "requires x86_64 Linux with IA32, bubblewrap and access to the upstream archives and cache.nixos.org"]
+fn runs_upstream_glibc_archives_in_fhs_home() {
+    let tmp = TmpDir::new("fhs-fd");
+    let data = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    tmp.write(
+        "seed.toml",
+        r#"[busybox]
+url = "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348"
+
+[zig]
+url = "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz"
+sha256 = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
+"#,
+    );
+    for (name, store_path, nar_hash) in [
+        (
+            "glibc",
+            "r3hvhzl5fxhrgn0rfy5g7rda17702pj4-glibc-2.44-57",
+            "0h9kdkvc1iv4lj1mvmdvybf1pfr4bf5vsa1nlszhf6h4awymrd12",
+        ),
+        (
+            "glibc-i686",
+            "hd6qrzgv3g0079rb7xgkc58q17hxjygd-glibc-2.44-57",
+            "1hrfvxmjwj9znh71qx3aypiy9r1yf43hrcwfx5vnsjp5hh8lx0fa",
+        ),
+        (
+            "gcc",
+            "qk6cz4ba571znqrsyhma192y8h50yi05-gcc-16.2.0-libgcc",
+            "1qp62adnjfrnimm7m8qxv40qip8v5zhmaf9dvmcp0smj8zwn07f4",
+        ),
+        (
+            "gcc-i686",
+            "9n2m4riyz8a7i2q692gac6ccjdgpwfg3-gcc-16.2.0-libgcc",
+            "1gxarqj1v967v2q7xs6hszflbq7k66z496653qnzh0v591qlcnk1",
+        ),
+    ] {
+        let arch = if name.ends_with("-i686") {
+            "i686"
+        } else {
+            "x86_64"
+        };
+        let attribute = if name.starts_with("glibc") {
+            "glibc"
+        } else {
+            "stdenv.cc.cc.libgcc"
+        };
+        let file = package_dir(&tmp, name).join("versions/1.toml");
+        std::fs::write(
+            file,
+            format!(
+                r#"version = "1"
+
+[build]
+kind = "nix-output"
+system = "{arch}-linux"
+nixpkgs-rev = "93a9ed0a866099a230ed5146a5bb7d16fd5c9b14"
+attribute = "{attribute}"
+
+[build.nix-outputs.out]
+store-path = "/nix/store/{store_path}"
+nar-hash = "sha256:{nar_hash}"
+expose = []
+
+[dependencies]
+build = []
+run = []
+
+[check]
+enabled = false
+skip = []
+"#
+            ),
+        )
+        .unwrap();
+    }
+    let dir = fd_package_dir(&tmp);
+    tmp.write("homes/test.toml", "name = 'test'\npackages = ['fd']\n");
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_vug"))
+            .env("XDG_CACHE_HOME", cache.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let root = tmp.path().to_str().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let cache_dir = cache.path().join("vug");
+    for arch in ["x86_64", "i686"] {
+        let record = fd_record(arch);
+        let record = if arch == "i686" {
+            record.replace("graphics = false", "graphics = true")
+        } else {
+            record
+        };
+        std::fs::write(dir.join("versions/10.3.0.toml"), record).unwrap();
+        let tree = check_tree(tmp.path());
+        assert!(tree.status.success(), "{tree:?}");
+        assert_eq!(
+            run(&[
+                "package",
+                "run-package",
+                "--root",
+                root,
+                "--name",
+                "fd",
+                "--data-dir",
+                data_dir,
+                "--cache-dir",
+                cache_dir.to_str().unwrap(),
+                "--jobs",
+                "2",
+                "--program",
+                "bin/fd",
+                "--arguments",
+                "--version",
+            ])
+            .trim(),
+            "fd 10.3.0"
+        );
+        let home = run(&[
+            "home",
+            "build-home",
+            "--root",
+            root,
+            "--name",
+            "test",
+            "--data-dir",
+            data_dir,
+            "--state-dir",
+            tmp.path().join("state").to_str().unwrap(),
+        ]);
+        let home: serde_json::Value = serde_json::from_str(&home).unwrap();
+        let output = home["Path"].as_str().unwrap();
+        let bytes = std::fs::read(Path::new(output).join("manifest/home.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let fd = manifest["Packages"]["fd"].as_str().unwrap();
+        let expected = if arch == "i686" { 5 } else { 3 };
+        assert_eq!(manifest["Closure"].as_array().unwrap().len(), expected);
+        assert_eq!(
+            run(&[
+                "home",
+                "run-program",
+                "--home-output",
+                output,
+                "--program",
+                &format!("/vug/store/{fd}/bin/fd"),
+                "--",
+                "--version",
+            ])
+            .trim(),
+            "fd 10.3.0"
+        );
+    }
+
     make_dirs_writable(&data.path().join("nix/store"));
 }

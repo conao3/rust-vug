@@ -484,6 +484,33 @@ Unpacks the source archive and copies files into the output.
 `from` is a path relative to the unpacked source. `to` is a path relative to
 the output. Neither may be absolute or contain a `..` component.
 
+### FHS runtime for a prebuilt package
+
+An unsplit `prebuilt` version can declare `[fhs]` to run a glibc program on x86_64 Linux. The source archive and its SHA-256 still come from `[source]`.
+
+```toml
+[fhs]
+program = "bin/example"
+runtime-x86_64 = [
+  { output = "nix-glibc:out", from = "lib", to = "usr/lib64" },
+]
+runtime-i686 = [
+  { output = "nix-glibc-i686:out", from = "lib", to = "usr/lib32" },
+]
+graphics = false
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `program` | yes | Executable path relative to the prebuilt output. |
+| `runtime-x86_64` | yes | Nonempty array of mappings from `x86_64-linux` Nix outputs into `usr/`. `usr/lib` is reserved as an alias for `usr/lib64`, and `usr/lib32` is reserved for i686. |
+| `runtime-i686` | no | Mappings from `i686-linux` Nix outputs into `usr/lib32`. Omitted when empty. |
+| `graphics` | no | Allow access to available DRM devices and configure driver discovery. Defaults to `false` and is always written. |
+
+Each mapping uses an explicit `package:output` selector. `from` is a file or directory relative to that Nix output. `to` is the exact path inside the FHS tree. Paths have no empty, `.` or `..` components. The canonical writer sorts mappings by `output`, `from` and `to`. Directories merge recursively and a collision involving a file or symlink fails the build. The 64-bit runtime must provide `usr/lib64/ld-linux-x86-64.so.2`. With i686 enabled, it must also provide `usr/lib32/ld-linux.so.2` through the i686 mappings.
+
+`check-tree` checks the selector, output and system against the selected version of each Nix runtime record. The build key includes the canonical FHS record and the resolved runtime output IDs. The Nix outputs join the run closure and are kept out of compiler and linker inputs. See [FHS execution](build.md#running-a-glibc-prebuilt-package).
+
 ### Build kind `nix-output`
 
 A `nix-output` record selects named Nix outputs from the signed cache at
@@ -574,7 +601,7 @@ identical files.
 - Top-level keys first, then tables, each in the order of the tables above
   (`package.toml`: `name`, `license`, `[upstream]`; version files: `version`,
   `patches`, `[source]`, `[build]`, `[build.nix-outputs.*]`, `[dependencies]`, `[outputs.*]`,
-  `[check]`, `[links]`,
+  `[check]`, `[fhs]`, `[links]`,
   `[wrappers]`). Keys inside a
   table follow the order of the tables above; `build.kind` comes first in
   `[build]`.

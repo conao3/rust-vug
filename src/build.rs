@@ -129,6 +129,10 @@ fn native_build_key<'a>(
             kind_key = format!("perl-build-rules=v1\n{canonical}");
             &kind_key
         }
+        BuildOptions::Prebuilt { .. } if record.fhs.is_some() => {
+            kind_key = format!("fhs-build-rules=v1\n{canonical}");
+            &kind_key
+        }
         _ => canonical,
     };
     let mut key_record = key_record.to_owned();
@@ -1097,6 +1101,40 @@ impl<'a> Builder<'a> {
             resolved.entry(dep.as_str()).or_insert(built);
         }
 
+        let mut fhs_paths = BTreeMap::new();
+        if let Some(fhs) = &record.fhs {
+            for (_, system, mapping) in fhs.mappings() {
+                let (package, _) = record::dependency_output(&mapping.output);
+                let runtime_version = record::current_version(
+                    &settings
+                        .root
+                        .join(model::package_dir(package))
+                        .join("versions"),
+                )?;
+                let runtime_file = settings
+                    .root
+                    .join(model::version_path(package, &runtime_version));
+                let (runtime, _) = record::load_version(&runtime_file).map_err(|errors| {
+                    errors
+                        .into_iter()
+                        .map(|error| format!("{}: {}", error.path, error.message))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })?;
+                let path = record::fhs_runtime_path(&runtime, &mapping.output, system)?.clone();
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    fhs_paths.entry(mapping.output.as_str())
+                {
+                    let built =
+                        self.resolve(&mapping.output, Some(&runtime_version), need, false)?;
+                    run_closure.extend(built.closure.iter().cloned());
+                    dep_ids.extend(built.closure.iter().cloned());
+                    resolved.insert(&mapping.output, built);
+                    entry.insert(path);
+                }
+            }
+        }
+
         let key = native_build_key(
             &record,
             &canonical,
@@ -1938,6 +1976,9 @@ impl<'a> Builder<'a> {
             manifest.publish(&index_path, &runtime)?;
             return Ok(from_manifest(&manifest, true));
         }
+        if let Some(fhs) = &record.fhs {
+            crate::fhs::install(&out, fhs, &nix_store_dir(&settings.data_dir), &fhs_paths)?;
+        }
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;
         io(
@@ -2006,17 +2047,28 @@ pub fn store_command(settings: &Settings, as_root: bool) -> Result<Command, Stri
 /// Replaces this process by `program` of the output `id`, in a mount
 /// namespace that shows the host file system and the store at `/vug/store`.
 /// Returns only when that fails, with the reason.
-pub fn run_in_store(settings: &Settings, id: &str, program: &str, arguments: &[String]) -> String {
+pub fn run_in_store(
+    settings: &Settings,
+    built: &Built,
+    program: &str,
+    arguments: &[String],
+) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
 
-    let mut command = match store_command(settings, false) {
-        Ok(command) => command,
-        Err(error) => return error,
+    let store = settings.data_dir.join("store");
+    let package = store.join(&built.id);
+    let mut program = PathBuf::from(format!("{STORE}/{}/{program}", built.id));
+    let fhs = crate::fhs::load(&package)?;
+    let mut command = if let Some(fhs) = fhs {
+        program = fhs.program(&package, &program, STORE, &built.id)?;
+        let mut command = crate::runtime_nix::command(&store, built.closure(), Some(&fhs))?;
+        command.arg("--ro-bind").arg(&store).arg(STORE).arg("--");
+        command
+    } else {
+        store_command(settings, false)?
     };
-    command
-        .arg(format!("{STORE}/{id}/{program}"))
-        .args(arguments);
-    format!("bwrap: {}", command.exec())
+    command.arg(program).args(arguments);
+    Err(format!("bwrap: {}", command.exec()))
 }
 
 #[cfg(test)]

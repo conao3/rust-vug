@@ -397,6 +397,18 @@ system and the store at `/vug/store`. It takes the parameters of
 `build-package`, and `--arguments` takes every word after it. The exit status
 is that of the program.
 
+### Running a glibc prebuilt package
+
+Use `vug package run-package --root DIR --name NAME --program PATH` with the executable declared by the record’s [`[fhs]`](record.md#fhs-runtime-for-a-prebuilt-package) table. A symlink to that executable in the same output also works. [Home launchers](home.md#login-and-user-services) use the same environment.
+
+Bubblewrap mounts the projected Nix libraries read-only under `/usr` and makes the verified closure available at its original paths under `/nix/store`. The kernel loads the x86_64 interpreter through `/lib64` and the i686 interpreter through `/lib` when i686 mappings are present. The library search path lists `/usr/lib64` and, when enabled, `/usr/lib32`. The glibc dynamic loader selects libraries for its own ELF class. The process gets its `PATH` and `/bin` from `/usr/bin`. Map a shell to `usr/bin/sh` when the program starts shell scripts.
+
+Set `graphics = true` and map the matching driver outputs in the record. Bubblewrap adds the DRM character devices under `/dev/dri` that the user can read and write. Map DRI and VA-API drivers to `usr/lib64/dri` and, for i686, `usr/lib32/dri`. Map EGL vendor manifests to `usr/share/glvnd/egl_vendor.d` or `usr/lib32/glvnd/egl_vendor.d`, and Vulkan ICD manifests to `usr/share/vulkan/icd.d` or `usr/lib32/vulkan/icd.d`. Include the libraries those manifests reference. The process retains access to the user's home, network and session sockets.
+
+To run the upstream fd smoke test on x86_64 Linux with bubblewrap, IA32 execution and network access, use `cargo test --test record runs_upstream_glibc_archives_in_fhs_home -- --ignored`.
+
+For Steam integration, use a temporary vug data directory and a user session inside the guest or on the target machine. Build a record using Valve’s versioned launcher archive, glibc and the matching graphics outputs for both architectures. For NVIDIA, match the userspace driver version to the loaded kernel module. Launch Steam through `home run-program`, check that it loads the 32-bit and 64-bit Vulkan or OpenGL drivers and opens a window, then run a game and check display, audio and saved data after a restart. Keep the launcher and client output out of the public binary cache.
+
 ## Where the store lives
 
 On the build host the store is the `store/` directory of the data directory.

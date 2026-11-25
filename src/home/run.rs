@@ -4,13 +4,12 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
 
 use serde::Deserialize;
 
 use super::output::io;
-use crate::build::{nix_store_dir, valid_store_id};
-use crate::runtime_nix::{self, NIX_STORE};
+use crate::build::valid_store_id;
+use crate::runtime_nix;
 use vug::treehash;
 
 const SYSTEM_STORE: &str = "/vug/store";
@@ -50,51 +49,13 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         ));
     }
 
-    let bwrap = if Path::new("/bin/bwrap").is_file() {
-        "/bin/bwrap"
-    } else {
-        "bwrap"
-    };
-    let mut command = Command::new(bwrap);
-    command.args(["--unshare-user", "--die-with-parent"]);
-    let nix_paths = runtime_nix::paths(store, &manifest.closure)?;
-    for entry in io(Path::new("/"), fs::read_dir("/"))? {
-        let path = entry.map_err(|error| error.to_string())?.path();
-        if !nix_paths.is_empty() && path == Path::new("/nix") {
-            continue;
-        }
-        let flag = if path == Path::new("/dev") {
-            "--dev-bind"
-        } else {
-            "--bind"
-        };
-        command.arg(flag).arg(&path).arg(&path);
-    }
-
-    if !nix_paths.is_empty() {
-        let data = store.parent().ok_or("home store has no data directory")?;
-        let nix_store = nix_store_dir(data);
-        if !io(&nix_store, fs::symlink_metadata(&nix_store))?.is_dir() {
-            return Err(format!(
-                "{}: expected a Nix store directory",
-                nix_store.display()
-            ));
-        }
-        command.args(["--tmpfs", NIX_STORE]);
-        for path in nix_paths {
-            let source = nix_store.join(path.basename());
-            let metadata = io(&source, fs::symlink_metadata(&source))?;
-            if metadata.is_symlink() {
-                let target = io(&source, fs::read_link(&source))?;
-                command.arg("--symlink").arg(target).arg(path.as_str());
-            } else if metadata.is_dir() || metadata.is_file() {
-                command.arg("--ro-bind").arg(source).arg(path.as_str());
-            } else {
-                return Err(format!("{}: invalid Nix store entry", source.display()));
-            }
-        }
-        command.args(["--remount-ro", NIX_STORE]);
-    }
+    let package = store.join(id);
+    let fhs = crate::fhs::load(&package)?;
+    let fhs_program = fhs
+        .as_ref()
+        .map(|fhs| fhs.program(&package, program, SYSTEM_STORE, id))
+        .transpose()?;
+    let mut command = runtime_nix::command(store, &manifest.closure, fhs.as_ref())?;
 
     let system = Path::new(SYSTEM_STORE);
     let mut system_outputs = BTreeSet::new();
@@ -138,7 +99,7 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
 
     command
         .args(["--remount-ro", SYSTEM_STORE, "--"])
-        .arg(program)
+        .arg(fhs_program.as_deref().unwrap_or(program))
         .args(arguments);
     Err(format!("bwrap: {}", command.exec()))
 }

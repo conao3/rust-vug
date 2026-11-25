@@ -1,4 +1,5 @@
 mod build;
+mod fhs;
 mod gc;
 mod home;
 mod merge;
@@ -1316,8 +1317,9 @@ fn run_export_system(cli: &Cli, args: &ExportArgs) -> Result<i32, (i32, String)>
 
 fn run_program(cli: &Cli, args: &RunArgs) -> Result<i32, (i32, String)> {
     let (settings, built) = build_package(cli, &args.build)?;
-    let error = build::run_in_store(&settings, &built.id, &args.program, &args.arguments);
-    Err((version::failure_status(), error))
+    build::run_in_store(&settings, &built, &args.program, &args.arguments)
+        .map_err(|error| (version::failure_status(), error))?;
+    Ok(0)
 }
 
 fn run_build(cli: &Cli, args: &BuildArgs) -> Result<i32, (i32, String)> {
