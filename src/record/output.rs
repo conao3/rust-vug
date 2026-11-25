@@ -227,6 +227,20 @@ pub(super) fn check_tree(
     let mut latest = BTreeMap::new();
     let mut reported = BTreeSet::new();
     for (path, record) in versions {
+        if let Some(fhs) = &record.fhs {
+            for (field, system, mapping) in fhs.mappings() {
+                let (package, _) = dependency_output(&mapping.output);
+                if let Ok(target) = resolve_target(root, &mut latest, package)
+                    && let Some(target) = versions.get(target)
+                    && let Err(error) = super::fhs_runtime_path(target, &mapping.output, system)
+                {
+                    let message = format!("fhs.{field}: {error}");
+                    if reported.insert((path.as_path(), message.clone())) {
+                        errors.push(error_at(path, message));
+                    }
+                }
+            }
+        }
         for (field, dep) in record.dependencies() {
             let (package, output) = dependency_output(dep);
             if package.is_empty() {

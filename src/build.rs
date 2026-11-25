@@ -132,6 +132,10 @@ fn native_build_key<'a>(
             kind_key = format!("perl-build-rules=v1\n{canonical}");
             &kind_key
         }
+        BuildOptions::Prebuilt { .. } if record.fhs.is_some() => {
+            kind_key = format!("fhs-build-rules=v1\n{canonical}");
+            &kind_key
+        }
         _ => canonical,
     };
     let mut key_record = if private {
@@ -1129,6 +1133,39 @@ impl<'a> Builder<'a> {
             resolved.entry(dep.as_str()).or_insert(built);
         }
 
+        let mut fhs_paths = BTreeMap::new();
+        if let Some(fhs) = &record.fhs {
+            for (_, system, mapping) in fhs.mappings() {
+                let (package, _) = record::dependency_output(&mapping.output);
+                let runtime_version = record::current_version(
+                    &settings
+                        .root
+                        .join(model::package_dir(package))
+                        .join("versions"),
+                )?;
+                let runtime_file = settings
+                    .root
+                    .join(model::version_path(package, &runtime_version));
+                let (runtime, _) = record::load_version(&runtime_file).map_err(|errors| {
+                    errors
+                        .into_iter()
+                        .map(|error| format!("{}: {}", error.path, error.message))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })?;
+                let path = record::fhs_runtime_path(&runtime, &mapping.output, system)?.clone();
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    fhs_paths.entry(mapping.output.as_str())
+                {
+                    let built =
+                        self.resolve(&mapping.output, Some(&runtime_version), need, false)?;
+                    run_closure.extend(built.closure.iter().cloned());
+                    dep_ids.extend(built.closure.iter().cloned());
+                    resolved.insert(&mapping.output, built);
+                    entry.insert(path);
+                }
+            }
+        }
         let private = git_source || resolved.values().any(|built| built.private);
         let key = native_build_key(
             &record,
@@ -2006,6 +2043,9 @@ impl<'a> Builder<'a> {
             manifest.publish(&index_path, &runtime)?;
             return Ok(from_manifest(&manifest, true));
         }
+        if let Some(fhs) = &record.fhs {
+            crate::fhs::install(&out, fhs, &nix_store_dir(&settings.data_dir), &fhs_paths)?;
+        }
         let meta = out.join(".vug");
         io("create", &meta, fs::create_dir_all(&meta))?;
         if private {
@@ -2109,22 +2149,27 @@ pub fn run_in_store(
     use crate::{gc, nix_closure};
     use std::os::unix::process::CommandExt;
 
-    let mut command = store_namespace(settings, false)?;
-    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(
-        &settings.data_dir.join("store"),
-        built.closure(),
-    )?);
-    nix_closure::bind(&mut command, &nix_store_dir(&settings.data_dir), &nix_paths)?;
+    let store = settings.data_dir.join("store");
+    let nix_store = nix_store_dir(&settings.data_dir);
+    let nix_paths = nix_closure::paths(&nix_closure::for_outputs(&store, built.closure())?);
+    let package = store.join(&built.id);
+    let mut program = PathBuf::from(format!("{STORE}/{}/{program}", built.id));
+    let mut command = if let Some(fhs) = crate::fhs::load(&package)? {
+        program = fhs.program(&package, &program, STORE, &built.id)?;
+        let mut command = crate::runtime_nix::command(&nix_store, &nix_paths, Some(&fhs))?;
+        command.arg("--ro-bind").arg(&store).arg(STORE);
+        command
+    } else {
+        store_namespace(settings, false)?
+    };
+    nix_closure::bind(&mut command, &nix_store, &nix_paths)?;
     let _lease = gc::lease(
         &mut command,
         &settings.data_dir,
         built.closure(),
         !nix_paths.is_empty(),
     )?;
-    command
-        .arg("--")
-        .arg(format!("{STORE}/{}/{program}", built.id))
-        .args(arguments);
+    command.arg("--").arg(program).args(arguments);
     Err(format!("bwrap: {}", command.exec()))
 }
 

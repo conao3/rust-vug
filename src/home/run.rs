@@ -4,13 +4,12 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
 
 use serde::Deserialize;
 
 use super::output::io;
 use crate::build::{nix_store_dir, valid_store_id};
-use crate::{gc, nix_closure};
+use crate::{gc, nix_closure, runtime_nix};
 use vug::treehash;
 
 const SYSTEM_STORE: &str = "/vug/store";
@@ -58,28 +57,17 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         ));
     }
 
-    let bwrap = if Path::new("/bin/bwrap").is_file() {
-        "/bin/bwrap"
-    } else {
-        "bwrap"
-    };
-    let mut command = Command::new(bwrap);
-    command.args(["--unshare-user", "--die-with-parent"]);
     let mut live = manifest.closure.clone();
     live.insert(generation.to_owned());
+    let nix_store = nix_store_dir(data);
     let nix_paths = nix_closure::paths(&nix_closure::for_outputs(store, &live)?);
-    for entry in io(Path::new("/"), fs::read_dir("/"))? {
-        let path = entry.map_err(|error| error.to_string())?.path();
-        if !nix_paths.is_empty() && path == Path::new("/nix") {
-            continue;
-        }
-        let flag = if path == Path::new("/dev") {
-            "--dev-bind"
-        } else {
-            "--bind"
-        };
-        command.arg(flag).arg(&path).arg(&path);
-    }
+    let package = store.join(id);
+    let fhs = crate::fhs::load(&package)?;
+    let fhs_program = fhs
+        .as_ref()
+        .map(|fhs| fhs.program(&package, program, SYSTEM_STORE, id))
+        .transpose()?;
+    let mut command = runtime_nix::command(&nix_store, &nix_paths, fhs.as_ref())?;
 
     let system = Path::new(SYSTEM_STORE);
     let mut system_outputs = BTreeSet::new();
@@ -121,11 +109,11 @@ pub(crate) fn run(output: &Path, program: &Path, arguments: &[OsString]) -> Resu
         }
     }
 
-    nix_closure::bind(&mut command, &nix_store_dir(data), &nix_paths)?;
+    nix_closure::bind(&mut command, &nix_store, &nix_paths)?;
     let _lease = gc::lease(&mut command, data, &live, !nix_paths.is_empty())?;
     command
         .args(["--remount-ro", SYSTEM_STORE, "--"])
-        .arg(program)
+        .arg(fhs_program.as_deref().unwrap_or(program))
         .args(arguments);
     Err(format!("bwrap: {}", command.exec()))
 }

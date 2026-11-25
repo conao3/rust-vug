@@ -1,4 +1,5 @@
 mod build;
+mod fhs;
 mod gc;
 mod home;
 mod merge;
@@ -6,6 +7,7 @@ mod naming;
 mod nix_closure;
 mod provenance;
 mod record;
+mod runtime_nix;
 mod secret;
 mod system;
 mod version;

@@ -11,9 +11,12 @@ use std::path::{Path, PathBuf};
 use crate::naming::model;
 use crate::version;
 
+mod fhs;
 mod nix_output;
 mod output;
 
+pub(crate) use fhs::Fhs;
+pub(crate) use fhs::{relative_path as fhs_relative_path, runtime_path as fhs_runtime_path};
 pub(crate) use nix_output::NixOutput;
 
 /// A validation or tree error: the file it belongs to and what is expected.
@@ -59,6 +62,7 @@ pub(crate) struct VersionRecord {
     pub(crate) deps_run: Vec<String>,
     pub(crate) deps_expose: Vec<String>,
     pub(crate) outputs: BTreeMap<String, output::Output>,
+    pub(crate) fhs: Option<Fhs>,
     pub(crate) check_enabled: bool,
     pub(crate) check_target: Option<String>,
     pub(crate) check_skip: Vec<String>,
@@ -99,10 +103,12 @@ impl VersionRecord {
                 .iter()
                 .map(move |dep| (format!("outputs.{name}.run"), dep.as_str()))
         }))
+        .chain(self.fhs.iter().flat_map(Fhs::dependencies))
     }
 
     pub(crate) fn uses_output_keys(&self) -> bool {
-        !self.outputs.is_empty()
+        self.fhs.is_some()
+            || !self.outputs.is_empty()
             || self
                 .deps_build
                 .iter()
@@ -512,6 +518,7 @@ fn parse_version(
             "check",
             "links",
             "wrappers",
+            "fhs",
         ],
         "",
         &mut errors,
@@ -1200,6 +1207,11 @@ fn parse_version(
         Some(_) => errors.push("wrappers: expected a table".to_owned()),
     }
 
+    let fhs = fhs::parse(map, &mut errors);
+    if fhs.is_some() && (!matches!(build, BuildOptions::Prebuilt { .. }) || !outputs.is_empty()) {
+        errors.push("fhs: requires an unsplit prebuilt output".into());
+    }
+
     (
         VersionRecord {
             version,
@@ -1210,6 +1222,7 @@ fn parse_version(
             deps_run,
             deps_expose,
             outputs,
+            fhs,
             check_enabled,
             check_target,
             check_skip,
@@ -1633,6 +1646,9 @@ fn canonical_version(record: &VersionRecord) -> String {
     }
     if record.private_cxx_runtime {
         write_bool_field(&mut out, "private-cxx-runtime", true);
+    }
+    if let Some(fhs) = &record.fhs {
+        fhs::write(&mut out, fhs);
     }
     if !record.links.is_empty() {
         out.push_str("\n[links]\n");
@@ -2133,6 +2149,7 @@ sources = [
             deps_run: Vec::new(),
             deps_expose: Vec::new(),
             outputs: BTreeMap::new(),
+            fhs: None,
             check_enabled: true,
             check_target: None,
             check_skip: Vec::new(),
@@ -2244,6 +2261,7 @@ skip = []
             deps_run: vec!["ca-certificates".to_owned()],
             deps_expose: Vec::new(),
             outputs: BTreeMap::new(),
+            fhs: None,
             check_enabled: false,
             check_target: None,
             check_skip: Vec::new(),
