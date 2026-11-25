@@ -16,8 +16,8 @@ use vug::cpio;
 
 use crate::build::{self, Builder, Settings};
 use crate::naming::model;
-use crate::record::dependency_output;
 use crate::nix_closure;
+use crate::record::dependency_output;
 const NIX_STORE: &str = "/nix/store";
 use vug::steps::shell_quote;
 

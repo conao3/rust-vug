@@ -133,8 +133,10 @@ pub(crate) fn bind(
             let target =
                 fs::read_link(&source).map_err(|error| format!("{}: {error}", source.display()))?;
             command.arg("--symlink").arg(target).arg(path.as_str());
-        } else {
+        } else if metadata.is_dir() || metadata.is_file() {
             command.arg("--ro-bind").arg(source).arg(path.as_str());
+        } else {
+            return Err(format!("{}: invalid Nix store entry", source.display()));
         }
     }
     command.args(["--remount-ro", "/nix"]);

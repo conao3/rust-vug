@@ -166,6 +166,7 @@ pub(super) fn build(
         id,
         fresh,
         exposed: BTreeSet::new(),
+        private: false,
     })
 }
 
