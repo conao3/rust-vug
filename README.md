@@ -100,7 +100,9 @@ $ vug package build-package --root . --name hello --jobs 4
 dependencies, then moves its output to the content-addressed store. The build
 sandbox uses a fixed user, group, hostname, locale, and source date epoch.
 The flake package adds bubblewrap to `PATH`. A build made with Cargo needs
-`bwrap` on `PATH`. See [the build documentation](docs/build.md).
+`bwrap` on `PATH`. The release archive holds a static `vug` and `vug-bwrap`,
+the same bubblewrap built statically, and that `vug` runs its sandboxes with
+the `vug-bwrap` next to it. See [the build documentation](docs/build.md).
 
 ```console
 $ vug package run-package --root . --name slang --program bin/slsh --arguments --version
@@ -157,3 +159,15 @@ $ nix develop --command make check
 This runs the format check, clippy, the Lean proof build, the leanassay audit,
 the generated-file consistency check, and the tests. `nix build` produces
 `./result/bin/vug`.
+
+## Release
+
+```console
+$ gh workflow run release.yml --ref master -f version_bump=patch
+```
+
+The release workflow raises the version in `Cargo.toml`, `Cargo.lock`, and
+`flake.nix`, pushes that commit and the tag `v<version>`, and attaches
+`vug-<version>-x86_64-linux-musl.tar.gz` (`nix build .#release`) to the
+GitHub Release. The archive holds `vug` and `vug-bwrap`; unpack both into the
+same directory.

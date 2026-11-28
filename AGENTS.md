@@ -80,6 +80,14 @@ the `vug record` commands of `docs/record.md`, which validate package records.
   `cargo clippy --all-targets -- -D warnings`, `lake -d lean build --wfail`,
   `lake -d audit build --wfail`, the generated-file freshness check, and
   `cargo test`.
+- Releases run only from `gh workflow run release.yml --ref master -f
+  version_bump=patch`: one run bumps `Cargo.toml`, `Cargo.lock`, and both
+  versions in `flake.nix`, pushes the commit with the annotated tag
+  `v<version>`, and attaches `vug-<version>-x86_64-linux-musl.tar.gz`
+  (`nix build .#release`) to the GitHub Release. The archive holds the static
+  `vug` and `vug-bwrap` (`pkgsStatic.bubblewrap`); the static `vug` is built
+  with `VUG_BUNDLED_BWRAP` and runs every sandbox with the `vug-bwrap` next to
+  its executable.
 - Exit codes: 0 success, 252 usage errors, 254 errors in the input being
   processed (for example an unreadable `file://` path or an invalid record),
   255 anything else. `help` works at every command level (`vug help`,
