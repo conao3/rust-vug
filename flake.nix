@@ -80,9 +80,24 @@
             LEANFRAN_OFFLINE = "1";
             nativeBuildInputs = [ pkgs.pkgsStatic.buildPackages.pkg-config ];
             buildInputs = [ pkgs.pkgsStatic.zstd ];
+            VUG_BUNDLED_BWRAP = "1";
             doCheck = false;
+            postInstall = ''
+              install -m 0555 ${pkgs.pkgsStatic.bubblewrap}/bin/bwrap $out/bin/vug-bwrap
+            '';
             meta.license = pkgs.lib.licenses.asl20;
           };
+          packages.release =
+            pkgs.runCommand "vug-release"
+              {
+                static = inputs.self.packages.${system}.static;
+                archive = "vug-${inputs.self.packages.${system}.static.version}-x86_64-linux-musl.tar.gz";
+              }
+              ''
+                mkdir $out
+                tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
+                  -C $static/bin -c vug vug-bwrap | gzip -9n > $out/$archive
+              '';
         };
     };
 }

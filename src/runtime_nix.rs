@@ -10,10 +10,10 @@ pub(crate) fn command(
     nix_paths: &BTreeSet<StorePath>,
     fhs: Option<&crate::fhs::Runtime>,
 ) -> Result<Command, String> {
-    let bwrap = if Path::new("/bin/bwrap").is_file() {
-        "/bin/bwrap"
+    let bwrap = if option_env!("VUG_BUNDLED_BWRAP").is_none() && Path::new("/bin/bwrap").is_file() {
+        "/bin/bwrap".into()
     } else {
-        "bwrap"
+        crate::build::bwrap()?
     };
     let mut command = Command::new(bwrap);
     command.args(["--unshare-user", "--die-with-parent"]);

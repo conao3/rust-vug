@@ -251,7 +251,7 @@ fn run_sandbox(sandbox: &Sandbox) -> Result<(), String> {
             "/etc/group".to_owned(),
         ],
     );
-    let mut command = Command::new("bwrap");
+    let mut command = Command::new(bwrap()?);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -2113,8 +2113,22 @@ pub fn store_command(settings: &Settings, as_root: bool) -> Result<Command, Stri
     Ok(command)
 }
 
+pub fn bwrap() -> Result<PathBuf, String> {
+    let bundled = option_env!("VUG_BUNDLED_BWRAP").is_some();
+    let exe = std::env::current_exe().map_err(|error| format!("vug executable: {error}"))?;
+    let program = steps::bwrap_program(&exe, bundled);
+    if bundled && !program.is_file() {
+        return Err(format!(
+            "{}: not found; this vug runs its sandboxes with the {} that its release archive ships next to it",
+            program.display(),
+            steps::BUNDLED_BWRAP
+        ));
+    }
+    Ok(program)
+}
+
 fn store_namespace(settings: &Settings, as_root: bool) -> Result<Command, String> {
-    let mut command = Command::new("bwrap");
+    let mut command = Command::new(bwrap()?);
     if as_root {
         command.args(["--unshare-user", "--uid", "0", "--gid", "0"]);
     }

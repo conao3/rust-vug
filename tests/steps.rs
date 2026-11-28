@@ -1,8 +1,9 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use vug::steps::{
-    Autotools, Bind, Sandbox, Step, autotools_steps, bwrap_args, prebuilt_steps, shell_quote,
-    shell_script, unpack_steps,
+    Autotools, Bind, Sandbox, Step, autotools_steps, bwrap_args, bwrap_program, prebuilt_steps,
+    shell_quote, shell_script, unpack_steps,
 };
 
 fn step(words: &[&str]) -> Step {
@@ -719,4 +720,20 @@ fn cargo_skip_opts_into_testing_the_member_before_install() {
         ])
     );
     assert_eq!(steps.last().unwrap()[3], "install");
+}
+
+#[test]
+fn bwrap_bundled_next_to_executable() {
+    assert_eq!(
+        bwrap_program(Path::new("/opt/vug/vug"), true),
+        PathBuf::from("/opt/vug/vug-bwrap")
+    );
+}
+
+#[test]
+fn bwrap_from_path() {
+    assert_eq!(
+        bwrap_program(Path::new("/opt/vug/vug"), false),
+        PathBuf::from("bwrap")
+    );
 }

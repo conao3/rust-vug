@@ -379,7 +379,19 @@ $ vug package build-package --root . --name hello
 
 The build log goes to standard error. The flake package puts `bwrap`
 (bubblewrap) on its `PATH`; a `vug` built with `cargo` needs `bwrap` on
-`PATH`.
+`PATH`. The release archive `vug-<version>-x86_64-linux-musl.tar.gz`
+(`nix build .#release`) holds the static `vug` and `vug-bwrap`, the
+bubblewrap of the flake's nixpkgs built statically. That `vug` runs every
+sandbox with the `vug-bwrap` in the directory of its executable and stops
+with an error when the file is missing, so it does not depend on the host's
+bubblewrap. A distribution can confine its own `bwrap`: Ubuntu's AppArmor
+profile `bwrap-userns-restrict` attaches to the path `/usr/bin/bwrap` and
+denies every capability to the programs in the sandbox, so a test that
+creates a user and a network namespace, such as libcamera's `process_test`,
+fails under it with `EPERM`
+([the profile in AppArmor's extras](https://gitlab.com/apparmor/apparmor/-/blob/master/profiles/apparmor/profiles/extras/bwrap-userns-restrict), which Ubuntu installs in `/etc/apparmor.d`).
+On Ubuntu, `vug-bwrap` still needs unprivileged user namespaces:
+`sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 
 ## Running a program
 

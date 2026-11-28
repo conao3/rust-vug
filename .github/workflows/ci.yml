@@ -13,3 +13,9 @@ jobs:
       - uses: cachix/install-nix-action@v32.0.0
       - run: nix develop --command make check
       - run: nix build
+      - run: nix build .#release -o release
+      - name: Check the release archive
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          version=$(nix eval --raw .#packages.x86_64-linux.static.version)
+          .github/scripts/check-release-archive.sh "release/vug-$version-x86_64-linux-musl.tar.gz" "$version"

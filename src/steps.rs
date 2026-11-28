@@ -706,6 +706,15 @@ pub fn shell_quote(word: &str) -> String {
     quoted
 }
 
+pub const BUNDLED_BWRAP: &str = "vug-bwrap";
+
+pub fn bwrap_program(exe: &std::path::Path, bundled: bool) -> std::path::PathBuf {
+    match exe.parent() {
+        Some(dir) if bundled => dir.join(BUNDLED_BWRAP),
+        _ => std::path::PathBuf::from("bwrap"),
+    }
+}
+
 /// Arguments for `bwrap` (the program name itself is not included).
 ///
 /// In this order:
