@@ -73,6 +73,7 @@ $ vug record check-tree --root .
 {
   "Errors": [],
   "Packages": 3,
+  "Systems": 0,
   "Versions": 4
 }
 ```
@@ -80,8 +81,8 @@ $ vug record check-tree --root .
 - `format-record` prints the canonical byte form of a record. `--write`
   rewrites the file.
 - `check-record` exits 0 only for a valid, canonical file.
-- `check-tree` validates every record under `DIR/packages` and reports
-  `Errors`.
+- `check-tree` validates every record under `DIR/packages` and every system
+  under `DIR/systems`, counts them, and reports `Errors`.
 
 ## Packages
 
