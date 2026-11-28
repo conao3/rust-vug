@@ -23,7 +23,7 @@ getrandom = "0.4"
 libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 memchr = "2"
-object = { version = "0.39", default-features = false, features = ["elf", "read_core", "std", "unaligned"] }
+object = { version = "0.41", default-features = false, features = ["elf", "read_core", "std", "unaligned"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "lzip", "xz"] }
 tempfile = "3"
 zstd = "0.13"
