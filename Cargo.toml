@@ -9,7 +9,7 @@ repository = "https://github.com/conao3/rust-vug"
 [dependencies]
 blake3 = "1.8"
 clap = { version = "4", features = ["derive"] }
-leanfran = { version = "=0.6.0", default-features = false }
+leanfran = { version = "=0.14.0", default-features = false }
 base64 = "0.23"
 bzip2 = "0.6"
 sha2 = "0.11"
@@ -30,4 +30,4 @@ zstd = "0.13"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
-leanfran-build = "=0.6.0"
+leanfran-build = "=0.14.0"

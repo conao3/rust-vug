@@ -8,7 +8,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     leanfran = {
-      url = "github:conao3/lean-leanfran/1bb464c6d419da8037698053f52dd23476a042d9";
+      url = "github:conao3/lean-leanfran/420a7dce66dda3cbfd03b884d453cb8de63a0fc6";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -23,7 +23,7 @@
       perSystem =
         { pkgs, system, ... }:
         let
-          leanfran = inputs.leanfran.packages.${system}.rust-compiler;
+          leanfran = inputs.leanfran.packages.${system}.leanfran;
         in
         {
           treefmt = {

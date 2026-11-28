@@ -581,9 +581,9 @@ dependencies = [
 
 [[package]]
 name = "leanfran"
-version = "0.6.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af74fade4e7f26ebe5c33bc0127293d0373a417a6464eb395e60cef1f5b301e5"
+checksum = "0ca31235613ae522200d22e8ff566558be60ba5f5ab31741058ced5f09cc442b"
 dependencies = [
  "leanfran-macros",
  "leanfran-runtime",
@@ -591,9 +591,9 @@ dependencies = [
 
 [[package]]
 name = "leanfran-build"
-version = "0.6.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "791ecf2e04fe150330dda636275e3b2eed61fecc28c0a82a592076ddb66c89c5"
+checksum = "b5bb63379c2950968635be91993ca3af4cefa6c5addcffb08c0c85772850a01d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -606,9 +606,9 @@ dependencies = [
 
 [[package]]
 name = "leanfran-macros"
-version = "0.6.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "580b15a1312c605859f8a9c1f2154d4c67d32e1f36f59d3beeb12fe4e220d601"
+checksum = "ac3ed6ea60f11e8a6ef02e5f49a2ceec616947b39f49df4db2b28f32d3814f1a"
 dependencies = [
  "leanfran-build",
  "proc-macro2",
@@ -618,9 +618,9 @@ dependencies = [
 
 [[package]]
 name = "leanfran-runtime"
-version = "0.6.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e69093131e348ed35b510f57d3a924debf98858d471253a96ceb98bc9ec524ac"
+checksum = "0e89b244479e2640f6877e771bf152db8b00f25551be159d163d002292b8418d"
 dependencies = [
  "libc",
  "libm",
