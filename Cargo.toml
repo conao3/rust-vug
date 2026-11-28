@@ -26,7 +26,7 @@ memchr = "2"
 object = { version = "0.39", default-features = false, features = ["elf", "read_core", "std", "unaligned"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "lzip", "xz"] }
 tempfile = "3"
-zstd = "0.13"
+zstd = "0.14"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
