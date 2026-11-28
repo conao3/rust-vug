@@ -384,13 +384,13 @@ The build log goes to standard error. The flake package puts `bwrap`
 bubblewrap of the flake's nixpkgs built statically. That `vug` runs every
 sandbox with the `vug-bwrap` in the directory of its executable and stops
 with an error when the file is missing, so it does not depend on the host's
-bubblewrap. A distribution can confine its own `bwrap`: Ubuntu's AppArmor
-profile `bwrap-userns-restrict` attaches to the path `/usr/bin/bwrap` and
+bubblewrap. A distribution can confine its own `bwrap`: on Ubuntu 26.04 the
+AppArmor profile `bwrap-userns-restrict` attaches to the path `/usr/bin/bwrap` and
 denies every capability to the programs in the sandbox, so a test that
 creates a user and a network namespace, such as libcamera's `process_test`,
 fails under it with `EPERM`
-([the profile in AppArmor's extras](https://gitlab.com/apparmor/apparmor/-/blob/master/profiles/apparmor/profiles/extras/bwrap-userns-restrict), which Ubuntu installs in `/etc/apparmor.d`).
-On Ubuntu, `vug-bwrap` still needs unprivileged user namespaces:
+([the profile in AppArmor's extras](https://gitlab.com/apparmor/apparmor/-/blob/master/profiles/apparmor/profiles/extras/bwrap-userns-restrict), which Ubuntu 26.04 installs in `/etc/apparmor.d`).
+On Ubuntu 26.04, `vug-bwrap` still needs unprivileged user namespaces:
 `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
 
 ## Running a program
